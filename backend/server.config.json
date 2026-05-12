@@ -1,0 +1,9 @@
+{
+  "port": 58000,
+  "baseMapRoot": "../data/base_map",
+  "editorMapRoot": "../data/editor_map",
+  "releaseRoot": "../data/released_map",
+  "converterBinary": "../runtime/bin/editor_map_converter",
+  "skipValidation": false,
+  "frontendBuildRoot": "../frontend/build/map_editor_frontend"
+}

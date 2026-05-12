@@ -1,0 +1,16 @@
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+frontend/build/
+data/bag/*
+data/base_map/*
+data/editor_map/*
+data/released_map/*
+runtime/bin/*
+*.log
+
+!data/bag/.gitkeep
+!data/base_map/.gitkeep
+!data/editor_map/.gitkeep
+!data/released_map/.gitkeep
+!runtime/bin/.gitkeep

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="16px" height="16px" viewBox="0 0 16 16" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>ic_go_straight</title>
+    <g id="ic_go_straight" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <rect id="矩形" stroke="#979797" fill="#D8D8D8" opacity="0" x="0.5" y="0.5" width="15" height="15"></rect>
+        <path d="M8,3.15909091 L10.9746917,6.8002637 C11.0474499,6.88500844 10.9525479,6.99675759 10.8269852,6.97436848 L10.8269852,6.97436848 L9.09,6.96009091 L9.09090909,12.8409091 L6.90909091,12.8409091 L6.909,6.96109091 L5.17301476,6.97436848 C5.06538961,6.99355915 4.98029065,6.91419925 5.00399168,6.8377664 L5.02530827,6.8002637 L8,3.15909091 Z" id="go-straight" fill="#A6B5CC" transform="translate(8.000000, 8.000000) scale(-1, 1) translate(-8.000000, -8.000000) "></path>
+        <circle id="椭圆形备份" stroke="#A6B5CC" cx="8" cy="8" r="7.5"></circle>
+    </g>
+</svg>

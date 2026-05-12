@@ -1,0 +1,74 @@
+#app{
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #000000;
+}
+
+.message-error-model {
+    .ant-message-notice-content {
+        background: rgba(255,77,88,0.25) !important;
+        border: 1px solid rgba(247,86,96,1) !important;
+        border-radius: 6px !important;
+        box-shadow: none !important;
+        color: #FF4D58 !important;
+
+        span[role='img'] {
+            display: none;
+        }
+    
+        .file-icon {
+            vertical-align: -2px;
+            margin-right: 5px;
+        }
+    }
+}
+
+.message-success-model {
+    .ant-message-notice-content {
+        background: rgb(215,241,214) !important;
+        border: 1px solid rgb(31, 204, 77) !important;
+        border-radius: 6px !important;
+        box-shadow: none !important;
+        color: #1FCC4D !important;
+
+        span[role='img'] {
+            display: none;
+        }
+        .file-icon {
+            vertical-align: -2px;
+            margin-right: 5px;
+        }
+    }
+}
+
+.message-loading-model {
+    .ant-message-notice-content {
+        background: rgba(50,136,250,0.25) !important;
+        border: 1px solid rgba(50,136,250,1) !important;
+        border-radius: 6px !important;
+        box-shadow: none !important;
+        color: #3288FA !important;
+
+        span[role='img'] {
+            display: none;
+        }
+    
+        .file-icon {
+            vertical-align: -2px;
+            margin-right: 5px;
+        }
+
+        img {
+            animation: spin 1s linear infinite;
+            @keyframes spin {
+                0% {
+                    transform: rotate(0deg); /* 起始位置为0度 */
+                }
+                100% {
+                    transform: rotate(360deg); /* 结束位置为360度，实现持续旋转 */
+                }
+            }
+        }
+    }
+}

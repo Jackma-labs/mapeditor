@@ -1,0 +1,323 @@
+#toolbar-container {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: 78px;
+    line-height: 78px;
+    background: #1a1d24;
+    border-bottom: 1px solid #383c4d;
+    color: #a6b5cc;
+    -moz-user-select: none;
+    /*火狐*/
+    -webkit-user-select: none;
+    /*webkit浏览器*/
+    -ms-user-select: none;
+    /*IE10*/
+    -khtml-user-select: none;
+    /*早期浏览器*/
+    -o-user-select: none;
+    /* Opera*/
+    user-select: none;
+
+    .title {
+        display: inline-block;
+        font-family: PingFangSC-Semibold;
+        font-size: 20px;
+        font-weight: 600;
+        margin-left: 24px;
+    }
+
+    .tool-item {
+        display: inline-block;
+        background: #343c4d;
+        border-radius: 6px;
+        height: 32px;
+        width: 80px;
+        text-align: center;
+        line-height: 32px;
+        margin-right: 16px;
+        cursor: pointer;
+
+        &.active {
+            background: #3288fa;
+            color: #ffffff;
+        }
+        &.hover{
+            background: #343C4D;
+        }
+        &.disable{
+            background: #383D47;
+            cursor: not-allowed;
+        }
+        img.arrow {
+            vertical-align: text-bottom;
+        }
+
+        &.file {
+            margin-left: 100px;
+            img.arrow{
+                margin-left: 6px;
+            }
+        }
+
+        &.back,
+        &.next,
+        &.rotate {
+            width: 32px;
+            &.disable{
+                cursor: not-allowed;
+            }
+        }
+
+        &.back {
+            margin-left: 32px;
+        }
+    }
+
+    .line {
+        display: inline-block;
+        width: 1px;
+        height: 16px;
+        background: #383c4d;
+        margin-right: 16px;
+    }
+    .more{
+        width: 32px;
+        height: 32px;
+        background: #343c4d;
+        border-radius: 6px;
+        text-align: center;
+        position: absolute;
+        margin-left: 16px;
+        right: 16px;
+        top: 24px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    .more.active{
+        background: #3288FA;
+    }
+}
+
+.file-select.ant-dropdown {
+    padding: 0;
+    .ant-dropdown-menu {
+        background: #282b36;
+        padding: 8px 0;
+        margin: 5px 0;
+        img {
+            margin-right: 8px;
+        }
+        .ant-dropdown-menu-item {
+            font-size: 14px;
+            color: #a6b5cc;
+            padding: 5px 24px;
+            justify-content: flex-start;
+            border-radius: 0;
+
+            &:hover {
+                background: rgba(115, 193, 250, 0.08);
+            }
+        }
+        .ant-dropdown-menu-item-disabled{
+            color: #717A8C;
+        }
+
+        .ant-dropdown-menu-item-divider {
+            margin: 6px 24px;
+            background: transparent;
+            border-bottom: 1px solid #383b45;
+        }
+    }
+}
+
+.file-model-dialog {
+    position: relative;
+    &::before {
+        content: '';
+        height: 1px;
+        background: #383b45;
+        display: inline-block;
+        width: 100%;
+        position: absolute;
+        top: 50px;
+        z-index: 6;
+    }
+    .ant-modal-content {
+        background: #282b36;
+        border-radius: 10px;
+        padding: 14px 24px;
+        .ant-modal-title {
+            background: #282b36;
+            font-size: 16px;
+            color: #ffffff;
+            font-weight: 500;
+        }
+        .ant-modal-body {
+            margin-top: 30px;
+            .dialog-body-title {
+                font-size: 14px;
+                color: #a6b5cc;
+            }
+            .dialog-body-doing {
+                height: 368px;
+                background: #181a1f;
+                border-radius: 8px;
+                display: flex;
+                color: #a6b5cc;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                img {
+                    margin-bottom: 6px;
+                    width: 16px;
+                    height: 16px;
+                    animation: spin 1s linear infinite;
+                    @keyframes spin {
+                        0% {
+                          transform: rotate(0deg); /* 起始位置为0度 */
+                        }
+                        100% {
+                          transform: rotate(360deg); /* 结束位置为360度，实现持续旋转 */
+                        }
+                    }
+                }
+            }
+            .dialog-body-list {
+                height: 368px;
+                overflow-y: auto;
+                .ant-menu {
+                    background: #181a1f;
+                    border-radius: 8px;
+                    .ant-menu-title-content span {
+                        text-overflow: ellipsis;
+                        display: block;
+                        overflow: hidden;
+                        color: #a6b5cc;
+                        img {
+                            margin-right: 8px;
+                            vertical-align: -2px;
+                        }
+                    }
+                    .ant-menu-item-selected {
+                        & ::after {
+                            content: url('../../assets/images/ic_succeed_white.svg');
+                            position: absolute;
+                            top: 10%;
+                            right: 22px;
+                        }
+                        .ant-menu-title-content {
+                            span {
+                                color: #FFFFFF;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .ant-modal-footer,
+        .dialog-body-form {
+            .ant-btn,
+            .button-ok {
+                &.ant-btn-primary:disabled {
+                    color: #515761;
+                    background: #383d47;
+                    border: 1px solid #383d47;
+                }
+                border: 1px solid #3288fa;
+                border-radius: 8px;
+                color: #ffffff;
+            }
+
+            .ant-btn-primary {
+                border: 1px solid #3288fa;
+                background-color: #3288fa;
+            }
+
+            .button-cancel {
+                background: #282b36;
+                border: 1px solid rgba(124, 136, 153, 1);
+                border-radius: 8px;
+                color: #ffffff;
+            }
+
+            .ant-btn + .ant-btn:not(.ant-dropdown-trigger) {
+                margin-inline-start: 24px;
+            }
+        }
+    }
+    .dialog-body-form {
+        .ant-input {
+            width: 346px !important;
+            background: #343c4d !important;
+            border-radius: 6px !important;
+            color: #ffffff !important;
+            border: none;
+        }
+        .ant-input.input-fixed {
+            background: #282b36 !important;
+        }
+        .form-model {
+            .ant-form-item-label > label {
+                font-size: 14px;
+                color: #a6b5cc;
+            }
+        }
+        .footer-button {
+            .ant-row,
+            .ant-form-item-row {
+                display: flex;
+                justify-content: center;
+            }
+            .ant-form-item-control-input-content {
+                display: flex;
+                justify-content: center;
+            }
+        }
+        .ant-form-item-has-error {
+            .ant-form-item-control-input {
+                input:focus {
+                    box-shadow: 0 0 0 2px rgba(255, 38, 5, 1);
+                }
+            }
+        }
+        .ant-form-item-has-warning {
+            .ant-form-item-control-input {
+                input:focus {
+                        box-shadow: 0 0 0 2px rgba(255, 215, 5, 1);
+                }
+            }
+        }
+    }
+}
+
+.message-model-dialog {
+    .message-body {
+        display: flex;
+        justify-content: center;
+        text-align: center;
+        color: #a6b5cc;
+        p {
+            margin: 0;
+            text-align: left;
+        }
+        img {
+            margin-right: 12px;
+            margin-top: 5px;
+            width: 16px;
+            height: 16px;
+        }
+    }
+    .message-footer {
+        display: flex;
+        justify-content: center;
+        button {
+            margin: 0 12px;
+        }
+    }
+}
+.ant-dropdown-menu-item-selected{
+    color: #3288FA !important;
+    background: rgba(115, 193, 250, 0.08) !important;
+}

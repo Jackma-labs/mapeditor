@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="32px" height="32px" viewBox="0 0 32 32" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>ic_vertical_splitting</title>
+    <defs>
+        <filter x="-46.6%" y="-33.7%" width="193.1%" height="167.5%" filterUnits="objectBoundingBox" id="filter-1">
+            <feOffset dx="0" dy="1" in="SourceAlpha" result="shadowOffsetOuter1"></feOffset>
+            <feGaussianBlur stdDeviation="0.899999976" in="shadowOffsetOuter1" result="shadowBlurOuter1"></feGaussianBlur>
+            <feColorMatrix values="0 0 0 0 0   0 0 0 0 0   0 0 0 0 0  0 0 0 0.649999976 0" type="matrix" in="shadowBlurOuter1" result="shadowMatrixOuter1"></feColorMatrix>
+            <feMerge>
+                <feMergeNode in="shadowMatrixOuter1"></feMergeNode>
+                <feMergeNode in="SourceGraphic"></feMergeNode>
+            </feMerge>
+        </filter>
+        <filter x="-43.3%" y="-43.3%" width="186.7%" height="186.7%" filterUnits="objectBoundingBox" id="filter-2">
+            <feOffset dx="0" dy="1" in="SourceAlpha" result="shadowOffsetOuter1"></feOffset>
+            <feGaussianBlur stdDeviation="1" in="shadowOffsetOuter1" result="shadowBlurOuter1"></feGaussianBlur>
+            <feColorMatrix values="0 0 0 0 0   0 0 0 0 0   0 0 0 0 0  0 0 0 0.5 0" type="matrix" in="shadowBlurOuter1" result="shadowMatrixOuter1"></feColorMatrix>
+            <feMerge>
+                <feMergeNode in="shadowMatrixOuter1"></feMergeNode>
+                <feMergeNode in="SourceGraphic"></feMergeNode>
+            </feMerge>
+        </filter>
+    </defs>
+    <g id="ic_vertical_splitting" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <rect id="矩形" fill="#D8D8D8" opacity="0" x="0" y="0" width="32" height="32"></rect>
+        <g transform="translate(8.524017, 0.000000)">
+            <g id="notallowed" filter="url(#filter-1)">
+                <g id="arrow">
+                    <path d="M0,16 L0,0 L11.6000004,11.6081 L4.55353015,11.6081 L4.40242014,11.732 L0,16 Z" id="arrow-border" fill="#FFFFFF"></path>
+                    <path d="M1,2.29999995 L1,13.4999998 L3.96899999,10.6309298 L4.12899999,10.4917798 L9.16499996,10.4999998 L1,2.29999995 Z" id="Vector" fill="#000000"></path>
+                </g>
+            </g>
+            <rect id="矩形" fill="#D8D8D8" opacity="0" x="2.00048327" y="15.1815408" width="15.9990335" height="15.9990335"></rect>
+            <g id="ic_horizontal_splitting" transform="translate(2.999517, 15.363082)" stroke="#FFFFFF" filter="url(#filter-2)">
+                <path d="M14.5,0.5 L14.5,14.5 L10,14.5 L10,0.5 L14.5,0.5 Z M5,0.5 L5,14.5 L0.5,14.5 L0.5,0.5 L5,0.5 Z" id="形状结合" fill="#000000"></path>
+                <line x1="14.8274789" y1="7.5" x2="0.172521076" y2="7.5" id="路径-7" stroke-dasharray="2" transform="translate(7.500000, 7.500000) rotate(-270.000000) translate(-7.500000, -7.500000) "></line>
+            </g>
+        </g>
+    </g>
+</svg>

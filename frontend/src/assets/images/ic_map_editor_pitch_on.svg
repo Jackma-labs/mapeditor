@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="16px" height="16px" viewBox="0 0 16 16" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>ic_map_editor_pitch_on</title>
+    <defs>
+        <rect id="path-1" x="0" y="0" width="16" height="16"></rect>
+    </defs>
+    <g id="ic_map_editor_pitch_on" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <mask id="mask-2" fill="white">
+            <use xlink:href="#path-1"></use>
+        </mask>
+        <use id="矩形" fill="#000000" opacity="0" xlink:href="#path-1"></use>
+        <path d="M14,1 C14.5522847,1 15,1.44771525 15,2 L15,14 C15,14.5522847 14.5522847,15 14,15 L2,15 C1.44771525,15 1,14.5522847 1,14 L1,2 C1,1.44771525 1.44771525,1 2,1 L14,1 Z M4.363,10.19 L2,11.421 L2,14 L6.32,14 L4.363,10.19 Z M14,5.169 L5.249,9.728 L7.444,14 L14,14 L14,5.169 Z M7.01,2 L2,2 L2,10.293 L9.47576475,6.39970113 L7.01,2 Z M14,2 L8.157,2 L10.363,5.937 L14,4.042 L14,2 Z" id="形状结合备份" fill="#3288FA" mask="url(#mask-2)"></path>
+    </g>
+</svg>

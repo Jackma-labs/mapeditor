@@ -1,0 +1,78 @@
+#map-editor-container{
+    width: calc(100% - 314px);
+    height: calc(100% - 78px);
+    display: block;
+    float: left;
+    border-right: 1px solid #383C4D;
+    position: relative;
+    #webgl{
+        width: 100%;
+        height: 100%;
+    }
+    .lane-handle-container{
+        position: absolute;
+        top:24px;
+        right: 26px;
+        display: flex;
+        .lane-handle-btn{
+            width: 146px;
+            height: 32px;
+            background: #49546B;
+            cursor: pointer;
+            line-height: 32px;
+            border-radius: 6px;
+            text-align: center;
+            font-family: PingFangSC-Regular;
+            color: #A6B5CC;
+            margin-right: 16px;
+            &:hover:not(.disable){
+                color: #ffffff;
+            }
+            &.active:not(.disable){
+                background: #3288FA;
+                color: #FFFFFF;
+            }
+        }
+        .lane-handle-btn.disable{
+            background: #383D47 !important;
+            cursor: not-allowed;
+        }
+    }
+}
+#prompt-container,.label-container{
+    white-space: nowrap;
+    line-height: 32px;
+    background: #3D434E;
+    border-radius: 6px;
+    padding: 0px 10px;
+    position: absolute;
+    font-family: PingFangSC-Regular;
+    font-size: 14px;
+    color: #FFFFFF;
+}
+.text-remind{
+    position: absolute;
+    top: calc(50% - 80px);
+    left: calc(50% - 62.5px);
+    z-index: 9;
+    .no-data-txt{
+        font-family: PingFangSC-Regular;
+        color: #5D6573;
+        text-align: center;
+        font-size: 14px;
+    }
+    .remind-btn{
+        width: 88px;
+        height: 36px;
+        background: #3288FA;
+        border-radius: 6px;
+        color: #FFFFFF;
+        text-align: center;
+        line-height: 36px;
+        font-family: PingFangSC-Regular;
+        font-size: 14px;
+        margin-left: 36px;
+        margin-top: 16px;
+        cursor: pointer;
+    }
+}

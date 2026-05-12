@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="16px" height="16px" viewBox="0 0 16 16" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>ic_base_map</title>
+    <g id="ic_base_map" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <rect id="矩形" fill="#000000" fill-rule="nonzero" opacity="0" x="0" y="0" width="16" height="16"></rect>
+        <path d="M2.5,0 L10.5,0 L14.5,4 L14.5,15 C14.5,15.5522969 14.0522969,16 13.5,16 L2.5,16 C1.94770312,16 1.5,15.5522969 1.5,15 L1.5,1 C1.5,0.447703125 1.94770312,0 2.5,0 Z" id="路径" fill="#FF8D26"></path>
+        <path d="M10.5,0 L14.5,4 L11.5,4 C10.9477031,4 10.5,3.55229688 10.5,3 L10.5,0 Z" id="路径" fill="#FBDE99" fill-rule="nonzero"></path>
+        <polygon id="路径-2" fill="#FFFFFF" points="3.76578299 11.7973984 5.45967827 9.59636542 6.36254282 10.5117787 8.62964925 6.95829849 11.8718509 11.7973984"></polygon>
+        <circle id="椭圆形" fill="#FFFFFF" cx="5.53029517" cy="7.40401153" r="1.07242499"></circle>
+    </g>
+</svg>

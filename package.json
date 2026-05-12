@@ -1,0 +1,13 @@
+{
+  "name": "map-editor-standalone",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone wrapper for the Apollo map editor frontend and lightweight backend.",
+  "scripts": {
+    "install:all": "npm --prefix backend install && npm --prefix frontend install",
+    "dev:backend": "npm --prefix backend start",
+    "dev:frontend": "npm --prefix frontend start",
+    "build:frontend": "npm --prefix frontend run build",
+    "start": "npm --prefix backend start"
+  }
+}
