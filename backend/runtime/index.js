@@ -4,6 +4,7 @@ const path = require('path');
 const readline = require('readline');
 const { pipeline } = require('stream/promises');
 const unzipper = require('unzipper');
+const { PNG } = require('pngjs');
 const { runCommand } = require('./process');
 
 const DEFAULT_POINT_CLOUD_RENDER_POINTS = 1000000;
@@ -13,6 +14,8 @@ const configuredPointCloudRenderPoints = Number(
 const MAX_POINT_CLOUD_RENDER_POINTS = Number.isFinite(configuredPointCloudRenderPoints)
   ? Math.max(10000, configuredPointCloudRenderPoints)
   : DEFAULT_POINT_CLOUD_RENDER_POINTS;
+const POINT_CLOUD_TILE_SIZE = 1024;
+const POINT_CLOUD_TILE_LEVELS = [0, 1, 2, 3, 4];
 
 async function pathExists(targetPath) {
   try {
@@ -782,6 +785,448 @@ async function parsePointCloudZip(filePath) {
   }
 }
 
+function getPointCloudTileResolution(level) {
+  return 0.5 / (2 ** level);
+}
+
+function normalizePointIntensity(intensity) {
+  if (!Number.isFinite(intensity)) {
+    return 72;
+  }
+  if (intensity <= 1) {
+    return Math.max(32, Math.min(255, Math.round(intensity * 255)));
+  }
+  if (intensity <= 255) {
+    return Math.max(32, Math.round(intensity));
+  }
+  return Math.max(32, Math.min(255, Math.round(intensity / 256)));
+}
+
+function createRasterTileAccumulator() {
+  const finestLevel = Math.max(...POINT_CLOUD_TILE_LEVELS);
+  const finestResolution = getPointCloudTileResolution(finestLevel);
+  const tilesByLevel = new Map(POINT_CLOUD_TILE_LEVELS.map((level) => [level, new Map()]));
+  const result = {
+    totalPointCount: 0,
+    sourceFiles: [],
+    imageFileCount: 0,
+    bounds: {
+      minX: Infinity,
+      minY: Infinity,
+      minZ: Infinity,
+      maxX: -Infinity,
+      maxY: -Infinity,
+      maxZ: -Infinity,
+    },
+  };
+
+  const tileKey = (tileX, tileY) => `${tileX},${tileY}`;
+  const getTile = (level, tileX, tileY) => {
+    const levelTiles = tilesByLevel.get(level);
+    const key = tileKey(tileX, tileY);
+    let tile = levelTiles.get(key);
+    if (!tile) {
+      tile = {
+        x: tileX,
+        y: tileY,
+        alpha: new Uint8Array(POINT_CLOUD_TILE_SIZE * POINT_CLOUD_TILE_SIZE),
+      };
+      levelTiles.set(key, tile);
+    }
+    return tile;
+  };
+
+  const addAlpha = (tile, pixelX, pixelY, alpha) => {
+    const index = pixelY * POINT_CLOUD_TILE_SIZE + pixelX;
+    const current = tile.alpha[index];
+    tile.alpha[index] = Math.max(current, alpha, Math.min(255, current + 24));
+  };
+
+  const addPoint = (x, y, z = 0, intensity = null) => {
+    if (![x, y, z].every(Number.isFinite)) {
+      return;
+    }
+    result.totalPointCount += 1;
+    result.bounds.minX = Math.min(result.bounds.minX, x);
+    result.bounds.minY = Math.min(result.bounds.minY, y);
+    result.bounds.minZ = Math.min(result.bounds.minZ, z);
+    result.bounds.maxX = Math.max(result.bounds.maxX, x);
+    result.bounds.maxY = Math.max(result.bounds.maxY, y);
+    result.bounds.maxZ = Math.max(result.bounds.maxZ, z);
+
+    const globalPixelX = Math.floor(x / finestResolution);
+    const globalPixelY = Math.floor(y / finestResolution);
+    const tileX = Math.floor(globalPixelX / POINT_CLOUD_TILE_SIZE);
+    const tileY = Math.floor(globalPixelY / POINT_CLOUD_TILE_SIZE);
+    const pixelX = globalPixelX - tileX * POINT_CLOUD_TILE_SIZE;
+    const localWorldPixelY = globalPixelY - tileY * POINT_CLOUD_TILE_SIZE;
+    const pixelY = POINT_CLOUD_TILE_SIZE - 1 - localWorldPixelY;
+    addAlpha(getTile(finestLevel, tileX, tileY), pixelX, pixelY, normalizePointIntensity(intensity));
+  };
+
+  const deriveLowerLevel = (sourceLevel, targetLevel) => {
+    const sourceTiles = tilesByLevel.get(sourceLevel);
+    for (const sourceTile of sourceTiles.values()) {
+      const sourceAlpha = sourceTile.alpha;
+      for (let pixelY = 0; pixelY < POINT_CLOUD_TILE_SIZE; pixelY += 1) {
+        const rowOffset = pixelY * POINT_CLOUD_TILE_SIZE;
+        const localWorldPixelY = POINT_CLOUD_TILE_SIZE - 1 - pixelY;
+        const sourceGlobalPixelY = sourceTile.y * POINT_CLOUD_TILE_SIZE + localWorldPixelY;
+        const targetGlobalPixelY = Math.floor(sourceGlobalPixelY / 2);
+        const targetTileY = Math.floor(targetGlobalPixelY / POINT_CLOUD_TILE_SIZE);
+        const targetLocalWorldPixelY = targetGlobalPixelY - targetTileY * POINT_CLOUD_TILE_SIZE;
+        const targetPixelY = POINT_CLOUD_TILE_SIZE - 1 - targetLocalWorldPixelY;
+        for (let pixelX = 0; pixelX < POINT_CLOUD_TILE_SIZE; pixelX += 1) {
+          const alpha = sourceAlpha[rowOffset + pixelX];
+          if (alpha === 0) {
+            continue;
+          }
+          const sourceGlobalPixelX = sourceTile.x * POINT_CLOUD_TILE_SIZE + pixelX;
+          const targetGlobalPixelX = Math.floor(sourceGlobalPixelX / 2);
+          const targetTileX = Math.floor(targetGlobalPixelX / POINT_CLOUD_TILE_SIZE);
+          const targetPixelX = targetGlobalPixelX - targetTileX * POINT_CLOUD_TILE_SIZE;
+          const targetTile = getTile(targetLevel, targetTileX, targetTileY);
+          const targetIndex = targetPixelY * POINT_CLOUD_TILE_SIZE + targetPixelX;
+          targetTile.alpha[targetIndex] = Math.max(targetTile.alpha[targetIndex], alpha);
+        }
+      }
+    }
+  };
+
+  const derivePyramid = () => {
+    for (let level = finestLevel - 1; level >= 0; level -= 1) {
+      deriveLowerLevel(level + 1, level);
+    }
+  };
+
+  const writePngTile = async (filePath, alpha) => {
+    const png = new PNG({
+      width: POINT_CLOUD_TILE_SIZE,
+      height: POINT_CLOUD_TILE_SIZE,
+      colorType: 6,
+    });
+    for (let index = 0, offset = 0; index < alpha.length; index += 1, offset += 4) {
+      const value = alpha[index];
+      png.data[offset] = value;
+      png.data[offset + 1] = value;
+      png.data[offset + 2] = value;
+      png.data[offset + 3] = 255;
+    }
+    await fsp.writeFile(filePath, PNG.sync.write(png));
+  };
+
+  const writeTiles = async (mapImagesDir) => {
+    if (result.totalPointCount === 0) {
+      throw new Error('点云文件没有解析到有效 x/y/z 点');
+    }
+    derivePyramid();
+    const center = {
+      x: roundPointValue((result.bounds.minX + result.bounds.maxX) / 2),
+      y: roundPointValue((result.bounds.minY + result.bounds.maxY) / 2),
+      z: roundPointValue((result.bounds.minZ + result.bounds.maxZ) / 2),
+    };
+    const payload = {
+      version: 1,
+      sourceType: 'point_cloud_raster',
+      tileSize: POINT_CLOUD_TILE_SIZE,
+      pointCount: result.totalPointCount,
+      sourceFiles: result.sourceFiles,
+      imageFileCount: result.imageFileCount,
+      center,
+      bounds: result.bounds,
+      tiles: {},
+    };
+
+    await fsp.mkdir(mapImagesDir, { recursive: true });
+    for (const level of POINT_CLOUD_TILE_LEVELS) {
+      const levelTiles = Array.from(tilesByLevel.get(level).values()).sort((a, b) => a.y - b.y || a.x - b.x);
+      payload.tiles[level] = levelTiles.map((tile) => ({
+        offset_x: String(tile.x),
+        offset_y: String(tile.y),
+      }));
+      for (const tile of levelTiles) {
+        const rowDir = path.join(mapImagesDir, String(level), String(tile.y));
+        await fsp.mkdir(rowDir, { recursive: true });
+        await writePngTile(path.join(rowDir, `${tile.x}.png`), tile.alpha);
+      }
+    }
+    await fsp.writeFile(path.join(mapImagesDir, 'tiles.json'), JSON.stringify(payload), 'utf8');
+    return {
+      totalPointCount: result.totalPointCount,
+      bounds: result.bounds,
+      center,
+      sourceFiles: result.sourceFiles,
+      imageFileCount: result.imageFileCount,
+      tileCount: POINT_CLOUD_TILE_LEVELS.reduce(
+        (count, level) => count + tilesByLevel.get(level).size,
+        0
+      ),
+    };
+  };
+
+  const addSourceFile = (fileName) => {
+    result.sourceFiles.push(fileName);
+  };
+
+  const addImageFiles = (count) => {
+    result.imageFileCount += count;
+  };
+
+  return { addPoint, addSourceFile, addImageFiles, writeTiles };
+}
+
+async function scanTextPointCloud(filePath, onPoint) {
+  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of lines) {
+    const point = parseNumericPointLine(line);
+    if (point) {
+      onPoint(point[0], point[1], point[2], point[3]);
+    }
+  }
+}
+
+async function scanPcdPointCloud(filePath, onPoint) {
+  const buffer = await fsp.readFile(filePath);
+  const { header, dataOffset } = parsePcdHeader(buffer);
+  const fields = header.FIELDS || [];
+  const sizes = (header.SIZE || []).map((value) => Number(value));
+  const types = header.TYPE || [];
+  const counts = fields.map((_, index) => Number((header.COUNT || [])[index] || 1));
+  const dataType = String((header.DATA || [])[0] || '').toLowerCase();
+  const xIndex = fields.indexOf('x');
+  const yIndex = fields.indexOf('y');
+  const zIndex = fields.indexOf('z');
+  const intensityIndex = fields.indexOf('intensity');
+  if (xIndex < 0 || yIndex < 0) {
+    throw new Error('PCD 文件必须包含 x/y 字段');
+  }
+
+  if (dataType === 'ascii') {
+    const body = buffer.slice(dataOffset).toString('utf8');
+    body.split(/\r?\n/).forEach((line) => {
+      const values = line.trim().split(/\s+/).map((value) => Number(value));
+      if (values.length <= Math.max(xIndex, yIndex) || values.some((value) => Number.isNaN(value))) {
+        return;
+      }
+      onPoint(
+        values[xIndex],
+        values[yIndex],
+        zIndex >= 0 ? values[zIndex] : 0,
+        intensityIndex >= 0 ? values[intensityIndex] : null
+      );
+    });
+    return;
+  }
+
+  let pointStep = 0;
+  const fieldOffsets = fields.map((_, index) => {
+    const current = pointStep;
+    pointStep += (sizes[index] || 4) * (counts[index] || 1);
+    return current;
+  });
+  const pointCount = Number((header.POINTS || [])[0]) || Math.floor((buffer.length - dataOffset) / pointStep);
+
+  if (dataType === 'binary_compressed') {
+    const compressedSize = buffer.readUInt32LE(dataOffset);
+    const uncompressedSize = buffer.readUInt32LE(dataOffset + 4);
+    const compressed = buffer.slice(dataOffset + 8, dataOffset + 8 + compressedSize);
+    const dataBuffer = decompressLzf(compressed, uncompressedSize);
+    const fieldColumnOffsets = [];
+    let columnOffset = 0;
+    fields.forEach((_, index) => {
+      fieldColumnOffsets[index] = columnOffset;
+      columnOffset += (sizes[index] || 4) * (counts[index] || 1) * pointCount;
+    });
+    for (let index = 0; index < pointCount; index += 1) {
+      const readField = (fieldIndex) =>
+        readPcdBinaryValue(
+          dataBuffer,
+          fieldColumnOffsets[fieldIndex] + index * (sizes[fieldIndex] || 4),
+          types[fieldIndex] || 'F',
+          sizes[fieldIndex] || 4
+        );
+      onPoint(
+        readField(xIndex),
+        readField(yIndex),
+        zIndex >= 0 ? readField(zIndex) : 0,
+        intensityIndex >= 0 ? readField(intensityIndex) : null
+      );
+    }
+    return;
+  }
+
+  if (dataType !== 'binary') {
+    throw new Error(`暂不支持 PCD DATA ${dataType || 'unknown'}，请使用 ascii、binary 或 binary_compressed PCD`);
+  }
+
+  for (let index = 0; index < pointCount; index += 1) {
+    const base = dataOffset + index * pointStep;
+    if (base + pointStep > buffer.length) {
+      break;
+    }
+    const readField = (fieldIndex) =>
+      readPcdBinaryValue(buffer, base + fieldOffsets[fieldIndex], types[fieldIndex] || 'F', sizes[fieldIndex] || 4);
+    onPoint(
+      readField(xIndex),
+      readField(yIndex),
+      zIndex >= 0 ? readField(zIndex) : 0,
+      intensityIndex >= 0 ? readField(intensityIndex) : null
+    );
+  }
+}
+
+async function scanPlyPointCloud(filePath, onPoint) {
+  const content = await fsp.readFile(filePath, 'utf8');
+  const headerEnd = content.indexOf('end_header');
+  if (headerEnd < 0) {
+    throw new Error('PLY 文件缺少 end_header');
+  }
+  const header = content.slice(0, headerEnd).split(/\r?\n/);
+  if (!header.some((line) => /^format\s+ascii\s+/i.test(line.trim()))) {
+    throw new Error('暂只支持 ASCII PLY 点云');
+  }
+  const properties = [];
+  for (const line of header) {
+    const match = line.trim().match(/^property\s+\S+\s+(\S+)$/i);
+    if (match) {
+      properties.push(match[1]);
+    }
+  }
+  const xIndex = properties.indexOf('x');
+  const yIndex = properties.indexOf('y');
+  const zIndex = properties.indexOf('z');
+  if (xIndex < 0 || yIndex < 0) {
+    throw new Error('PLY 文件必须包含 x/y 字段');
+  }
+  const body = content.slice(headerEnd + 'end_header'.length);
+  body.split(/\r?\n/).forEach((line) => {
+    const values = line.trim().split(/\s+/).map((value) => Number(value));
+    if (values.length <= Math.max(xIndex, yIndex) || values.some((value) => Number.isNaN(value))) {
+      return;
+    }
+    onPoint(values[xIndex], values[yIndex], zIndex >= 0 ? values[zIndex] : 0, null);
+  });
+}
+
+async function scanLasPointCloud(filePath, onPoint) {
+  const handle = await fsp.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    if (stat.size < 227) {
+      throw new Error('LAS 文件头不完整');
+    }
+    const headerBuffer = Buffer.alloc(Math.min(375, stat.size));
+    await handle.read(headerBuffer, 0, headerBuffer.length, 0);
+    if (headerBuffer.slice(0, 4).toString('ascii') !== 'LASF') {
+      throw new Error('LAS 文件签名无效');
+    }
+    const offsetToPointData = headerBuffer.readUInt32LE(96);
+    const pointFormat = headerBuffer.readUInt8(104);
+    const pointRecordLength = headerBuffer.readUInt16LE(105);
+    if (pointFormat > 10 || pointRecordLength < 12) {
+      throw new Error(`暂不支持 LAS 点格式 ${pointFormat}`);
+    }
+    const legacyPointCount = headerBuffer.readUInt32LE(107);
+    let pointCount = legacyPointCount;
+    if (pointCount === 0 && headerBuffer.length >= 255) {
+      pointCount = Number(headerBuffer.readBigUInt64LE(247));
+    }
+    if (!pointCount || offsetToPointData >= stat.size) {
+      pointCount = Math.floor((stat.size - offsetToPointData) / pointRecordLength);
+    }
+    const scaleX = headerBuffer.readDoubleLE(131);
+    const scaleY = headerBuffer.readDoubleLE(139);
+    const scaleZ = headerBuffer.readDoubleLE(147);
+    const offsetX = headerBuffer.readDoubleLE(155);
+    const offsetY = headerBuffer.readDoubleLE(163);
+    const offsetZ = headerBuffer.readDoubleLE(171);
+    const maxRecordsPerRead = Math.max(1, Math.floor((4 * 1024 * 1024) / pointRecordLength));
+    const chunk = Buffer.alloc(maxRecordsPerRead * pointRecordLength);
+    let readPointCount = 0;
+    while (readPointCount < pointCount) {
+      const remaining = pointCount - readPointCount;
+      const recordsToRead = Math.min(maxRecordsPerRead, remaining);
+      const bytesToRead = recordsToRead * pointRecordLength;
+      const { bytesRead } = await handle.read(
+        chunk,
+        0,
+        bytesToRead,
+        offsetToPointData + readPointCount * pointRecordLength
+      );
+      if (bytesRead <= 0) {
+        break;
+      }
+      const actualRecords = Math.floor(bytesRead / pointRecordLength);
+      for (let index = 0; index < actualRecords; index += 1) {
+        const base = index * pointRecordLength;
+        const x = chunk.readInt32LE(base) * scaleX + offsetX;
+        const y = chunk.readInt32LE(base + 4) * scaleY + offsetY;
+        const z = chunk.readInt32LE(base + 8) * scaleZ + offsetZ;
+        onPoint(x, y, z, null);
+      }
+      readPointCount += actualRecords;
+      if (actualRecords < recordsToRead) {
+        break;
+      }
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function scanPointCloudZip(filePath, onPoint) {
+  const archive = await unzipper.Open.file(filePath);
+  const entries = archive.files.filter((entry) => entry.type === 'File');
+  const cloudEntries = entries.filter((entry) => isSupportedPointCloudName(entry.path));
+  const imageEntries = entries.filter((entry) => isImageName(entry.path));
+  if (cloudEntries.length === 0) {
+    throw new Error('点云 ZIP 中没有找到支持的点云文件，请包含 .pcd/.ply/.xyz/.txt/.csv/.las');
+  }
+  const tempRoot = path.join(path.dirname(filePath), `.cloud-raster-zip-${Date.now()}`);
+  await fsp.rm(tempRoot, { recursive: true, force: true });
+  await fsp.mkdir(tempRoot, { recursive: true });
+  try {
+    for (let index = 0; index < cloudEntries.length; index += 1) {
+      const entry = cloudEntries[index];
+      const safeName = path.basename(entry.path) || `cloud-${index}${path.extname(entry.path)}`;
+      const tempPath = path.join(tempRoot, `${index}-${safeName}`);
+      await pipeline(entry.stream(), fs.createWriteStream(tempPath));
+      await scanPointCloudFile(tempPath, safeName, onPoint);
+    }
+    return {
+      sourceFiles: cloudEntries.map((entry) => entry.path),
+      imageFileCount: imageEntries.length,
+    };
+  } finally {
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function scanPointCloudFile(filePath, originalName = '', onPoint) {
+  const ext = path.extname(originalName || filePath).toLowerCase();
+  if (ext === '.zip') {
+    return scanPointCloudZip(filePath, onPoint);
+  }
+  if (ext === '.pcd') {
+    await scanPcdPointCloud(filePath, onPoint);
+  } else if (ext === '.ply') {
+    await scanPlyPointCloud(filePath, onPoint);
+  } else if (ext === '.las') {
+    await scanLasPointCloud(filePath, onPoint);
+  } else if (ext === '.laz') {
+    throw new Error('暂不支持压缩 LAZ，请先转换为 LAS 或 PCD 后导入');
+  } else if (['.xyz', '.txt', '.csv'].includes(ext)) {
+    await scanTextPointCloud(filePath, onPoint);
+  } else {
+    throw new Error('点云底图暂支持 .pcd、.ply、.xyz、.txt、.csv、.las，或包含这些文件的 .zip');
+  }
+  return {
+    sourceFiles: [originalName || path.basename(filePath)],
+    imageFileCount: 0,
+  };
+}
+
 async function parsePointCloud(filePath, originalName = '') {
   const ext = path.extname(originalName || filePath).toLowerCase();
   if (ext === '.zip') {
@@ -806,52 +1251,16 @@ async function parsePointCloud(filePath, originalName = '') {
 }
 
 async function importPointCloudBaseMap(config, params) {
-  const mapName = validateMapName(params.mapName);
   const cloudPath = params.cloudPath;
   const originalName = params.originalName || path.basename(cloudPath || '');
-  const overwrite = params.overwrite === true;
   if (!cloudPath || !(await pathExists(cloudPath))) {
     throw new Error('uploaded point cloud file not found');
   }
-
-  const parsed = await parsePointCloud(cloudPath, originalName);
-  const targetDir = path.join(config.baseMapRoot, mapName);
-  const stagingDir = path.join(config.baseMapRoot, `.import-${mapName}-${Date.now()}`);
-  if ((await pathExists(targetDir)) && !overwrite) {
-    throw new Error(`base map already exists: ${mapName}`);
-  }
-
-  await fsp.rm(stagingDir, { recursive: true, force: true });
-  await fsp.mkdir(path.join(stagingDir, 'map_images'), { recursive: true });
-  try {
-    const payload = {
-      type: 'point_cloud',
-      version: 1,
-      sourceFile: originalName,
-      sourceFiles: parsed.sourceFiles || [originalName],
-      imageFileCount: parsed.imageFileCount || 0,
-      pointCount: parsed.totalPointCount,
-      renderedPointCount: parsed.points.length,
-      center: parsed.center,
-      bounds: parsed.bounds,
-      points: parsed.points,
-    };
-    await fsp.writeFile(path.join(stagingDir, 'map_images', 'tiles.json'), JSON.stringify(payload), 'utf8');
-    await fsp.copyFile(cloudPath, path.join(stagingDir, originalName || 'source.pointcloud'));
-    await fsp.rm(targetDir, { recursive: true, force: true });
-    await fsp.rename(stagingDir, targetDir);
-    return {
-      mapName,
-      path: targetDir,
-      pointCount: parsed.totalPointCount,
-      renderedPointCount: parsed.points.length,
-      bounds: parsed.bounds,
-      sizeBytes: await getDirectorySize(targetDir),
-    };
-  } catch (error) {
-    await fsp.rm(stagingDir, { recursive: true, force: true });
-    throw error;
-  }
+  return importPointCloudFilesBaseMap(config, {
+    mapName: params.mapName,
+    overwrite: params.overwrite === true,
+    files: [{ path: cloudPath, originalName }],
+  });
 }
 
 async function importPointCloudFilesBaseMap(config, params) {
@@ -874,37 +1283,19 @@ async function importPointCloudFilesBaseMap(config, params) {
     throw new Error(`base map already exists: ${mapName}`);
   }
 
-  const accumulator = createPointCloudAccumulator();
-  const sourceFiles = [];
-  let imageFileCount = imageFiles.length;
-  for (const file of cloudFiles) {
-    const originalName = file.originalName || file.originalname || path.basename(file.path);
-    const parsed = await parsePointCloud(file.path, originalName);
-    accumulator.mergePointCloud(parsed);
-    sourceFiles.push(...(parsed.sourceFiles || [originalName]));
-    imageFileCount += parsed.imageFileCount || 0;
-  }
-  const parsed = accumulator.finalize();
-  parsed.sourceFiles = sourceFiles;
-  parsed.imageFileCount = imageFileCount;
-
   await fsp.rm(stagingDir, { recursive: true, force: true });
   await fsp.mkdir(path.join(stagingDir, 'map_images'), { recursive: true });
   await fsp.mkdir(path.join(stagingDir, 'sources'), { recursive: true });
   try {
-    const payload = {
-      type: 'point_cloud',
-      version: 1,
-      sourceFile: sourceFiles[0] || mapName,
-      sourceFiles: parsed.sourceFiles || sourceFiles,
-      imageFileCount: parsed.imageFileCount || 0,
-      pointCount: parsed.totalPointCount,
-      renderedPointCount: parsed.points.length,
-      center: parsed.center,
-      bounds: parsed.bounds,
-      points: parsed.points,
-    };
-    await fsp.writeFile(path.join(stagingDir, 'map_images', 'tiles.json'), JSON.stringify(payload), 'utf8');
+    const raster = createRasterTileAccumulator();
+    raster.addImageFiles(imageFiles.length);
+    for (const file of cloudFiles) {
+      const originalName = file.originalName || file.originalname || path.basename(file.path);
+      const parsed = await scanPointCloudFile(file.path, originalName, raster.addPoint);
+      (parsed.sourceFiles || [originalName]).forEach((sourceFile) => raster.addSourceFile(sourceFile));
+      raster.addImageFiles(parsed.imageFileCount || 0);
+    }
+    const parsed = await raster.writeTiles(path.join(stagingDir, 'map_images'));
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index];
       const originalName = file.originalName || file.originalname || `source-${index}`;
@@ -917,7 +1308,7 @@ async function importPointCloudFilesBaseMap(config, params) {
       mapName,
       path: targetDir,
       pointCount: parsed.totalPointCount,
-      renderedPointCount: parsed.points.length,
+      tileCount: parsed.tileCount,
       bounds: parsed.bounds,
       sizeBytes: await getDirectorySize(targetDir),
     };

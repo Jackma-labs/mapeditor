@@ -183,8 +183,10 @@ mapName=<name>
 overwrite=false
 ```
 
-The server samples large point clouds for browser rendering and writes a
-`point_cloud` base-map descriptor under `data/base_map/<name>/map_images/`.
+The server rasterizes all parsed points into an Apollo-style `map_images`
+tile pyramid under `data/base_map/<name>/map_images/`. The finest level uses
+the editor's native `0.03125m/px` resolution, so full point-cloud detail is
+preserved in image tiles instead of being downsampled into one browser JSON.
 The upload can be one supported point-cloud file, one zip containing multiple
 supported point-cloud files, or several files selected together in the browser.
 Image files are recorded but not georeferenced or rendered yet. It is then
