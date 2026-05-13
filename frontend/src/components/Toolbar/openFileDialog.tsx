@@ -121,6 +121,7 @@ const formatPackageImportSummary = (data: any, mapName: string) => {
         `估算点数: ${summary.pointCount || 0}`,
         '',
         '生成过程会读取预检包里的原始 ZIP，不需要再次上传。',
+        '如果同名底图已存在，会覆盖重建。',
     ].join('\n');
 };
 
@@ -300,7 +301,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                         const importResponse = await FileService.importDataPackageBaseMap(
                             latestPackage.packageId,
                             defaultMapName,
-                            false,
+                            true,
                         );
                         if (importResponse?.code !== 0) {
                             Modal.error({
