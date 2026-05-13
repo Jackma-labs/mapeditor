@@ -6,7 +6,13 @@ const { pipeline } = require('stream/promises');
 const unzipper = require('unzipper');
 const { runCommand } = require('./process');
 
-const MAX_POINT_CLOUD_RENDER_POINTS = 200000;
+const DEFAULT_POINT_CLOUD_RENDER_POINTS = 1000000;
+const configuredPointCloudRenderPoints = Number(
+  process.env.POINT_CLOUD_RENDER_POINTS || DEFAULT_POINT_CLOUD_RENDER_POINTS
+);
+const MAX_POINT_CLOUD_RENDER_POINTS = Number.isFinite(configuredPointCloudRenderPoints)
+  ? Math.max(10000, configuredPointCloudRenderPoints)
+  : DEFAULT_POINT_CLOUD_RENDER_POINTS;
 
 async function pathExists(targetPath) {
   try {
@@ -231,6 +237,12 @@ async function importBaseMapZip(config, params) {
   const normalizedPaths = entries.map((entry) => entry.path.replace(/\\/g, '/'));
   const tilePath = findArchivePath(normalizedPaths, 'map_images/tiles.json');
   if (!tilePath) {
+    const looksLikePointCloudPackage = normalizedPaths.some((entryPath) =>
+      isSupportedPointCloudName(entryPath) || path.extname(entryPath).toLowerCase() === '.laz'
+    );
+    if (looksLikePointCloudPackage) {
+      throw new Error('这是点云数据包，请使用“导入点云底图”；瓦片底图 ZIP 必须包含 map_images/tiles.json');
+    }
     const looksLikeApolloMapPackage =
       findArchivePath(normalizedPaths, 'editor_map.json') ||
       findArchivePath(normalizedPaths, 'base_map.bin') ||

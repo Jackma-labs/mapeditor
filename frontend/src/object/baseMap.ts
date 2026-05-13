@@ -237,10 +237,11 @@ export default class BaseMap {
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         const material = new THREE.PointsMaterial({
-            size: 0.2,
+            size: 1.2,
+            sizeAttenuation: false,
             vertexColors: true,
             transparent: true,
-            opacity: 0.85,
+            opacity: 0.88,
             depthWrite: false,
         });
         const pointCloud = new THREE.Points(geometry, material);
