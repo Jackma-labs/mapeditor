@@ -1447,7 +1447,7 @@ function addFilenameCoordinateCandidate(candidates, candidate) {
 }
 
 function parseImageFilenameCoordinates(sourceName) {
-  const filename = path.basename(sourceName || '');
+  const filename = String(sourceName || '').split(/[\\/]/).pop() || '';
   const stem = filename.replace(/\.[^.]+$/i, '');
   const candidates = [];
   const explicitPattern = /(^|[^0-9.-])(-?\d{1,3}\.\d{4,})[,_\s-]+(-?\d{1,3}\.\d{4,})(?=$|[^0-9.])/g;
