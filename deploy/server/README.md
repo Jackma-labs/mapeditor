@@ -26,12 +26,8 @@ the Apollo map tools natively once their source package is available.
 Run this on the server:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Jackma-labs/mapeditor/main/deploy/server/bootstrap.sh | bash
-```
-
-Or from a checked-out repository:
-
-```bash
+git clone git@github.com:Jackma-labs/mapeditor.git ~/mapeditor
+cd ~/mapeditor
 bash deploy/server/bootstrap.sh
 ```
 

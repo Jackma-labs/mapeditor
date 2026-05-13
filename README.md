@@ -102,7 +102,9 @@ For the Dell server:
 
 ```bash
 ssh dell@192.168.110.2
-curl -fsSL https://raw.githubusercontent.com/Jackma-labs/mapeditor/main/deploy/server/bootstrap.sh | bash
+git clone git@github.com:Jackma-labs/mapeditor.git ~/mapeditor
+cd ~/mapeditor
+bash deploy/server/bootstrap.sh
 ```
 
 After it starts, open:

@@ -74,6 +74,18 @@ else
 fi
 
 log "health check"
-curl -fsS "http://127.0.0.1:$PORT/healthz"
-printf '\n'
+HEALTH_URL="http://127.0.0.1:$PORT/healthz"
+HEALTH_OK=0
+for _ in $(seq 1 30); do
+  if HEALTH_RESPONSE="$(curl -fsS "$HEALTH_URL" 2>/dev/null)"; then
+    printf '%s\n' "$HEALTH_RESPONSE"
+    HEALTH_OK=1
+    break
+  fi
+  sleep 1
+done
+if [ "$HEALTH_OK" -ne 1 ]; then
+  printf 'health check failed: %s\n' "$HEALTH_URL" >&2
+  exit 1
+fi
 log "ready at http://$(hostname -I | awk '{print $1}'):$PORT/"
