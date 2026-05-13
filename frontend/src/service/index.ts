@@ -159,6 +159,21 @@ class FileService {
         }));
     }
 
+    async importPointCloudBaseMap(file: File, mapName: string, overwrite: boolean = false) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('mapName', mapName);
+        formData.append('overwrite', overwrite ? 'true' : 'false');
+        const response = await fetch(`http://${baseHttpURL}/runtime/import-point-cloud-base-map`, {
+            method: 'POST',
+            body: formData,
+        });
+        return response.json().catch(() => ({
+            code: response.status,
+            message: response.statusText,
+        }));
+    }
+
     async importMapPackageZip(file: File, mapName: string, overwrite: boolean = false) {
         const formData = new FormData();
         formData.append('file', file);

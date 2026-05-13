@@ -434,6 +434,34 @@ app.post('/runtime/import-base-map', upload.single('file'), async (req, res) => 
   }
 });
 
+app.post('/runtime/import-point-cloud-base-map', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      throw new Error('file is required');
+    }
+    const result = await runtime.importPointCloudBaseMap(config, {
+      cloudPath: req.file.path,
+      originalName: req.file.originalname,
+      mapName: req.body.mapName,
+      overwrite: req.body.overwrite === 'true',
+    });
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15052,
+      message: error.message,
+    });
+  } finally {
+    if (req.file && req.file.path) {
+      fsp.unlink(req.file.path).catch(() => {});
+    }
+  }
+});
+
 app.post('/runtime/import-map-package', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {

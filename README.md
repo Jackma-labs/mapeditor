@@ -171,6 +171,21 @@ overwrite=false
 The zip may contain `map_images/tiles.json` at the root or under one top-level
 folder. After import, it is available in the "打开底图" dialog.
 
+Point-cloud base map import:
+
+```text
+POST /runtime/import-point-cloud-base-map
+Content-Type: multipart/form-data
+
+file=<point-cloud.pcd|ply|xyz|txt|csv>
+mapName=<name>
+overwrite=false
+```
+
+The server samples large point clouds for browser rendering and writes a
+`point_cloud` base-map descriptor under `data/base_map/<name>/map_images/`.
+It is then available from the "打开底图" dialog as a drawable base layer.
+
 Apollo map package import:
 
 ```text

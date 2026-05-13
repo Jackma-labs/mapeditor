@@ -22,7 +22,7 @@ export default class BaseMap {
 
     private control: CameraControl;
 
-    private meshs: { [id: string]: THREE.Mesh } = {};
+    private meshs: { [id: string]: THREE.Mesh | THREE.Points } = {};
 
     public scale: number = 4;
 
@@ -86,7 +86,7 @@ export default class BaseMap {
         return this.scene;
     }
 
-    public addMesh(mesh: THREE.Mesh, render: boolean = false) {
+    public addMesh(mesh: THREE.Mesh | THREE.Points, render: boolean = false) {
         this.scene.add(mesh);
 
         if (render) {
@@ -134,6 +134,10 @@ export default class BaseMap {
     public async renderMap(dir: string, json: any) {
         this.loading = true;
         this.deleteTile();
+        if (json.type === 'point_cloud') {
+            this.renderPointCloudMap(dir, json);
+            return;
+        }
         const tiles = json.tiles[this.scale];
         const { points: allPoints, imageBasemapCenter, hdBasemapCenter } = useManagerStore.getState().mapState;
         useManagerStore.getState().setMapState({
@@ -188,6 +192,80 @@ export default class BaseMap {
         }
         // 当切换标注地图的时候，不可以回退和重做了
         useManagerStore.getState().resetCommand();
+        this.loading = false;
+    }
+
+    private renderPointCloudMap(dir: string, json: any) {
+        const cloudPoints = Array.isArray(json.points) ? json.points : [];
+        if (cloudPoints.length === 0) {
+            this.loading = false;
+            return;
+        }
+        const center = json.center || { x: 0, y: 0, z: 0 };
+        const { points: allPoints, imageBasemapCenter, hdBasemapCenter } = useManagerStore.getState().mapState;
+        useManagerStore.getState().setMapState({
+            ...useManagerStore.getState().mapState,
+            baseMapDir: dir,
+            imageBasemapCenter: new THREE.Vector2(center.x, center.y),
+        });
+        const needOffset =
+            Object.keys(allPoints).length !== 0 &&
+            (dir !== this.dir ||
+                (hdBasemapCenter && imageBasemapCenter && !this.isSameVec(imageBasemapCenter, hdBasemapCenter)) ||
+                (!hdBasemapCenter && Object.keys(allPoints).length !== 0));
+        this.dir = dir;
+        this.tiles = {};
+
+        const positions = new Float32Array(cloudPoints.length * 3);
+        const colors = new Float32Array(cloudPoints.length * 3);
+        const bounds = json.bounds || { minZ: 0, maxZ: 0 };
+        const zRange = Math.max(0.0001, Number(bounds.maxZ || 0) - Number(bounds.minZ || 0));
+        cloudPoints.forEach((point: number[], index: number) => {
+            const x = Number(point[0]);
+            const y = Number(point[1]);
+            const z = Number(point[2] || 0);
+            positions[index * 3] = x - center.x;
+            positions[index * 3 + 1] = y - center.y;
+            positions[index * 3 + 2] = 0;
+            const heightWeight = Math.max(0, Math.min(1, (z - Number(bounds.minZ || 0)) / zRange));
+            colors[index * 3] = 0.45 + heightWeight * 0.45;
+            colors[index * 3 + 1] = 0.65 + heightWeight * 0.3;
+            colors[index * 3 + 2] = 0.75 + heightWeight * 0.25;
+        });
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        const material = new THREE.PointsMaterial({
+            size: 0.2,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.85,
+            depthWrite: false,
+        });
+        const pointCloud = new THREE.Points(geometry, material);
+        pointCloud.name = 'tile';
+        pointCloud.userData = {
+            id: 'point_cloud',
+            type: ThreeElementType.Tile,
+        };
+        pointCloud.renderOrder = 0;
+        this.meshs.point_cloud = pointCloud;
+        this.addMesh(pointCloud);
+
+        const { bounds: mapBounds } = json;
+        if (mapBounds) {
+            const width = Number(mapBounds.maxX) - Number(mapBounds.minX);
+            const height = Number(mapBounds.maxY) - Number(mapBounds.minY);
+            this.control.adapter(Math.max(width, height, 20));
+            this.control.cameraControls.moveTo(0, 0, 0, false);
+        }
+        this.position.copy(this.camera.position);
+        if (needOffset) {
+            this.allElementsToOffset();
+        }
+        useManagerStore.getState().resetCommand();
+        this.renderer();
         this.loading = false;
     }
 

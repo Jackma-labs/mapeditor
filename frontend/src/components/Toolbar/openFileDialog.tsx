@@ -22,6 +22,7 @@ interface MenuItemData {
     content: string;
     label: ReactNode;
 }
+type ImportMode = 'base-map-zip' | 'point-cloud' | 'map-package';
 
 // eslint-disable-next-line react/function-component-definition
 const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }) => {
@@ -35,6 +36,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
     const [listLoading, setListLoading] = useState(false);
     const [importLoading, setImportLoading] = useState(false);
     const importInputRef = useRef<HTMLInputElement>(null);
+    const importModeRef = useRef<ImportMode>('base-map-zip');
     const isBaseMapDialog = title === '打开底图';
     const isEditorMapDialog = title === '打开标注地图';
 
@@ -63,7 +65,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                         });
                         return;
                     }
-                    if (response.tiles) {
+                    if (response.tiles || response.type === 'point_cloud') {
                         PubSub.publish('renderMap', {
                             dir: item.content,
                             json: response,
@@ -156,7 +158,8 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         }
     };
 
-    const handleImportBaseMap = () => {
+    const handleImportFile = (mode: ImportMode) => {
+        importModeRef.current = mode;
         importInputRef.current?.click();
     };
 
@@ -168,15 +171,21 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         if (!file) {
             return;
         }
-        const defaultName = file.name.replace(/\.zip$/i, '');
+        const defaultName = file.name.replace(/\.[^.]+$/i, '');
         if (!defaultName) {
             return;
         }
         setImportLoading(true);
         try {
-            const response = isBaseMapDialog
-                ? await FileService.importBaseMapZip(file, defaultName.trim(), false)
-                : await FileService.importMapPackageZip(file, defaultName.trim(), false);
+            const mode = isEditorMapDialog ? 'map-package' : importModeRef.current;
+            let response;
+            if (mode === 'point-cloud') {
+                response = await FileService.importPointCloudBaseMap(file, defaultName.trim(), false);
+            } else if (mode === 'base-map-zip') {
+                response = await FileService.importBaseMapZip(file, defaultName.trim(), false);
+            } else {
+                response = await FileService.importMapPackageZip(file, defaultName.trim(), false);
+            }
             if (response?.code !== 0) {
                 Modal.error({
                     title: isBaseMapDialog ? '底图导入失败' : '地图包导入失败',
@@ -184,7 +193,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                 });
                 return;
             }
-            const importType = isBaseMapDialog ? '底图' : '地图包';
+            const importType = mode === 'map-package' ? '地图包' : '底图';
             const importedName = response.data?.mapName || defaultName;
             messageFunc({
                 type: 'success',
@@ -227,7 +236,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         }
         if (menuData.length === 0) {
             const emptyText = isBaseMapDialog
-                ? '还没有可用底图，请先导入底图 ZIP。'
+                ? '还没有可用底图，请先导入瓦片底图 ZIP 或点云底图。'
                 : '还没有可用标注地图，可导入 Apollo 地图包 ZIP。';
             return (
                 <div className="dialog-body-empty">
@@ -265,18 +274,42 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
             <p className="dialog-body-title">{titleAddress}</p>
             {(isBaseMapDialog || isEditorMapDialog) && (
                 <div className="base-map-import">
-                    <Button onClick={handleImportBaseMap} loading={importLoading} className="button-cancel">
-                        {isBaseMapDialog ? '导入底图 ZIP' : '导入 Apollo 地图包 ZIP'}
-                    </Button>
+                    {isBaseMapDialog && (
+                        <>
+                            <Button
+                                onClick={() => handleImportFile('base-map-zip')}
+                                loading={importLoading}
+                                className="button-cancel"
+                            >
+                                导入瓦片底图 ZIP
+                            </Button>
+                            <Button
+                                onClick={() => handleImportFile('point-cloud')}
+                                loading={importLoading}
+                                className="button-cancel"
+                            >
+                                导入点云底图
+                            </Button>
+                        </>
+                    )}
+                    {isEditorMapDialog && (
+                        <Button
+                            onClick={() => handleImportFile('map-package')}
+                            loading={importLoading}
+                            className="button-cancel"
+                        >
+                            导入 Apollo 地图包 ZIP
+                        </Button>
+                    )}
                     <span>
                         {isBaseMapDialog
-                            ? 'ZIP 文件名会作为底图名称，内容需包含 map_images/tiles.json'
+                            ? '点云支持 PCD/PLY/XYZ/TXT/CSV；瓦片 ZIP 需包含 map_images/tiles.json'
                             : 'ZIP 文件名会作为地图名称，内容需包含 editor_map.json'}
                     </span>
                     <input
                         ref={importInputRef}
                         type="file"
-                        accept=".zip,application/zip"
+                        accept=".zip,.pcd,.ply,.xyz,.txt,.csv,application/zip"
                         style={{ display: 'none' }}
                         onChange={handleImportFileChange}
                     />

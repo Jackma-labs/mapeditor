@@ -1,9 +1,12 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const readline = require('readline');
 const { pipeline } = require('stream/promises');
 const unzipper = require('unzipper');
 const { runCommand } = require('./process');
+
+const MAX_POINT_CLOUD_RENDER_POINTS = 200000;
 
 async function pathExists(targetPath) {
   try {
@@ -342,6 +345,291 @@ async function importMapPackageZip(config, params) {
   }
 }
 
+function roundPointValue(value) {
+  return Number(value.toFixed(4));
+}
+
+function createPointCloudAccumulator(maxPoints = MAX_POINT_CLOUD_RENDER_POINTS) {
+  const result = {
+    totalPointCount: 0,
+    points: [],
+    bounds: {
+      minX: Infinity,
+      minY: Infinity,
+      minZ: Infinity,
+      maxX: -Infinity,
+      maxY: -Infinity,
+      maxZ: -Infinity,
+    },
+  };
+
+  const addPoint = (x, y, z = 0, intensity = null) => {
+    if (![x, y, z].every(Number.isFinite)) {
+      return;
+    }
+    result.totalPointCount += 1;
+    result.bounds.minX = Math.min(result.bounds.minX, x);
+    result.bounds.minY = Math.min(result.bounds.minY, y);
+    result.bounds.minZ = Math.min(result.bounds.minZ, z);
+    result.bounds.maxX = Math.max(result.bounds.maxX, x);
+    result.bounds.maxY = Math.max(result.bounds.maxY, y);
+    result.bounds.maxZ = Math.max(result.bounds.maxZ, z);
+
+    const point = [roundPointValue(x), roundPointValue(y), roundPointValue(z)];
+    if (Number.isFinite(intensity)) {
+      point.push(roundPointValue(intensity));
+    }
+
+    if (result.points.length < maxPoints) {
+      result.points.push(point);
+      return;
+    }
+    const replaceIndex = Math.floor(Math.random() * result.totalPointCount);
+    if (replaceIndex < maxPoints) {
+      result.points[replaceIndex] = point;
+    }
+  };
+
+  const finalize = () => {
+    if (result.totalPointCount === 0) {
+      throw new Error('点云文件没有解析到有效 x/y/z 点');
+    }
+    const { bounds } = result;
+    return {
+      points: result.points,
+      totalPointCount: result.totalPointCount,
+      bounds,
+      center: {
+        x: roundPointValue((bounds.minX + bounds.maxX) / 2),
+        y: roundPointValue((bounds.minY + bounds.maxY) / 2),
+        z: roundPointValue((bounds.minZ + bounds.maxZ) / 2),
+      },
+    };
+  };
+
+  return { addPoint, finalize };
+}
+
+function parseNumericPointLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) {
+    return null;
+  }
+  const values = trimmed
+    .split(/[,\s]+/)
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  if (values.length < 2) {
+    return null;
+  }
+  return [values[0], values[1], values[2] || 0, values[3] ?? null];
+}
+
+async function parseTextPointCloud(filePath) {
+  const accumulator = createPointCloudAccumulator();
+  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of lines) {
+    const point = parseNumericPointLine(line);
+    if (!point) {
+      continue;
+    }
+    accumulator.addPoint(point[0], point[1], point[2], point[3]);
+  }
+  return accumulator.finalize();
+}
+
+function parsePcdHeader(buffer) {
+  const lines = [];
+  let offset = 0;
+  while (offset < buffer.length) {
+    const nextNewline = buffer.indexOf(0x0a, offset);
+    const end = nextNewline === -1 ? buffer.length : nextNewline;
+    const line = buffer.slice(offset, end).toString('ascii').replace(/\r$/, '');
+    lines.push(line);
+    offset = nextNewline === -1 ? buffer.length : nextNewline + 1;
+    if (/^DATA\s+/i.test(line.trim())) {
+      break;
+    }
+  }
+
+  const header = {};
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+    const [key, ...rest] = trimmed.split(/\s+/);
+    header[key.toUpperCase()] = rest;
+  }
+  return { header, dataOffset: offset };
+}
+
+function readPcdBinaryValue(buffer, offset, type, size) {
+  if (type === 'F' && size === 4) return buffer.readFloatLE(offset);
+  if (type === 'F' && size === 8) return buffer.readDoubleLE(offset);
+  if (type === 'I' && size === 1) return buffer.readInt8(offset);
+  if (type === 'I' && size === 2) return buffer.readInt16LE(offset);
+  if (type === 'I' && size === 4) return buffer.readInt32LE(offset);
+  if (type === 'U' && size === 1) return buffer.readUInt8(offset);
+  if (type === 'U' && size === 2) return buffer.readUInt16LE(offset);
+  if (type === 'U' && size === 4) return buffer.readUInt32LE(offset);
+  return NaN;
+}
+
+async function parsePcdPointCloud(filePath) {
+  const buffer = await fsp.readFile(filePath);
+  const { header, dataOffset } = parsePcdHeader(buffer);
+  const fields = header.FIELDS || [];
+  const sizes = (header.SIZE || []).map((value) => Number(value));
+  const types = header.TYPE || [];
+  const counts = fields.map((_, index) => Number((header.COUNT || [])[index] || 1));
+  const dataType = String((header.DATA || [])[0] || '').toLowerCase();
+  const xIndex = fields.indexOf('x');
+  const yIndex = fields.indexOf('y');
+  const zIndex = fields.indexOf('z');
+  const intensityIndex = fields.indexOf('intensity');
+  if (xIndex < 0 || yIndex < 0) {
+    throw new Error('PCD 文件必须包含 x/y 字段');
+  }
+
+  const accumulator = createPointCloudAccumulator();
+  if (dataType === 'ascii') {
+    const body = buffer.slice(dataOffset).toString('utf8');
+    body.split(/\r?\n/).forEach((line) => {
+      const values = line.trim().split(/\s+/).map((value) => Number(value));
+      if (values.length <= Math.max(xIndex, yIndex) || values.some((value) => Number.isNaN(value))) {
+        return;
+      }
+      accumulator.addPoint(values[xIndex], values[yIndex], zIndex >= 0 ? values[zIndex] : 0, intensityIndex >= 0 ? values[intensityIndex] : null);
+    });
+    return accumulator.finalize();
+  }
+
+  if (dataType !== 'binary') {
+    throw new Error(`暂不支持 PCD DATA ${dataType || 'unknown'}，请使用 ascii 或 binary PCD`);
+  }
+
+  let pointStep = 0;
+  const fieldOffsets = fields.map((_, index) => {
+    const current = pointStep;
+    pointStep += (sizes[index] || 4) * (counts[index] || 1);
+    return current;
+  });
+  const pointCount = Number((header.POINTS || [])[0]) || Math.floor((buffer.length - dataOffset) / pointStep);
+  for (let index = 0; index < pointCount; index += 1) {
+    const base = dataOffset + index * pointStep;
+    if (base + pointStep > buffer.length) {
+      break;
+    }
+    const readField = (fieldIndex) =>
+      readPcdBinaryValue(buffer, base + fieldOffsets[fieldIndex], types[fieldIndex] || 'F', sizes[fieldIndex] || 4);
+    accumulator.addPoint(
+      readField(xIndex),
+      readField(yIndex),
+      zIndex >= 0 ? readField(zIndex) : 0,
+      intensityIndex >= 0 ? readField(intensityIndex) : null,
+    );
+  }
+  return accumulator.finalize();
+}
+
+async function parsePlyPointCloud(filePath) {
+  const content = await fsp.readFile(filePath, 'utf8');
+  const headerEnd = content.indexOf('end_header');
+  if (headerEnd < 0) {
+    throw new Error('PLY 文件缺少 end_header');
+  }
+  const header = content.slice(0, headerEnd).split(/\r?\n/);
+  if (!header.some((line) => /^format\s+ascii\s+/i.test(line.trim()))) {
+    throw new Error('暂只支持 ASCII PLY 点云');
+  }
+  const properties = [];
+  for (const line of header) {
+    const match = line.trim().match(/^property\s+\S+\s+(\S+)$/i);
+    if (match) {
+      properties.push(match[1]);
+    }
+  }
+  const xIndex = properties.indexOf('x');
+  const yIndex = properties.indexOf('y');
+  const zIndex = properties.indexOf('z');
+  if (xIndex < 0 || yIndex < 0) {
+    throw new Error('PLY 文件必须包含 x/y 字段');
+  }
+  const body = content.slice(headerEnd + 'end_header'.length);
+  const accumulator = createPointCloudAccumulator();
+  body.split(/\r?\n/).forEach((line) => {
+    const values = line.trim().split(/\s+/).map((value) => Number(value));
+    if (values.length <= Math.max(xIndex, yIndex) || values.some((value) => Number.isNaN(value))) {
+      return;
+    }
+    accumulator.addPoint(values[xIndex], values[yIndex], zIndex >= 0 ? values[zIndex] : 0);
+  });
+  return accumulator.finalize();
+}
+
+async function parsePointCloud(filePath, originalName = '') {
+  const ext = path.extname(originalName || filePath).toLowerCase();
+  if (ext === '.pcd') {
+    return parsePcdPointCloud(filePath);
+  }
+  if (ext === '.ply') {
+    return parsePlyPointCloud(filePath);
+  }
+  if (['.xyz', '.txt', '.csv'].includes(ext)) {
+    return parseTextPointCloud(filePath);
+  }
+  throw new Error('点云底图暂支持 .pcd、.ply、.xyz、.txt、.csv');
+}
+
+async function importPointCloudBaseMap(config, params) {
+  const mapName = validateMapName(params.mapName);
+  const cloudPath = params.cloudPath;
+  const originalName = params.originalName || path.basename(cloudPath || '');
+  const overwrite = params.overwrite === true;
+  if (!cloudPath || !(await pathExists(cloudPath))) {
+    throw new Error('uploaded point cloud file not found');
+  }
+
+  const parsed = await parsePointCloud(cloudPath, originalName);
+  const targetDir = path.join(config.baseMapRoot, mapName);
+  const stagingDir = path.join(config.baseMapRoot, `.import-${mapName}-${Date.now()}`);
+  if ((await pathExists(targetDir)) && !overwrite) {
+    throw new Error(`base map already exists: ${mapName}`);
+  }
+
+  await fsp.rm(stagingDir, { recursive: true, force: true });
+  await fsp.mkdir(path.join(stagingDir, 'map_images'), { recursive: true });
+  try {
+    const payload = {
+      type: 'point_cloud',
+      version: 1,
+      sourceFile: originalName,
+      pointCount: parsed.totalPointCount,
+      renderedPointCount: parsed.points.length,
+      center: parsed.center,
+      bounds: parsed.bounds,
+      points: parsed.points,
+    };
+    await fsp.writeFile(path.join(stagingDir, 'map_images', 'tiles.json'), JSON.stringify(payload), 'utf8');
+    await fsp.copyFile(cloudPath, path.join(stagingDir, originalName || 'source.pointcloud'));
+    await fsp.rm(targetDir, { recursive: true, force: true });
+    await fsp.rename(stagingDir, targetDir);
+    return {
+      mapName,
+      path: targetDir,
+      pointCount: parsed.totalPointCount,
+      renderedPointCount: parsed.points.length,
+      bounds: parsed.bounds,
+      sizeBytes: await getDirectorySize(targetDir),
+    };
+  } catch (error) {
+    await fsp.rm(stagingDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 async function getRuntimeDoctor(config) {
   const status = await getStatus(config);
   const checks = [];
@@ -675,6 +963,7 @@ module.exports = {
   preflightEdgeDeploy,
   listReleasedMaps,
   importBaseMapZip,
+  importPointCloudBaseMap,
   importMapPackageZip,
   convertEditorMap,
   createBaseMap,
