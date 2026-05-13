@@ -559,14 +559,15 @@ async function parsePcdPointCloud(filePath) {
   const buffer = await fsp.readFile(filePath);
   const { header, dataOffset } = parsePcdHeader(buffer);
   const fields = header.FIELDS || [];
+  const normalizedFields = fields.map((field) => String(field).toLowerCase());
   const sizes = (header.SIZE || []).map((value) => Number(value));
   const types = header.TYPE || [];
   const counts = fields.map((_, index) => Number((header.COUNT || [])[index] || 1));
   const dataType = String((header.DATA || [])[0] || '').toLowerCase();
-  const xIndex = fields.indexOf('x');
-  const yIndex = fields.indexOf('y');
-  const zIndex = fields.indexOf('z');
-  const intensityIndex = fields.indexOf('intensity');
+  const xIndex = normalizedFields.indexOf('x');
+  const yIndex = normalizedFields.indexOf('y');
+  const zIndex = normalizedFields.indexOf('z');
+  const intensityIndex = normalizedFields.indexOf('intensity');
   if (xIndex < 0 || yIndex < 0) {
     throw new Error('PCD 文件必须包含 x/y 字段');
   }
@@ -1274,14 +1275,15 @@ async function scanPcdPointCloud(filePath, onPoint) {
   const buffer = await fsp.readFile(filePath);
   const { header, dataOffset } = parsePcdHeader(buffer);
   const fields = header.FIELDS || [];
+  const normalizedFields = fields.map((field) => String(field).toLowerCase());
   const sizes = (header.SIZE || []).map((value) => Number(value));
   const types = header.TYPE || [];
   const counts = fields.map((_, index) => Number((header.COUNT || [])[index] || 1));
   const dataType = String((header.DATA || [])[0] || '').toLowerCase();
-  const xIndex = fields.indexOf('x');
-  const yIndex = fields.indexOf('y');
-  const zIndex = fields.indexOf('z');
-  const intensityIndex = fields.indexOf('intensity');
+  const xIndex = normalizedFields.indexOf('x');
+  const yIndex = normalizedFields.indexOf('y');
+  const zIndex = normalizedFields.indexOf('z');
+  const intensityIndex = normalizedFields.indexOf('intensity');
   if (xIndex < 0 || yIndex < 0) {
     throw new Error('PCD 文件必须包含 x/y 字段');
   }
