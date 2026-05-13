@@ -1313,6 +1313,11 @@ async function readZipEntryPrefix(entry, maxBytes = 512 * 1024) {
   });
 }
 
+function getZipEntrySize(entry) {
+  const value = entry?.vars?.uncompressedSize ?? entry?.uncompressedSize ?? entry?.size ?? null;
+  return Number.isFinite(value) ? value : null;
+}
+
 function readAsciiNull(buffer) {
   const end = buffer.indexOf(0);
   const value = end >= 0 ? buffer.slice(0, end) : buffer;
@@ -1423,6 +1428,68 @@ function parsePcdHeaderBuffer(buffer, sourceName, sizeBytes = null) {
   };
 }
 
+function isChinaLatLon(lat, lon) {
+  return lat >= 3 && lat <= 55 && lon >= 70 && lon <= 140;
+}
+
+function addFilenameCoordinateCandidate(candidates, candidate) {
+  if (!Number.isFinite(candidate.lat) || !Number.isFinite(candidate.lon)) {
+    return;
+  }
+  if (!isChinaLatLon(candidate.lat, candidate.lon)) {
+    return;
+  }
+  const key = `${candidate.lat.toFixed(8)},${candidate.lon.toFixed(8)}`;
+  if (candidates.some((item) => `${item.lat.toFixed(8)},${item.lon.toFixed(8)}` === key)) {
+    return;
+  }
+  candidates.push(candidate);
+}
+
+function parseImageFilenameCoordinates(sourceName) {
+  const filename = path.basename(sourceName || '');
+  const stem = filename.replace(/\.[^.]+$/i, '');
+  const candidates = [];
+  const explicitPattern = /(^|[^0-9.-])(-?\d{1,3}\.\d{4,})[,_\s-]+(-?\d{1,3}\.\d{4,})(?=$|[^0-9.])/g;
+  let match;
+  while ((match = explicitPattern.exec(stem)) !== null && candidates.length < 4) {
+    const first = Number(match[2]);
+    const second = Number(match[3]);
+    addFilenameCoordinateCandidate(candidates, {
+      lat: first,
+      lon: second,
+      confidence: 'medium',
+      source: 'filename_decimal_pair',
+      raw: match[0].trim(),
+      message: '文件名中存在小数经纬度候选值；仍需结合相机姿态、标定和轨迹才能贴图。',
+    });
+    addFilenameCoordinateCandidate(candidates, {
+      lat: second,
+      lon: first,
+      confidence: 'medium',
+      source: 'filename_decimal_pair_swapped',
+      raw: match[0].trim(),
+      message: '文件名中存在小数经纬度候选值，且经纬顺序可能相反；需要采集规则确认。',
+    });
+  }
+
+  const compactMatch = stem.match(/^(\d{4})-(\d{6})-(\d{3})(?:[_-]|$)/);
+  if (compactMatch) {
+    const lat = Number(`${compactMatch[1].slice(0, 2)}.${compactMatch[1].slice(2)}`);
+    const lon = Number(`${compactMatch[2].slice(0, 3)}.${compactMatch[2].slice(3)}${compactMatch[3]}`);
+    addFilenameCoordinateCandidate(candidates, {
+      lat,
+      lon,
+      confidence: 'low',
+      source: 'filename_compact_lat_lon',
+      raw: compactMatch[0].replace(/[_-]$/, ''),
+      message:
+        '可按紧凑格式解释为经纬度，但纬度只有两位小数且缺少正式规则；只能作为粗定位候选。',
+    });
+  }
+  return candidates;
+}
+
 function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
   const info = {
     source: sourceName,
@@ -1434,6 +1501,7 @@ function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
     model: null,
     dateTime: null,
     xmp: {},
+    filenameCoordinates: parseImageFilenameCoordinates(sourceName),
     poseUsable: false,
   };
   if (!info.valid) {
@@ -1514,6 +1582,7 @@ function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
 function summarizePackageAnalysis(analysis) {
   const pointCount = analysis.pointClouds.reduce((total, item) => total + (item.pointCount || 0), 0);
   const usableImages = analysis.images.filter((image) => image.poseUsable).length;
+  const filenameCoordinateImages = analysis.images.filter((image) => image.filenameCoordinates?.length).length;
   const crsKnown = analysis.pointClouds.some((item) => item.hasCrsVlr);
   const coordinateKinds = Array.from(new Set(analysis.pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
   const recommendations = [];
@@ -1524,7 +1593,11 @@ function summarizePackageAnalysis(analysis) {
     recommendations.push('点云文件未写入 CRS/EPSG；多批数据拼合需要外部提供坐标系或控制点。');
   }
   if (analysis.counts.imageFiles && usableImages === 0) {
-    recommendations.push('图片有 EXIF/XMP，但样例未包含有效经纬度/姿态；需要相机标定、时间戳和轨迹才能自动贴图。');
+    if (filenameCoordinateImages) {
+      recommendations.push('图片文件名疑似包含经纬度，但缺少可信姿态、标定和轨迹；目前只能作为粗定位候选。');
+    } else {
+      recommendations.push('图片有 EXIF/XMP，但样例未包含有效经纬度/姿态；需要相机标定、时间戳和轨迹才能自动贴图。');
+    }
   }
   if (coordinateKinds.includes('local_meters')) {
     recommendations.push('当前坐标更像局部米制坐标；只要 las/pcd 已经在同一坐标系，可以直接拼在同一底图里。');
@@ -1553,6 +1626,7 @@ function summarizeCombinedPackageAnalysis(analyses) {
   };
   const pointClouds = analyses.flatMap((item) => item.pointClouds || []);
   const images = analyses.flatMap((item) => item.images || []);
+  const filenameCoordinateImages = images.filter((image) => image.filenameCoordinates?.length).length;
   const coordinateKinds = Array.from(new Set(pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
   const recommendations = [];
   const addRecommendation = (message) => {
@@ -1567,7 +1641,11 @@ function summarizeCombinedPackageAnalysis(analyses) {
     addRecommendation('点云文件未写入 CRS/EPSG；多批数据拼合需要外部提供坐标系或控制点。');
   }
   if (counts.imageFiles && images.filter((image) => image.poseUsable).length === 0) {
-    addRecommendation('图片有 EXIF/XMP，但样例未包含有效经纬度/姿态；需要相机标定、时间戳和轨迹才能自动贴图。');
+    if (filenameCoordinateImages) {
+      addRecommendation('图片文件名疑似包含经纬度，但缺少可信姿态、标定和轨迹；目前只能作为粗定位候选。');
+    } else {
+      addRecommendation('图片有 EXIF/XMP，但样例未包含有效经纬度/姿态；需要相机标定、时间戳和轨迹才能自动贴图。');
+    }
   }
   if (coordinateKinds.includes('local_meters')) {
     addRecommendation('当前坐标更像局部米制坐标；只要 las/pcd 已经在同一坐标系，可以直接拼在同一底图里。');
@@ -1609,17 +1687,18 @@ async function analyzeZipDataPackage(filePath, originalName) {
       if (ext === '.pcd') analysis.counts.pcdFiles += 1;
       if (analysis.pointClouds.length < 8) {
         const prefix = await readZipEntryPrefix(entry);
+        const entrySize = getZipEntrySize(entry);
         analysis.pointClouds.push(
           ext === '.las'
-            ? parseLasHeaderBuffer(prefix, entry.path, entry.vars.uncompressedSize)
-            : parsePcdHeaderBuffer(prefix, entry.path, entry.vars.uncompressedSize)
+            ? parseLasHeaderBuffer(prefix, entry.path, entrySize)
+            : parsePcdHeaderBuffer(prefix, entry.path, entrySize)
         );
       }
     } else if (isImageName(entry.path)) {
       analysis.counts.imageFiles += 1;
       if (analysis.images.length < 8) {
         const prefix = await readZipEntryPrefix(entry);
-        analysis.images.push(parseJpegMetadataBuffer(prefix, entry.path, entry.vars.uncompressedSize));
+        analysis.images.push(parseJpegMetadataBuffer(prefix, entry.path, getZipEntrySize(entry)));
       }
     } else if (['.json', '.yaml', '.yml', '.txt', '.csv', '.xml'].includes(ext)) {
       analysis.counts.metadataFiles += 1;

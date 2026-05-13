@@ -95,6 +95,11 @@ const formatPackageAnalysis = (data: any) => {
         lines.push(`相机: ${image.make || ''} ${image.model || ''}`);
         lines.push(`时间: ${image.dateTime || ''}`);
         lines.push(`可直接贴图: ${image.poseUsable ? '是' : '否'}`);
+        if (image.filenameCoordinates?.length) {
+            const candidate = image.filenameCoordinates[0];
+            lines.push(`文件名候选经纬度: ${candidate.lat}, ${candidate.lon} (${candidate.confidence || 'unknown'})`);
+            lines.push(candidate.message || '');
+        }
     }
     if (summary.recommendations?.length) {
         lines.push('');
