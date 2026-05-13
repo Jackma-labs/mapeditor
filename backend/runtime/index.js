@@ -2,6 +2,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const readline = require('readline');
+const { Writable } = require('stream');
 const { pipeline } = require('stream/promises');
 const unzipper = require('unzipper');
 const { PNG } = require('pngjs');
@@ -1294,6 +1295,230 @@ function getImageOverlayMetadata(imageFileCount) {
   };
 }
 
+async function readArchiveTextEntry(entry) {
+  const chunks = [];
+  await pipeline(
+    entry.stream(),
+    new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk);
+        callback();
+      },
+    })
+  );
+  const buffer = Buffer.concat(chunks);
+  return buffer.toString('utf8').replace(/^\uFEFF/, '');
+}
+
+function parseEnhancedPoseText(text) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => {
+      const values = line
+        .trim()
+        .split(/\s+/)
+        .map((value) => Number(value));
+      if (values.length < 5 || values.some((value) => Number.isNaN(value))) {
+        return null;
+      }
+      return {
+        week: values[0],
+        sow: values[1],
+        time: values[0] * 604800 + values[1],
+        x: values[2],
+        y: values[3],
+        z: values[4],
+        roll: values[5] ?? null,
+        pitch: values[6] ?? null,
+        yaw: values[7] ?? values[10] ?? null,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.time - right.time);
+}
+
+function parseCameraPoseText(text) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 11) {
+        return null;
+      }
+      const frame = parseImageFrameParts(parts[0]);
+      const week = Number(parts[2]);
+      const sow = Number(parts[3]);
+      const ecef = [Number(parts[4]), Number(parts[5]), Number(parts[6])];
+      const quaternion = [Number(parts[7]), Number(parts[8]), Number(parts[9]), Number(parts[10])];
+      if (!frame || !Number.isFinite(week) || !Number.isFinite(sow) || ecef.some((value) => !Number.isFinite(value))) {
+        return null;
+      }
+      return {
+        imageName: parts[0],
+        cameraId: parts[1],
+        week,
+        sow,
+        time: week * 604800 + sow,
+        frameIndex: frame.frameIndex,
+        side: frame.cameraSide,
+        ecef,
+        quaternion,
+      };
+    })
+    .filter(Boolean);
+}
+
+function interpolateEnhancedPose(poses, time) {
+  if (poses.length === 0) {
+    return null;
+  }
+  let low = 0;
+  let high = poses.length - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (poses[mid].time < time) {
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  const right = poses[Math.min(low, poses.length - 1)];
+  const left = poses[Math.max(0, low - 1)];
+  const nearest = Math.abs((left?.time ?? Infinity) - time) <= Math.abs((right?.time ?? Infinity) - time) ? left : right;
+  if (!left || !right || left === right) {
+    return nearest && Math.abs(nearest.time - time) <= 2 ? nearest : null;
+  }
+  const span = right.time - left.time;
+  if (span <= 0 || time < left.time - 2 || time > right.time + 2) {
+    return nearest && Math.abs(nearest.time - time) <= 2 ? nearest : null;
+  }
+  const ratio = Math.max(0, Math.min(1, (time - left.time) / span));
+  return {
+    week: left.week,
+    sow: left.sow + (right.sow - left.sow) * ratio,
+    time,
+    x: left.x + (right.x - left.x) * ratio,
+    y: left.y + (right.y - left.y) * ratio,
+    z: left.z + (right.z - left.z) * ratio,
+    roll: Number.isFinite(left.roll) && Number.isFinite(right.roll) ? left.roll + (right.roll - left.roll) * ratio : null,
+    pitch:
+      Number.isFinite(left.pitch) && Number.isFinite(right.pitch)
+        ? left.pitch + (right.pitch - left.pitch) * ratio
+        : null,
+    yaw: nearest?.yaw ?? null,
+  };
+}
+
+async function buildZipImagePoseIndex(zipPath) {
+  const archive = await unzipper.Open.file(zipPath);
+  const entries = archive.files.filter((entry) => entry.type === 'File');
+  const imageEntries = entries.filter((entry) => isImageName(entry.path));
+  const cameraPoseEntry = entries.find((entry) => /CameraPos_C2E\.txt$/i.test(entry.path));
+  const enhancedPoseEntry = entries.find((entry) => /pos_ENH\.txt$/i.test(entry.path));
+  if (!cameraPoseEntry || !enhancedPoseEntry || imageEntries.length === 0) {
+    return null;
+  }
+  const imageByBaseName = new Map();
+  imageEntries.forEach((entry, index) => {
+    const baseName = archiveBaseName(entry.path);
+    imageByBaseName.set(baseName, {
+      source: entry.path,
+      imageFile: `${index}-${entry.path.replace(/[\\/]/g, '_')}`,
+      sizeBytes: getZipEntrySize(entry),
+    });
+  });
+  const [cameraRows, enhancedPoses] = await Promise.all([
+    readArchiveTextEntry(cameraPoseEntry).then(parseCameraPoseText),
+    readArchiveTextEntry(enhancedPoseEntry).then(parseEnhancedPoseText),
+  ]);
+  const items = [];
+  for (const row of cameraRows) {
+    const imageInfo = imageByBaseName.get(row.imageName);
+    const mapPose = interpolateEnhancedPose(enhancedPoses, row.time);
+    if (!imageInfo || !mapPose) {
+      continue;
+    }
+    items.push({
+      imageName: row.imageName,
+      imageFile: imageInfo.imageFile,
+      source: imageInfo.source,
+      frameIndex: row.frameIndex,
+      side: row.side,
+      gpsWeek: row.week,
+      secondsOfWeek: row.sow,
+      cameraId: row.cameraId,
+      map: {
+        x: roundPointValue(mapPose.x),
+        y: roundPointValue(mapPose.y),
+        z: roundPointValue(mapPose.z),
+        yaw: Number.isFinite(mapPose.yaw) ? roundPointValue(mapPose.yaw) : null,
+      },
+      ecef: {
+        x: roundPointValue(row.ecef[0]),
+        y: roundPointValue(row.ecef[1]),
+        z: roundPointValue(row.ecef[2]),
+      },
+      quaternion: row.quaternion.map(roundPointValue),
+    });
+  }
+  items.sort((left, right) => left.frameIndex - right.frameIndex || left.side.localeCompare(right.side));
+  return {
+    source: {
+      cameraPose: cameraPoseEntry.path,
+      enhancedPose: enhancedPoseEntry.path,
+    },
+    imageCount: imageEntries.length,
+    poseCount: cameraRows.length,
+    indexedCount: items.length,
+    items,
+  };
+}
+
+async function buildImageOverlayIndex(files, stagingDir) {
+  const indexes = [];
+  for (const file of files) {
+    const originalName = file.originalName || file.originalname || file.path;
+    if (path.extname(originalName).toLowerCase() !== '.zip') {
+      continue;
+    }
+    const index = await buildZipImagePoseIndex(file.path).catch(() => null);
+    if (index && index.indexedCount > 0) {
+      indexes.push(index);
+    }
+  }
+  const items = indexes.flatMap((index) => index.items);
+  if (items.length === 0) {
+    return null;
+  }
+  const imageIndex = {
+    version: 1,
+    coordinateFrame: 'base_map_xy',
+    count: items.length,
+    sources: indexes.map((index) => index.source),
+    items,
+  };
+  await fsp.writeFile(path.join(stagingDir, 'image_index.json'), JSON.stringify(imageIndex), 'utf8');
+  return imageIndex;
+}
+
+function getImageOverlayMetadataFromIndex(imageFileCount, imageIndex) {
+  if (imageIndex && imageIndex.count > 0) {
+    return {
+      status: 'indexed',
+      message: '图片已按 CameraPos_C2E 与 pos_ENH 轨迹对齐，可在底图上按采集位置查看左右相机图。',
+      imageFileCount,
+      index: {
+        version: imageIndex.version,
+        coordinateFrame: imageIndex.coordinateFrame,
+        count: imageIndex.count,
+        sources: imageIndex.sources,
+        items: imageIndex.items,
+      },
+    };
+  }
+  return getImageOverlayMetadata(imageFileCount);
+}
+
 async function extractImagesFromZip(zipPath, targetDir) {
   const archive = await unzipper.Open.file(zipPath);
   const imageEntries = archive.files.filter((entry) => entry.type === 'File' && isImageName(entry.path));
@@ -1521,6 +1746,20 @@ function parseImageFilenameGpsTime(sourceName) {
     cameraSide,
     raw: `${match[1]}-${match[2]}-${match[3]}`,
     message: '文件名匹配 GPS 周 + 周内秒时间戳，可用于和 LAS GPS Time 或外部轨迹对齐；它不是经纬度。',
+  };
+}
+
+function parseImageFrameParts(sourceName) {
+  const filename = String(sourceName || '').split(/[\\/]/).pop() || '';
+  const match = filename.match(/^(\d{4})-(\d{6})-(\d{3})_(\d+)-([LR])\.(?:jpe?g|png|webp|tiff?)$/i);
+  if (!match) {
+    return null;
+  }
+  return {
+    gpsWeek: Number(match[1]),
+    secondsOfWeek: Number(match[2]) + Number(match[3]) / 1000,
+    frameIndex: Number(match[4]),
+    cameraSide: match[5].toUpperCase(),
   };
 }
 
@@ -2273,7 +2512,8 @@ async function importPointCloudFilesBaseMap(config, params) {
     }
     const stats = statsCollector.finalize();
     const coordinate = classifyCoordinateSystem(stats.bounds);
-    const imageOverlay = getImageOverlayMetadata(imageFileCount);
+    const imageIndex = await buildImageOverlayIndex(files, stagingDir);
+    const imageOverlay = getImageOverlayMetadataFromIndex(imageFileCount, imageIndex);
     const layers = {
       enhanced: createRasterTileAccumulator({ sourceType: 'point_cloud_enhanced' }),
       raw: createRasterTileAccumulator({ sourceType: 'point_cloud_raw' }),

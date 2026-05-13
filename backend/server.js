@@ -797,6 +797,28 @@ app.get('/mapcreator/:mapName/:level/proj.png', async (req, res) => {
   res.sendFile(pngPath);
 });
 
+app.get('/mapcreator/:mapName/source_images/:file', async (req, res) => {
+  const { mapName, file } = req.params;
+  const imagePath = path.join(config.baseMapRoot, mapName, 'source_images', file);
+  if (!(await pathExists(imagePath))) {
+    res.status(404).send('Not Found');
+    return;
+  }
+  res.set('Access-Control-Allow-Origin', '*');
+  res.sendFile(imagePath);
+});
+
+app.get('/mapcreator/:mapName/image_index.json', async (req, res) => {
+  const { mapName } = req.params;
+  const indexPath = path.join(config.baseMapRoot, mapName, 'image_index.json');
+  if (!(await pathExists(indexPath))) {
+    res.status(404).json({ code: 404, message: `image_index.json not found for ${mapName}` });
+    return;
+  }
+  res.set('Access-Control-Allow-Origin', '*');
+  res.sendFile(indexPath);
+});
+
 app.get('/mapcreator/:mapName/:level/:y/:file', async (req, res) => {
   const { mapName, level, y, file } = req.params;
   const pngPath = path.join(
