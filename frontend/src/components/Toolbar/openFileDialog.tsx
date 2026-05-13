@@ -175,9 +175,9 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         try {
             const response = await FileService.importBaseMapZip(file, defaultName.trim(), false);
             if (response?.code !== 0) {
-                messageFunc({
-                    type: 'error',
-                    content: <span>{response?.message || '导入失败'}</span>,
+                Modal.error({
+                    title: '底图导入失败',
+                    content: response?.message || '导入失败',
                 });
                 return;
             }
