@@ -175,6 +175,21 @@ class FileService {
         }));
     }
 
+    async analyzeDataPackage(file: File | File[], packageName: string) {
+        const formData = new FormData();
+        const files = Array.isArray(file) ? file : [file];
+        files.forEach((item) => formData.append(files.length === 1 ? 'file' : 'files', item));
+        formData.append('packageName', packageName);
+        const response = await fetch(`http://${baseHttpURL}/runtime/analyze-data-package`, {
+            method: 'POST',
+            body: formData,
+        });
+        return response.json().catch(() => ({
+            code: response.status,
+            message: response.statusText,
+        }));
+    }
+
     async importMapPackageZip(file: File, mapName: string, overwrite: boolean = false) {
         const formData = new FormData();
         formData.append('file', file);

@@ -22,7 +22,7 @@ interface MenuItemData {
     content: string;
     label: ReactNode;
 }
-type ImportMode = 'base-map-zip' | 'point-cloud' | 'map-package';
+type ImportMode = 'base-map-zip' | 'point-cloud' | 'map-package' | 'analyze-package';
 
 const stripExtension = (name: string) => name.replace(/\.[^.]+$/i, '');
 
@@ -60,6 +60,48 @@ const buildImportMapName = (files: File[]) => {
     }
     const prefix = sanitizeMapName(getCommonPrefix(files.map((file) => stripExtension(file.name))));
     return prefix.length >= 4 ? prefix : createFallbackPointCloudName();
+};
+
+const formatPackageAnalysis = (data: any) => {
+    const summary = data?.summary || {};
+    const analyses = data?.analyses || [];
+    const pointCloud = analyses.flatMap((item: any) => item.pointClouds || [])[0];
+    const image = analyses.flatMap((item: any) => item.images || [])[0];
+    const lines = [
+        `包 ID: ${data?.packageId || ''}`,
+        `保存路径: ${data?.path || ''}`,
+        `文件数: ${summary.totalFiles || 0}`,
+        `点云: ${summary.pointCloudFiles || 0} 个 (LAS ${summary.lasFiles || 0}, PCD ${summary.pcdFiles || 0})`,
+        `图片: ${summary.imageFiles || 0} 个`,
+        `元数据文件: ${summary.metadataFiles || 0} 个`,
+        `估算点数: ${summary.pointCount || 0}`,
+    ];
+    if (pointCloud) {
+        lines.push('');
+        lines.push(`点云样例: ${pointCloud.source}`);
+        lines.push(`格式: LAS ${pointCloud.version || ''} / point format ${pointCloud.pointFormat ?? ''}`);
+        lines.push(`坐标判断: ${pointCloud.coordinate?.kind || ''}`);
+        lines.push(pointCloud.coordinate?.message || '');
+        if (pointCloud.bounds) {
+            lines.push(
+                `范围: X ${pointCloud.bounds.minX} ~ ${pointCloud.bounds.maxX}, Y ${pointCloud.bounds.minY} ~ ${pointCloud.bounds.maxY}`,
+            );
+        }
+    }
+    if (image) {
+        lines.push('');
+        lines.push(`图片样例: ${image.source}`);
+        lines.push(`尺寸: ${image.width || '?'} x ${image.height || '?'}`);
+        lines.push(`相机: ${image.make || ''} ${image.model || ''}`);
+        lines.push(`时间: ${image.dateTime || ''}`);
+        lines.push(`可直接贴图: ${image.poseUsable ? '是' : '否'}`);
+    }
+    if (summary.recommendations?.length) {
+        lines.push('');
+        lines.push('建议:');
+        summary.recommendations.forEach((item: string) => lines.push(`- ${item}`));
+    }
+    return lines.join('\n');
 };
 
 // eslint-disable-next-line react/function-component-definition
@@ -210,14 +252,17 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
             return;
         }
         const mode = isEditorMapDialog ? 'map-package' : importModeRef.current;
-        if (mode !== 'point-cloud' && files.length > 1) {
+        if (mode !== 'point-cloud' && mode !== 'analyze-package' && files.length > 1) {
             Modal.error({
                 title: '导入失败',
                 content: '这个入口一次只能上传一个 ZIP 文件。',
             });
             return;
         }
-        const defaultName = mode === 'point-cloud' ? buildImportMapName(files) : buildImportMapName([files[0]]);
+        const defaultName =
+            mode === 'point-cloud' || mode === 'analyze-package'
+                ? buildImportMapName(files)
+                : buildImportMapName([files[0]]);
         if (!defaultName) {
             return;
         }
@@ -230,6 +275,11 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                     defaultName.trim(),
                     false,
                 );
+            } else if (mode === 'analyze-package') {
+                response = await FileService.analyzeDataPackage(
+                    files.length === 1 ? files[0] : files,
+                    defaultName.trim(),
+                );
             } else if (mode === 'base-map-zip') {
                 response = await FileService.importBaseMapZip(files[0], defaultName.trim(), false);
             } else {
@@ -239,6 +289,14 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                 Modal.error({
                     title: isBaseMapDialog ? '底图导入失败' : '地图包导入失败',
                     content: response?.message || '导入失败',
+                });
+                return;
+            }
+            if (mode === 'analyze-package') {
+                Modal.info({
+                    title: '数据包预检结果',
+                    width: 860,
+                    content: <pre style={{ whiteSpace: 'pre-wrap' }}>{formatPackageAnalysis(response.data)}</pre>,
                 });
                 return;
             }
@@ -344,6 +402,13 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                             >
                                 导入点云底图
                             </Button>
+                            <Button
+                                onClick={() => handleImportFile('analyze-package')}
+                                loading={importLoading}
+                                className="button-cancel"
+                            >
+                                预检数据包
+                            </Button>
                         </>
                     )}
                     {isEditorMapDialog && (
@@ -364,7 +429,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                         ref={importInputRef}
                         type="file"
                         multiple
-                        accept=".zip,.pcd,.ply,.xyz,.txt,.csv,.las,.laz,application/zip"
+                        accept=".zip,.pcd,.ply,.xyz,.txt,.csv,.las,.laz,.png,.jpg,.jpeg,.webp,.tif,.tiff,application/zip"
                         style={{ display: 'none' }}
                         onChange={handleImportFileChange}
                     />

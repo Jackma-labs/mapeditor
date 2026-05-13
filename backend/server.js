@@ -478,6 +478,40 @@ app.post('/runtime/import-point-cloud-base-map', upload.any(), async (req, res) 
   }
 });
 
+app.post('/runtime/analyze-data-package', upload.any(), async (req, res) => {
+  try {
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    if (uploadedFiles.length === 0) {
+      throw new Error('file is required');
+    }
+    const result = await runtime.analyzeDataPackage(config, {
+      files: uploadedFiles.map((file) => ({
+        path: file.path,
+        originalName: file.originalname,
+      })),
+      packageName: req.body.packageName,
+    });
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    log('Analyze data package failed:', error);
+    res.status(500).json({
+      code: 15053,
+      message: error.message,
+    });
+  } finally {
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    for (const file of uploadedFiles) {
+      if (file && file.path) {
+        fsp.unlink(file.path).catch(() => {});
+      }
+    }
+  }
+});
+
 app.post('/runtime/import-map-package', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {

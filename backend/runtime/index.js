@@ -1260,6 +1260,449 @@ async function copyImportSources(files, stagingDir) {
   return extractedImageCount;
 }
 
+function sanitizePackageName(name) {
+  const normalized = String(name || 'package')
+    .replace(/\.[^.]+$/i, '')
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64);
+  return normalized || 'package';
+}
+
+async function readFilePrefix(filePath, maxBytes = 512 * 1024) {
+  const handle = await fsp.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    const length = Math.min(maxBytes, stat.size);
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, 0);
+    return buffer.slice(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readZipEntryPrefix(entry, maxBytes = 512 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    const stream = entry.stream();
+    stream.on('data', (chunk) => {
+      if (total >= maxBytes) {
+        stream.destroy();
+        return;
+      }
+      const remaining = maxBytes - total;
+      const sliced = chunk.length > remaining ? chunk.slice(0, remaining) : chunk;
+      chunks.push(sliced);
+      total += sliced.length;
+      if (total >= maxBytes) {
+        stream.destroy();
+      }
+    });
+    stream.on('close', () => resolve(Buffer.concat(chunks)));
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+    stream.on('error', (error) => {
+      if (total > 0) {
+        resolve(Buffer.concat(chunks));
+        return;
+      }
+      reject(error);
+    });
+  });
+}
+
+function readAsciiNull(buffer) {
+  const end = buffer.indexOf(0);
+  const value = end >= 0 ? buffer.slice(0, end) : buffer;
+  return value.toString('ascii').trim();
+}
+
+function parseLasHeaderBuffer(buffer, sourceName, sizeBytes = null) {
+  if (buffer.length < 227 || buffer.slice(0, 4).toString('ascii') !== 'LASF') {
+    return {
+      source: sourceName,
+      valid: false,
+      message: 'LAS 文件头无效或不完整',
+    };
+  }
+  const readU8 = (offset) => buffer.readUInt8(offset);
+  const readU16 = (offset) => buffer.readUInt16LE(offset);
+  const readU32 = (offset) => buffer.readUInt32LE(offset);
+  const readF64 = (offset) => buffer.readDoubleLE(offset);
+  const info = {
+    source: sourceName,
+    valid: true,
+    sizeBytes,
+    version: `${readU8(24)}.${readU8(25)}`,
+    systemIdentifier: readAsciiNull(buffer.slice(26, 58)),
+    generatingSoftware: readAsciiNull(buffer.slice(58, 90)),
+    creationDayOfYear: readU16(90),
+    creationYear: readU16(92),
+    headerSize: readU16(94),
+    offsetToPointData: readU32(96),
+    vlrCount: readU32(100),
+    pointFormat: readU8(104),
+    pointRecordLength: readU16(105),
+    pointCount: readU32(107),
+    scale: {
+      x: readF64(131),
+      y: readF64(139),
+      z: readF64(147),
+    },
+    offset: {
+      x: readF64(155),
+      y: readF64(163),
+      z: readF64(171),
+    },
+    bounds: {
+      minX: readF64(187),
+      minY: readF64(203),
+      minZ: readF64(219),
+      maxX: readF64(179),
+      maxY: readF64(195),
+      maxZ: readF64(211),
+    },
+    hasCrsVlr: false,
+  };
+  info.range = {
+    x: info.bounds.maxX - info.bounds.minX,
+    y: info.bounds.maxY - info.bounds.minY,
+    z: info.bounds.maxZ - info.bounds.minZ,
+  };
+  if (buffer.length >= info.headerSize + 54 && info.vlrCount > 0) {
+    let offset = info.headerSize;
+    const vlrs = [];
+    for (let index = 0; index < Math.min(info.vlrCount, 10); index += 1) {
+      if (offset + 54 > buffer.length) {
+        break;
+      }
+      const userId = readAsciiNull(buffer.slice(offset + 2, offset + 18));
+      const recordId = buffer.readUInt16LE(offset + 18);
+      const recordLength = buffer.readUInt16LE(offset + 20);
+      const description = readAsciiNull(buffer.slice(offset + 22, offset + 54));
+      vlrs.push({ userId, recordId, recordLength, description });
+      if (userId === 'LASF_Projection' || /WKT|Geo/i.test(description)) {
+        info.hasCrsVlr = true;
+      }
+      offset += 54 + recordLength;
+    }
+    info.vlrs = vlrs;
+  }
+  info.coordinate = classifyCoordinateSystem(info.bounds);
+  if (!info.hasCrsVlr) {
+    info.coordinate.message = `${info.coordinate.message} LAS 文件未包含 CRS VLR/WKT，无法仅凭文件确认 EPSG。`;
+  }
+  return info;
+}
+
+function parsePcdHeaderBuffer(buffer, sourceName, sizeBytes = null) {
+  const text = buffer.toString('ascii');
+  const dataIndex = text.search(/^DATA\s+/im);
+  const headerText = dataIndex >= 0 ? text.slice(0, dataIndex + 80) : text;
+  const header = {};
+  headerText.split(/\r?\n/).forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      return;
+    }
+    const [key, ...rest] = trimmed.split(/\s+/);
+    header[key.toUpperCase()] = rest;
+  });
+  return {
+    source: sourceName,
+    valid: Boolean(header.FIELDS),
+    sizeBytes,
+    fields: header.FIELDS || [],
+    data: (header.DATA || [null])[0],
+    pointCount: Number((header.POINTS || [])[0]) || Number((header.WIDTH || [])[0]) || null,
+    width: Number((header.WIDTH || [])[0]) || null,
+    height: Number((header.HEIGHT || [])[0]) || null,
+    viewpoint: header.VIEWPOINT || null,
+  };
+}
+
+function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
+  const info = {
+    source: sourceName,
+    valid: buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8,
+    sizeBytes,
+    width: null,
+    height: null,
+    make: null,
+    model: null,
+    dateTime: null,
+    xmp: {},
+    poseUsable: false,
+  };
+  if (!info.valid) {
+    return info;
+  }
+  let offset = 2;
+  const appTexts = [];
+  while (offset + 4 <= buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = buffer[offset + 1];
+    offset += 2;
+    if (marker === 0xda || marker === 0xd9) {
+      break;
+    }
+    if (offset + 2 > buffer.length) {
+      break;
+    }
+    const length = buffer.readUInt16BE(offset);
+    const payload = buffer.slice(offset + 2, offset + length);
+    if (
+      marker === 0xc0 ||
+      marker === 0xc1 ||
+      marker === 0xc2 ||
+      marker === 0xc3
+    ) {
+      info.height = payload.readUInt16BE(1);
+      info.width = payload.readUInt16BE(3);
+    }
+    if (marker >= 0xe0 && marker <= 0xef) {
+      appTexts.push(payload.toString('utf8'));
+    }
+    offset += length;
+  }
+  const text = appTexts.join('\n');
+  const readAttr = (name) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = text.match(new RegExp(`${escaped}="([^"]*)"`, 'i'));
+    return match ? match[1] : null;
+  };
+  info.make = text.match(/ShareUAV/) ? 'ShareUAV' : null;
+  info.model = readAttr('share:Model') || (text.match(/CM2000-[^"\s<\u0000]+/) || [null])[0];
+  info.dateTime = readAttr('share:DateTime') || readAttr('drone-dji:DateTime') || null;
+  [
+    'share:Lat',
+    'share:Lon',
+    'share:AbsAlt',
+    'share:Pitch',
+    'share:Roll',
+    'share:Yaw',
+    'share:RTK',
+    'drone-dji:GpsLatitude',
+    'drone-dji:GpsLongitude',
+    'drone-dji:GimbalRollDegree',
+    'drone-dji:GimbalYawDegree',
+    'drone-dji:GimbalPitchDegree',
+  ].forEach((name) => {
+    const value = readAttr(name);
+    if (value !== null) {
+      info.xmp[name] = value;
+    }
+  });
+  const lat = Number(info.xmp['share:Lat'] || info.xmp['drone-dji:GpsLatitude']);
+  const lon = Number(info.xmp['share:Lon'] || info.xmp['drone-dji:GpsLongitude']);
+  const yaw = Number(info.xmp['share:Yaw'] || info.xmp['drone-dji:GimbalYawDegree']);
+  info.poseUsable = Boolean(
+    Number.isFinite(lat) &&
+      Number.isFinite(lon) &&
+      Math.abs(lat) > 0.000001 &&
+      Math.abs(lon) > 0.000001 &&
+      Number.isFinite(yaw)
+  );
+  return info;
+}
+
+function summarizePackageAnalysis(analysis) {
+  const pointCount = analysis.pointClouds.reduce((total, item) => total + (item.pointCount || 0), 0);
+  const usableImages = analysis.images.filter((image) => image.poseUsable).length;
+  const crsKnown = analysis.pointClouds.some((item) => item.hasCrsVlr);
+  const coordinateKinds = Array.from(new Set(analysis.pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
+  const recommendations = [];
+  if (!analysis.counts.pointCloudFiles) {
+    recommendations.push('没有发现 LAS/PCD 点云文件，不能生成底图。');
+  }
+  if (!crsKnown) {
+    recommendations.push('点云文件未写入 CRS/EPSG；多批数据拼合需要外部提供坐标系或控制点。');
+  }
+  if (analysis.counts.imageFiles && usableImages === 0) {
+    recommendations.push('图片有 EXIF/XMP，但样例未包含有效经纬度/姿态；需要相机标定、时间戳和轨迹才能自动贴图。');
+  }
+  if (coordinateKinds.includes('local_meters')) {
+    recommendations.push('当前坐标更像局部米制坐标；只要 las/pcd 已经在同一坐标系，可以直接拼在同一底图里。');
+  }
+  if (coordinateKinds.includes('projected_meters_or_large_local')) {
+    recommendations.push('当前坐标不是经纬度，数值更像米制投影坐标或大范围局部坐标；如需跨批次对齐，需要确认 EPSG/投影或转换参数。');
+  }
+  return {
+    pointCount,
+    imageCount: analysis.counts.imageFiles,
+    usableImagePoseCount: usableImages,
+    crsKnown,
+    coordinateKinds,
+    recommendations,
+  };
+}
+
+function summarizeCombinedPackageAnalysis(analyses) {
+  const counts = {
+    totalFiles: analyses.reduce((total, item) => total + item.counts.totalFiles, 0),
+    pointCloudFiles: analyses.reduce((total, item) => total + item.counts.pointCloudFiles, 0),
+    lasFiles: analyses.reduce((total, item) => total + item.counts.lasFiles, 0),
+    pcdFiles: analyses.reduce((total, item) => total + item.counts.pcdFiles, 0),
+    imageFiles: analyses.reduce((total, item) => total + item.counts.imageFiles, 0),
+    metadataFiles: analyses.reduce((total, item) => total + item.counts.metadataFiles, 0),
+  };
+  const pointClouds = analyses.flatMap((item) => item.pointClouds || []);
+  const images = analyses.flatMap((item) => item.images || []);
+  const coordinateKinds = Array.from(new Set(pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
+  const recommendations = [];
+  const addRecommendation = (message) => {
+    if (message && !recommendations.includes(message)) {
+      recommendations.push(message);
+    }
+  };
+  if (!counts.pointCloudFiles) {
+    addRecommendation('没有发现 LAS/PCD 点云文件，不能生成底图。');
+  }
+  if (counts.pointCloudFiles && !pointClouds.some((item) => item.hasCrsVlr)) {
+    addRecommendation('点云文件未写入 CRS/EPSG；多批数据拼合需要外部提供坐标系或控制点。');
+  }
+  if (counts.imageFiles && images.filter((image) => image.poseUsable).length === 0) {
+    addRecommendation('图片有 EXIF/XMP，但样例未包含有效经纬度/姿态；需要相机标定、时间戳和轨迹才能自动贴图。');
+  }
+  if (coordinateKinds.includes('local_meters')) {
+    addRecommendation('当前坐标更像局部米制坐标；只要 las/pcd 已经在同一坐标系，可以直接拼在同一底图里。');
+  }
+  if (coordinateKinds.includes('projected_meters_or_large_local')) {
+    addRecommendation('当前坐标不是经纬度，数值更像米制投影坐标或大范围局部坐标；如需跨批次对齐，需要确认 EPSG/投影或转换参数。');
+  }
+  return {
+    ...counts,
+    pointCount: analyses.reduce((total, item) => total + (item.summary.pointCount || 0), 0),
+    recommendations,
+  };
+}
+
+async function analyzeZipDataPackage(filePath, originalName) {
+  const archive = await unzipper.Open.file(filePath);
+  const entries = archive.files.filter((entry) => entry.type === 'File');
+  const analysis = {
+    source: originalName,
+    kind: 'zip',
+    counts: {
+      totalFiles: entries.length,
+      pointCloudFiles: 0,
+      imageFiles: 0,
+      metadataFiles: 0,
+      lasFiles: 0,
+      pcdFiles: 0,
+    },
+    folders: Array.from(new Set(entries.map((entry) => entry.path.split(/[\\/]/)[0]).filter(Boolean))).sort(),
+    pointClouds: [],
+    images: [],
+    metadataFiles: [],
+  };
+  for (const entry of entries) {
+    const ext = path.extname(entry.path).toLowerCase();
+    if (isSupportedPointCloudName(entry.path)) {
+      analysis.counts.pointCloudFiles += 1;
+      if (ext === '.las') analysis.counts.lasFiles += 1;
+      if (ext === '.pcd') analysis.counts.pcdFiles += 1;
+      if (analysis.pointClouds.length < 8) {
+        const prefix = await readZipEntryPrefix(entry);
+        analysis.pointClouds.push(
+          ext === '.las'
+            ? parseLasHeaderBuffer(prefix, entry.path, entry.vars.uncompressedSize)
+            : parsePcdHeaderBuffer(prefix, entry.path, entry.vars.uncompressedSize)
+        );
+      }
+    } else if (isImageName(entry.path)) {
+      analysis.counts.imageFiles += 1;
+      if (analysis.images.length < 8) {
+        const prefix = await readZipEntryPrefix(entry);
+        analysis.images.push(parseJpegMetadataBuffer(prefix, entry.path, entry.vars.uncompressedSize));
+      }
+    } else if (['.json', '.yaml', '.yml', '.txt', '.csv', '.xml'].includes(ext)) {
+      analysis.counts.metadataFiles += 1;
+      if (analysis.metadataFiles.length < 20) {
+        analysis.metadataFiles.push(entry.path);
+      }
+    }
+  }
+  analysis.summary = summarizePackageAnalysis(analysis);
+  return analysis;
+}
+
+async function analyzeSingleDataFile(filePath, originalName) {
+  const ext = path.extname(originalName || filePath).toLowerCase();
+  const stat = await fsp.stat(filePath);
+  if (ext === '.zip') {
+    return analyzeZipDataPackage(filePath, originalName);
+  }
+  const prefix = await readFilePrefix(filePath);
+  const analysis = {
+    source: originalName,
+    kind: 'files',
+    counts: {
+      totalFiles: 1,
+      pointCloudFiles: isSupportedPointCloudName(originalName) ? 1 : 0,
+      imageFiles: isImageName(originalName) ? 1 : 0,
+      metadataFiles: 0,
+      lasFiles: ext === '.las' ? 1 : 0,
+      pcdFiles: ext === '.pcd' ? 1 : 0,
+    },
+    folders: [],
+    pointClouds: [],
+    images: [],
+    metadataFiles: [],
+  };
+  if (ext === '.las') {
+    analysis.pointClouds.push(parseLasHeaderBuffer(prefix, originalName, stat.size));
+  } else if (ext === '.pcd') {
+    analysis.pointClouds.push(parsePcdHeaderBuffer(prefix, originalName, stat.size));
+  } else if (isImageName(originalName)) {
+    analysis.images.push(parseJpegMetadataBuffer(prefix, originalName, stat.size));
+  }
+  analysis.summary = summarizePackageAnalysis(analysis);
+  return analysis;
+}
+
+async function analyzeDataPackage(config, params) {
+  const files = Array.isArray(params.files) ? params.files : [];
+  if (files.length === 0) {
+    throw new Error('file is required');
+  }
+  const packageRoot = path.join(config.baseMapRoot, '..', 'import_packages');
+  await fsp.mkdir(packageRoot, { recursive: true });
+  const packageName = sanitizePackageName(params.packageName || files[0].originalName || files[0].originalname);
+  const packageId = `${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${packageName}`;
+  const targetDir = path.join(packageRoot, packageId);
+  const uploadDir = path.join(targetDir, 'uploads');
+  await fsp.mkdir(uploadDir, { recursive: true });
+  const analyses = [];
+  try {
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const originalName = file.originalName || file.originalname || `upload-${index}`;
+      const safeName = `${index}-${path.basename(originalName) || 'upload'}`;
+      const copiedPath = path.join(uploadDir, safeName);
+      await fsp.copyFile(file.path, copiedPath);
+      analyses.push(await analyzeSingleDataFile(copiedPath, originalName));
+    }
+    const combined = {
+      packageId,
+      path: targetDir,
+      uploadedFiles: files.map((file) => file.originalName || file.originalname || file.path),
+      analyses,
+      summary: summarizeCombinedPackageAnalysis(analyses),
+    };
+    await fsp.writeFile(path.join(targetDir, 'analysis.json'), JSON.stringify(combined, null, 2), 'utf8');
+    return combined;
+  } catch (error) {
+    await fsp.rm(targetDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 async function scanTextPointCloud(filePath, onPoint) {
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -2009,6 +2452,7 @@ module.exports = {
   getDeployConfig,
   preflightEdgeDeploy,
   listReleasedMaps,
+  analyzeDataPackage,
   importBaseMapZip,
   importPointCloudBaseMap,
   importPointCloudFilesBaseMap,
