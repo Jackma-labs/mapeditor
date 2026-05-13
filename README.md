@@ -1,94 +1,124 @@
 # Map Editor Standalone
 
-这是从 WheelOS Apollo HDMap 镜像中拆出的独立地图编辑器工程。
+Standalone wrapper for the Apollo HDMap editor frontend and lightweight backend
+extracted from the WheelOS Apollo HDMap image.
 
-## 目录
+## Layout
 
 ```text
-frontend/          React + Three.js 地图编辑器
-backend/           Express + WebSocket 后端
-config/            底图生成和外参配置
+frontend/          React + Three.js map editor
+backend/           Express + WebSocket backend
+config/            base-map generation and extrinsics config
 data/
-  bag/             输入 bag
-  base_map/        tile_map_images_creator 输出
-  editor_map/      前端保存的 editor_map JSON
-  released_map/    editor_map_converter 发布结果
-runtime/bin/       Apollo 工具二进制挂载位置
-runtime/scripts/   Apollo runtime 容器脚本
+  bag/             input bag files
+  base_map/        tile_map_images_creator output
+  editor_map/      editor_map JSON saved by the frontend
+  released_map/    editor_map_converter output
+runtime/bin/       native Apollo helper binaries
+runtime/scripts/   legacy Apollo runtime container helpers
+runtime/native/    x86_64 native build helpers
+deploy/server/     local-server deployment scripts
 ```
 
-## 当前状态
+## Current status
 
-前端和后端已经脱离 `/apollo/modules/private_tools` 路径，可以作为普通 Node 项目运行。
+The frontend and backend are decoupled from `/apollo/modules/private_tools` and
+can run as a normal Node project.
 
-底图生成和发布仍依赖 Apollo/ARM64 二进制：
+Full base-map generation and map release require Apollo helper binaries:
 
 - `tile_map_images_creator`
 - `editor_map_converter`
 
-推荐先用 Docker/WSL/Linux 容器提供这些二进制。完全脱离 Apollo 镜像需要恢复或获取 C++ 源码并重新构建。
+The current public artifacts only provide aarch64 binaries. The final Apollo
+HDMap image contains Bazel runfiles with symlinks to private source paths, but
+not the source content itself. The public `wheelos/apollo-lite` repository also
+does not include `modules/private_tools`.
 
-## 推荐部署形态
+## Recommended deployment shape
 
 ```text
-本地服务器
+Local x86_64 server
   map-editor-standalone
     frontend + backend
     data/
-    runtime adapter
-  Apollo runtime container
+    runtime/bin/
+  native Apollo helper binaries
     tile_map_images_creator
     editor_map_converter
 
-车辆边缘设备
+Vehicle edge device
   Apollo runtime / Dreamview
   modules/map/data/<map_name>
 ```
 
-地图编辑、底图生成和发布在本地服务器完成。发布产物再通过 SSH/SCP 推送到车辆边缘设备，实现一键部署地图。
+Map editing, base-map preparation, and release generation happen on the local
+server. Released map artifacts are then deployed to edge devices over SSH/SCP or
+another controlled delivery channel.
 
-## 安装
+## Install
 
 ```bash
 npm run install:all
 ```
 
-## 开发模式
+## Development
 
-开两个终端：
+Use two terminals:
 
 ```bash
 npm run dev:backend
 npm run dev:frontend
 ```
 
-前端开发服务器默认访问 `http://localhost:3000`，后端默认监听 `http://localhost:58000`。
+The frontend dev server defaults to `http://localhost:3000`; the backend
+defaults to `http://localhost:58000`.
 
-如果后端不在本机 58000：
+If the backend is not on local port 58000:
 
 ```bash
 set REACT_APP_MAP_BACKEND=192.168.1.10:58000
 npm run dev:frontend
 ```
 
-## 单端口运行
+## Single-port run
 
-先构建前端：
+Build the frontend and start the backend:
 
 ```bash
-npm run build:frontend
+npm run build
 npm start
 ```
 
-然后访问：
+Then open:
 
 ```text
 http://localhost:58000
 ```
 
-## 后端配置
+## Local server deployment
 
-配置文件在 `backend/server.config.json`。也可以用环境变量覆盖：
+For the Dell server:
+
+```bash
+ssh dell@192.168.110.2
+curl -fsSL https://raw.githubusercontent.com/Jackma-labs/mapeditor/main/deploy/server/bootstrap.sh | bash
+```
+
+After it starts, open:
+
+```text
+http://192.168.110.2:58000/
+```
+
+See `deploy/server/README.md` and `runtime/native/README.md` for the server and
+native Apollo runtime details.
+
+## Backend configuration
+
+Config file: `backend/server.config.json`.
+
+Environment overrides:
 
 - `MAP_BACKEND_PORT`
 - `MAP_RUNTIME_MODE=local|docker`
@@ -108,7 +138,7 @@ http://localhost:58000
 - `MAP_EDGE_TARGET_MAP_ROOT`
 - `MAP_EDGE_POST_DEPLOY_COMMAND`
 
-诊断接口：
+Diagnostics:
 
 ```text
 GET http://localhost:58000/healthz
@@ -116,41 +146,9 @@ GET http://localhost:58000/config
 GET http://localhost:58000/runtime/status
 ```
 
-## Docker Runtime
+## Edge deployment
 
-在服务器上推荐使用 Docker runtime：
-
-```bash
-export MAP_RUNTIME_MODE=docker
-bash runtime/scripts/start-apollo-runtime.sh
-npm start
-```
-
-Windows PowerShell：
-
-```powershell
-$env:MAP_RUNTIME_MODE="docker"
-npm run runtime:start:win
-npm start
-```
-
-状态检查：
-
-```bash
-npm run runtime:status
-```
-
-底图生成接口：
-
-```text
-POST /runtime/create-base-map
-```
-
-发布地图仍走前端原有“发布”按钮，后端会按 `runtimeMode` 自动选择本地二进制或 Docker 容器执行 `editor_map_converter`。
-
-## 边缘设备一键部署
-
-在 `backend/server.config.json` 中配置：
+Configure `backend/server.config.json`:
 
 ```json
 {
@@ -164,7 +162,7 @@ POST /runtime/create-base-map
 }
 ```
 
-部署接口：
+Deploy endpoint:
 
 ```text
 POST /runtime/deploy-map
@@ -175,22 +173,25 @@ Content-Type: application/json
 }
 ```
 
-服务端会把 `data/released_map/<mapName>` 复制到车辆边缘设备的 `targetMapRoot`。`postDeployCommand` 可用于重启 Dreamview 或刷新地图服务，具体命令需要按车辆边缘设备的 Apollo 部署方式配置。
+The backend copies `data/released_map/<mapName>` into the configured target map
+root. `postDeployCommand` can restart Dreamview or refresh map services when the
+edge device requires it.
 
-## 本地二进制模式
+## Local binary mode
 
-把可执行文件放到：
+Put executable files here:
 
 ```text
 runtime/bin/editor_map_converter
 runtime/bin/tile_map_images_creator
 ```
 
-或设置：
+Or override the paths:
 
 ```bash
-set MAP_CONVERTER_BINARY=/absolute/path/editor_map_converter
-set MAP_TILE_MAP_CREATOR_BINARY=/absolute/path/tile_map_images_creator
+export MAP_CONVERTER_BINARY=/absolute/path/editor_map_converter
+export MAP_TILE_MAP_CREATOR_BINARY=/absolute/path/tile_map_images_creator
 ```
 
-没有转换器时，编辑、打开、保存 editor_map JSON 仍可工作，但“发布地图”会返回转换器缺失错误。
+Without these binaries, editing/opening/saving editor-map JSON still works, but
+base-map generation and map release return a missing-binary error.

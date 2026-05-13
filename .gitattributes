@@ -1,0 +1,9 @@
+*.sh text eol=lf
+*.service text eol=lf
+*.md text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.less text eol=lf
+*.ps1 text eol=crlf
