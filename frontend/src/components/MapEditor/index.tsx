@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import React, { useEffect, useRef, useState } from 'react';
 import PubSub from 'pubsub-js';
-import { Modal } from 'antd';
+import { Modal, Segmented } from 'antd';
 import DragControl from 'src/threeUtil/dragControl';
 import RotateControl from 'src/threeUtil/RotateControl';
 import { clickHandle } from 'src/handle/interactive/clickHandle';
@@ -35,6 +35,7 @@ import initThree from '../../threeUtil/initThree';
 import CameraControl from '../../threeUtil/cameraControl';
 import BaseMap from '../../object/baseMap';
 import MapEditorBtn from './MapEditorBtn';
+import ImageCalibrationPreview from './ImageCalibrationPreview';
 import './index.less';
 import BezierCurve3Control from '../../threeUtil/BezierCurve3Control';
 import noData from '../../assets/images/no_attr.png';
@@ -70,6 +71,7 @@ export default function MapEditor() {
     const oldMapState = useRef(initialMapState);
     const [showRemind, setShowRemind] = useState(true);
     const [imagePosePreview, setImagePosePreview] = useState<any>(null);
+    const [imagePreviewMode, setImagePreviewMode] = useState<'raw' | 'undistort'>('raw');
     const render = () => {
         renderer.current?.render(scene.current, camera.current);
         labelRender.current?.render(scene.current, camera.current);
@@ -432,9 +434,14 @@ export default function MapEditor() {
         )}`;
     const getPreviewMetaText = () => {
         const map = imagePosePreview?.item?.map || {};
-        return `X ${map.x}, Y ${map.y}, Z ${map.z}`;
+        const projection = imagePosePreview?.item?.projection || {};
+        const heading = projection.cameraHeadingDeg ?? map.bodyHeadingDeg;
+        return `X ${map.x}, Y ${map.y}, Z ${map.z}${heading !== undefined && heading !== null ? `, 相机朝向 ${heading}°` : ''}`;
     };
-    const getPreviewImageTitle = (item: any) => `${item.side} / ${item.imageName}`;
+    const getPreviewImageTitle = (item: any) => {
+        const fov = item?.projection?.fovDeg || item?.calibration?.fov?.nominalHorizontalDeg;
+        return `${item.side} / ${item.imageName}${fov ? ` / FOV ${fov}°` : ''}`;
+    };
 
     return (
         <div id="map-editor-container" onClick={handleClick} onMouseUp={handleMouseup} onDoubleClick={handleDbclick}>
@@ -479,12 +486,27 @@ export default function MapEditor() {
             >
                 {imagePosePreview && (
                     <div className="image-pose-preview">
-                        <div className="image-pose-meta">{getPreviewMetaText()}</div>
+                        <div className="image-pose-toolbar">
+                            <div className="image-pose-meta">{getPreviewMetaText()}</div>
+                            <Segmented
+                                size="small"
+                                value={imagePreviewMode}
+                                options={[
+                                    { label: '原图', value: 'raw' },
+                                    { label: '近似去畸变', value: 'undistort' },
+                                ]}
+                                onChange={(value) => setImagePreviewMode(value as 'raw' | 'undistort')}
+                            />
+                        </div>
                         <div className="image-pose-grid">
                             {imagePosePreview.related.map((item: any) => (
                                 <div className="image-pose-card" key={item.imageName}>
                                     <div className="image-pose-card-title">{getPreviewImageTitle(item)}</div>
-                                    <img src={getSourceImageUrl(item)} alt={item.imageName} />
+                                    <ImageCalibrationPreview
+                                        src={getSourceImageUrl(item)}
+                                        item={item}
+                                        mode={imagePreviewMode}
+                                    />
                                 </div>
                             ))}
                         </div>

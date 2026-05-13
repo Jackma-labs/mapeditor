@@ -1328,13 +1328,215 @@ function parseEnhancedPoseText(text) {
         x: values[2],
         y: values[3],
         z: values[4],
-        roll: values[5] ?? null,
-        pitch: values[6] ?? null,
-        yaw: values[7] ?? values[10] ?? null,
+        roll: values[8] ?? values[5] ?? null,
+        pitch: values[9] ?? values[6] ?? null,
+        yaw: values[10] ?? values[7] ?? null,
       };
     })
     .filter(Boolean)
     .sort((left, right) => left.time - right.time);
+}
+
+function readLipValues(lines, label, count = 1) {
+  const index = lines.findIndex((line) => line.trim() === label);
+  if (index < 0) {
+    return null;
+  }
+  const values = [];
+  for (let lineIndex = index + 1; lineIndex < lines.length && values.length < count; lineIndex += 1) {
+    const line = lines[lineIndex].trim();
+    if (!line) {
+      continue;
+    }
+    const numbers = line
+      .split(/\s+/)
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value));
+    values.push(...numbers);
+  }
+  if (values.length < count) {
+    return null;
+  }
+  return values.slice(0, count);
+}
+
+function parseLipCamera(lines, prefix, side, cameraId) {
+  const focal = readLipValues(lines, `${prefix} Camera Focal`)?.[0] ?? null;
+  const pixelSize = readLipValues(lines, `${prefix} Camera Pixel Size`)?.[0] ?? null;
+  const imageSize = readLipValues(lines, `${prefix} Camera Img Size`, 2);
+  const exposureDelay = readLipValues(lines, `${prefix} Exposure Delay`)?.[0] ?? null;
+  const distortionK = readLipValues(lines, `${prefix} Camera Aberration K`, 3);
+  const distortionP = readLipValues(lines, `${prefix} Camera Aberration P`, 3);
+  const principalPoint = readLipValues(lines, `${prefix} Camera Principal Point`, 2);
+  const rotationDeg = readLipValues(lines, `${prefix} Rotation Angle Camera2b1`, 3);
+  const leverArmMeters = readLipValues(lines, `${prefix} LeverArm Camera2b1`, 3);
+  if (!focal || !pixelSize || !imageSize || imageSize[0] <= 0 || imageSize[1] <= 0) {
+    return null;
+  }
+  const width = imageSize[0];
+  const height = imageSize[1];
+  const fx = focal / pixelSize;
+  const fy = focal / pixelSize;
+  const cx = width / 2 + ((principalPoint?.[0] ?? 0) / pixelSize);
+  const cy = height / 2 + ((principalPoint?.[1] ?? 0) / pixelSize);
+  const nominalHorizontalFovDeg = (2 * Math.atan((width * pixelSize) / (2 * focal)) * 180) / Math.PI;
+  const nominalVerticalFovDeg = (2 * Math.atan((height * pixelSize) / (2 * focal)) * 180) / Math.PI;
+  return {
+    side,
+    cameraId,
+    sourcePrefix: prefix,
+    model: 'fisheye_brown_conrady_from_lip',
+    focalMm: roundPointValue(focal),
+    pixelSizeMm: roundPointValue(pixelSize),
+    imageSize: {
+      width,
+      height,
+    },
+    intrinsics: {
+      fx: roundPointValue(fx),
+      fy: roundPointValue(fy),
+      cx: roundPointValue(cx),
+      cy: roundPointValue(cy),
+    },
+    distortion: {
+      model: 'brown_conrady_approx',
+      k: (distortionK || [0, 0, 0]).map(roundPointValue),
+      p: (distortionP || [0, 0, 0]).map(roundPointValue),
+    },
+    principalPointMm: (principalPoint || [0, 0]).map(roundPointValue),
+    exposureDelaySeconds: Number.isFinite(exposureDelay) ? roundPointValue(exposureDelay) : null,
+    extrinsics: {
+      frame: 'camera_to_vehicle_body',
+      rotationDeg: (rotationDeg || [0, 0, 0]).map(roundPointValue),
+      leverArmMeters: (leverArmMeters || [0, 0, 0]).map(roundPointValue),
+    },
+    fov: {
+      nominalHorizontalDeg: roundPointValue(nominalHorizontalFovDeg),
+      nominalVerticalDeg: roundPointValue(nominalVerticalFovDeg),
+    },
+  };
+}
+
+function parseLipCalibrationText(text) {
+  const lines = text.split(/\r?\n/);
+  const cameras = {};
+  const left = parseLipCamera(lines, 'Left', 'L', '3');
+  const right = parseLipCamera(lines, 'Right', 'R', '1');
+  if (left) {
+    cameras.L = left;
+  }
+  if (right) {
+    cameras.R = right;
+  }
+  if (Object.keys(cameras).length === 0) {
+    return null;
+  }
+  return {
+    version: 1,
+    sourceType: 'lip',
+    cameras,
+  };
+}
+
+function findPoseIndexByTime(poses, time) {
+  let low = 0;
+  let high = poses.length - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (poses[mid].time < time) {
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return Math.max(0, Math.min(poses.length - 1, low));
+}
+
+function estimateTrajectoryHeading(poses, time, fallbackPose) {
+  if (poses.length < 2) {
+    return Number.isFinite(fallbackPose?.yaw) ? (fallbackPose.yaw * Math.PI) / 180 : null;
+  }
+  const centerIndex = findPoseIndexByTime(poses, time);
+  const center = poses[centerIndex] || fallbackPose;
+  let before = null;
+  let after = null;
+  for (let index = centerIndex - 1; index >= 0 && centerIndex - index < 1200; index -= 1) {
+    const candidate = poses[index];
+    if (Math.hypot(candidate.x - center.x, candidate.y - center.y) > 0.8) {
+      before = candidate;
+      break;
+    }
+  }
+  for (let index = centerIndex + 1; index < poses.length && index - centerIndex < 1200; index += 1) {
+    const candidate = poses[index];
+    if (Math.hypot(candidate.x - center.x, candidate.y - center.y) > 0.8) {
+      after = candidate;
+      break;
+    }
+  }
+  if (before && after) {
+    return Math.atan2(after.y - before.y, after.x - before.x);
+  }
+  if (after) {
+    return Math.atan2(after.y - center.y, after.x - center.x);
+  }
+  if (before) {
+    return Math.atan2(center.y - before.y, center.x - before.x);
+  }
+  return Number.isFinite(fallbackPose?.yaw) ? (fallbackPose.yaw * Math.PI) / 180 : null;
+}
+
+function normalizeAngleDeg(angleDeg) {
+  let value = angleDeg;
+  while (value <= -180) {
+    value += 360;
+  }
+  while (value > 180) {
+    value -= 360;
+  }
+  return value;
+}
+
+function buildCameraGroundProjection(mapPose, cameraCalibration, headingRad) {
+  if (!cameraCalibration || !Number.isFinite(headingRad)) {
+    return null;
+  }
+  const yawOffsetDeg = cameraCalibration.extrinsics?.rotationDeg?.[1] ?? 0;
+  const fovDeg = Math.max(70, Math.min(170, cameraCalibration.fov?.nominalHorizontalDeg || 120));
+  const rangeMeters = 32;
+  const centerYaw = headingRad + (yawOffsetDeg * Math.PI) / 180;
+  const startYaw = centerYaw - (fovDeg * Math.PI) / 360;
+  const endYaw = centerYaw + (fovDeg * Math.PI) / 360;
+  const footprint = [
+    {
+      x: roundPointValue(mapPose.x),
+      y: roundPointValue(mapPose.y),
+    },
+  ];
+  const samples = 8;
+  for (let index = 0; index <= samples; index += 1) {
+    const ratio = index / samples;
+    const yaw = startYaw + (endYaw - startYaw) * ratio;
+    footprint.push({
+      x: roundPointValue(mapPose.x + Math.cos(yaw) * rangeMeters),
+      y: roundPointValue(mapPose.y + Math.sin(yaw) * rangeMeters),
+    });
+  }
+  footprint.push({
+    x: roundPointValue(mapPose.x),
+    y: roundPointValue(mapPose.y),
+  });
+  return {
+    model: 'ground_fov_approx',
+    confidence: 'approximate',
+    rangeMeters,
+    bodyHeadingDeg: roundPointValue(normalizeAngleDeg((headingRad * 180) / Math.PI)),
+    cameraYawOffsetDeg: roundPointValue(yawOffsetDeg),
+    cameraHeadingDeg: roundPointValue(normalizeAngleDeg((centerYaw * 180) / Math.PI)),
+    fovDeg: roundPointValue(fovDeg),
+    groundZ: roundPointValue(mapPose.z),
+    footprint,
+  };
 }
 
 function parseCameraPoseText(text) {
@@ -1415,6 +1617,7 @@ async function buildZipImagePoseIndex(zipPath) {
   const imageEntries = entries.filter((entry) => isImageName(entry.path));
   const cameraPoseEntry = entries.find((entry) => /CameraPos_C2E\.txt$/i.test(entry.path));
   const enhancedPoseEntry = entries.find((entry) => /pos_ENH\.txt$/i.test(entry.path));
+  const calibrationEntry = entries.find((entry) => /\.lip$/i.test(entry.path));
   if (!cameraPoseEntry || !enhancedPoseEntry || imageEntries.length === 0) {
     return null;
   }
@@ -1427,9 +1630,15 @@ async function buildZipImagePoseIndex(zipPath) {
       sizeBytes: getZipEntrySize(entry),
     });
   });
-  const [cameraRows, enhancedPoses] = await Promise.all([
+  const [cameraRows, enhancedPoses, calibration] = await Promise.all([
     readArchiveTextEntry(cameraPoseEntry).then(parseCameraPoseText),
     readArchiveTextEntry(enhancedPoseEntry).then(parseEnhancedPoseText),
+    calibrationEntry
+      ? readArchiveTextEntry(calibrationEntry).then((text) => ({
+          ...parseLipCalibrationText(text),
+          source: calibrationEntry.path,
+        }))
+      : Promise.resolve(null),
   ]);
   const items = [];
   for (const row of cameraRows) {
@@ -1438,6 +1647,9 @@ async function buildZipImagePoseIndex(zipPath) {
     if (!imageInfo || !mapPose) {
       continue;
     }
+    const cameraCalibration = calibration?.cameras?.[row.side] || null;
+    const headingRad = estimateTrajectoryHeading(enhancedPoses, row.time, mapPose);
+    const projection = buildCameraGroundProjection(mapPose, cameraCalibration, headingRad);
     items.push({
       imageName: row.imageName,
       imageFile: imageInfo.imageFile,
@@ -1452,6 +1664,7 @@ async function buildZipImagePoseIndex(zipPath) {
         y: roundPointValue(mapPose.y),
         z: roundPointValue(mapPose.z),
         yaw: Number.isFinite(mapPose.yaw) ? roundPointValue(mapPose.yaw) : null,
+        bodyHeadingDeg: Number.isFinite(headingRad) ? roundPointValue(normalizeAngleDeg((headingRad * 180) / Math.PI)) : null,
       },
       ecef: {
         x: roundPointValue(row.ecef[0]),
@@ -1459,6 +1672,17 @@ async function buildZipImagePoseIndex(zipPath) {
         z: roundPointValue(row.ecef[2]),
       },
       quaternion: row.quaternion.map(roundPointValue),
+      calibration: cameraCalibration
+        ? {
+            side: cameraCalibration.side,
+            cameraId: cameraCalibration.cameraId,
+            model: cameraCalibration.model,
+            intrinsics: cameraCalibration.intrinsics,
+            distortion: cameraCalibration.distortion,
+            fov: cameraCalibration.fov,
+          }
+        : null,
+      projection,
     });
   }
   items.sort((left, right) => left.frameIndex - right.frameIndex || left.side.localeCompare(right.side));
@@ -1466,9 +1690,11 @@ async function buildZipImagePoseIndex(zipPath) {
     source: {
       cameraPose: cameraPoseEntry.path,
       enhancedPose: enhancedPoseEntry.path,
+      calibration: calibrationEntry?.path || null,
     },
     imageCount: imageEntries.length,
     poseCount: cameraRows.length,
+    calibration,
     indexedCount: items.length,
     items,
   };
@@ -1491,10 +1717,17 @@ async function buildImageOverlayIndex(files, stagingDir) {
     return null;
   }
   const imageIndex = {
-    version: 1,
+    version: 2,
     coordinateFrame: 'base_map_xy',
     count: items.length,
     sources: indexes.map((index) => index.source),
+    calibration: indexes.find((index) => index.calibration)?.calibration || null,
+    projection: {
+      model: 'ground_fov_approx',
+      confidence: 'approximate',
+      message:
+        'Footprints use LIP camera intrinsics/extrinsics plus trajectory heading. They are for image-assisted labeling, not final photogrammetric texture.',
+    },
     items,
   };
   await fsp.writeFile(path.join(stagingDir, 'image_index.json'), JSON.stringify(imageIndex), 'utf8');
@@ -1512,6 +1745,8 @@ function getImageOverlayMetadataFromIndex(imageFileCount, imageIndex) {
         coordinateFrame: imageIndex.coordinateFrame,
         count: imageIndex.count,
         sources: imageIndex.sources,
+        calibration: imageIndex.calibration,
+        projection: imageIndex.projection,
         items: imageIndex.items,
       },
     };
