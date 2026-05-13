@@ -749,7 +749,44 @@ async function parseLasPointCloud(filePath) {
   }
 }
 
+function isKnownMetadataName(fileName) {
+  const normalized = String(fileName || '').replace(/\\/g, '/').toLowerCase();
+  const baseName = normalized.split('/').pop() || normalized;
+  const ext = path.extname(baseName);
+  if (
+    [
+      '.json',
+      '.yaml',
+      '.yml',
+      '.xml',
+      '.log',
+      '.prj',
+      '.kqs',
+      '.imu',
+      '.rts',
+      '.whs',
+      '.tim',
+      '.mot',
+      '.dat',
+      '.err',
+      '.gld',
+      '.db',
+      '.bin',
+      '.lip',
+      '.norm',
+    ].includes(ext)
+  ) {
+    return true;
+  }
+  return /(camera|c2e|gnss|gps|imu|ins|nav|odom|pose|pos|rtk|traj|trajectory|calib|extrinsic|intrinsic|shuttle_log)/i.test(
+    baseName
+  );
+}
+
 function isSupportedPointCloudName(fileName) {
+  if (isKnownMetadataName(fileName)) {
+    return false;
+  }
   return ['.pcd', '.ply', '.xyz', '.txt', '.csv', '.las'].includes(path.extname(fileName).toLowerCase());
 }
 
@@ -1659,6 +1696,27 @@ function summarizeCombinedPackageAnalysis(analyses) {
   };
 }
 
+function normalizePackageAnalysesForCurrentRules(analyses) {
+  return (analyses || []).map((analysis) => {
+    const pointClouds = analysis.pointClouds || [];
+    const metadataFromPointClouds = pointClouds
+      .filter((item) => isKnownMetadataName(item.source || ''))
+      .map((item) => item.source);
+    const normalizedPointClouds = pointClouds.filter((item) => isSupportedPointCloudName(item.source || ''));
+    const counts = {
+      ...(analysis.counts || {}),
+    };
+    counts.pointCloudFiles = Math.max(0, (counts.pointCloudFiles || 0) - metadataFromPointClouds.length);
+    counts.metadataFiles = (counts.metadataFiles || 0) + metadataFromPointClouds.length;
+    return {
+      ...analysis,
+      counts,
+      pointClouds: normalizedPointClouds,
+      metadataFiles: Array.from(new Set([...(analysis.metadataFiles || []), ...metadataFromPointClouds])),
+    };
+  });
+}
+
 async function analyzeZipDataPackage(filePath, originalName) {
   const archive = await unzipper.Open.file(filePath);
   const entries = archive.files.filter((entry) => entry.type === 'File');
@@ -1699,7 +1757,7 @@ async function analyzeZipDataPackage(filePath, originalName) {
         const prefix = await readZipEntryPrefix(entry);
         analysis.images.push(parseJpegMetadataBuffer(prefix, entry.path, getZipEntrySize(entry)));
       }
-    } else if (['.json', '.yaml', '.yml', '.txt', '.csv', '.xml'].includes(ext)) {
+    } else if (isKnownMetadataName(entry.path) || ['.json', '.yaml', '.yml', '.txt', '.csv', '.xml'].includes(ext)) {
       analysis.counts.metadataFiles += 1;
       if (analysis.metadataFiles.length < 20) {
         analysis.metadataFiles.push(entry.path);
@@ -1724,7 +1782,7 @@ async function analyzeSingleDataFile(filePath, originalName) {
       totalFiles: 1,
       pointCloudFiles: isSupportedPointCloudName(originalName) ? 1 : 0,
       imageFiles: isImageName(originalName) ? 1 : 0,
-      metadataFiles: 0,
+      metadataFiles: isKnownMetadataName(originalName) ? 1 : 0,
       lasFiles: ext === '.las' ? 1 : 0,
       pcdFiles: ext === '.pcd' ? 1 : 0,
     },
@@ -1739,6 +1797,8 @@ async function analyzeSingleDataFile(filePath, originalName) {
     analysis.pointClouds.push(parsePcdHeaderBuffer(prefix, originalName, stat.size));
   } else if (isImageName(originalName)) {
     analysis.images.push(parseJpegMetadataBuffer(prefix, originalName, stat.size));
+  } else if (isKnownMetadataName(originalName)) {
+    analysis.metadataFiles.push(originalName);
   }
   analysis.summary = summarizePackageAnalysis(analysis);
   return analysis;
@@ -1824,7 +1884,7 @@ async function listDataPackages(config) {
     const packageDir = path.join(packageRoot, packageId);
     const stat = await fsp.stat(packageDir);
     const analysis = await readAnalysisFile(packageDir).catch(() => null);
-    const analyses = analysis?.analyses || [];
+    const analyses = normalizePackageAnalysesForCurrentRules(analysis?.analyses || []);
     const summary = analyses.length ? summarizeCombinedPackageAnalysis(analyses) : analysis?.summary || null;
     packages.push({
       packageId,
