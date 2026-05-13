@@ -365,6 +365,38 @@ app.get('/runtime/status', async (_req, res) => {
   }
 });
 
+app.get('/runtime/doctor', async (_req, res) => {
+  try {
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: await runtime.getRuntimeDoctor(config),
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 500,
+      message: error.message,
+    });
+  }
+});
+
+app.get('/runtime/released-maps', async (_req, res) => {
+  try {
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: {
+        maps: await runtime.listReleasedMaps(config),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 500,
+      message: error.message,
+    });
+  }
+});
+
 app.post('/runtime/create-base-map', async (req, res) => {
   try {
     const result = await runtime.createBaseMap(config, req.body || {});
@@ -396,6 +428,23 @@ app.post('/runtime/deploy-map', async (req, res) => {
   } catch (error) {
     res.status(500).json({
       code: 15040,
+      message: error.message,
+      data: error.result || null,
+    });
+  }
+});
+
+app.post('/runtime/deploy-latest', async (_req, res) => {
+  try {
+    const result = await runtime.deployLatestReleasedMap(config);
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15041,
       message: error.message,
       data: error.result || null,
     });

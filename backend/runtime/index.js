@@ -12,6 +12,33 @@ async function pathExists(targetPath) {
   }
 }
 
+async function pathWritable(targetPath) {
+  try {
+    await fsp.mkdir(targetPath, { recursive: true });
+    await fsp.access(targetPath, fs.constants.W_OK);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function getDirectorySize(targetPath) {
+  let total = 0;
+  const entries = await fsp.readdir(targetPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(targetPath, entry.name);
+    if (entry.isDirectory()) {
+      total += await getDirectorySize(entryPath);
+      continue;
+    }
+    if (entry.isFile()) {
+      const stat = await fsp.stat(entryPath);
+      total += stat.size;
+    }
+  }
+  return total;
+}
+
 function normalizeForContainer(hostPath, config) {
   const dataRoot = path.resolve(config.baseMapRoot, '..');
   const resolved = path.resolve(hostPath);
@@ -91,6 +118,131 @@ async function getStatus(config) {
       targetMapRoot: config.edgeDeploy.targetMapRoot,
       enabled: config.edgeDeploy.mode !== 'disabled',
     },
+  };
+}
+
+async function listReleasedMaps(config) {
+  await fsp.mkdir(config.releaseRoot, { recursive: true });
+  const entries = await fsp.readdir(config.releaseRoot, { withFileTypes: true });
+  const maps = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const mapName = entry.name;
+    const mapDir = path.join(config.releaseRoot, mapName);
+    const stat = await fsp.stat(mapDir);
+    const files = await fsp.readdir(mapDir).catch(() => []);
+    const expectedFiles = [
+      'base_map.bin',
+      'base_map.txt',
+      'routing_map.bin',
+      'sim_map.bin',
+    ];
+    maps.push({
+      mapName,
+      path: mapDir,
+      modifiedAt: stat.mtime.toISOString(),
+      sizeBytes: await getDirectorySize(mapDir),
+      files,
+      expectedFiles,
+      missingExpectedFiles: expectedFiles.filter((fileName) => !files.includes(fileName)),
+    });
+  }
+  maps.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
+  return maps;
+}
+
+async function getRuntimeDoctor(config) {
+  const status = await getStatus(config);
+  const checks = [];
+  const addCheck = (name, ok, severity, message) => {
+    checks.push({
+      name,
+      status: ok ? 'ok' : severity,
+      message,
+    });
+  };
+
+  addCheck(
+    'frontend-build',
+    status.paths.frontendAvailable,
+    'error',
+    status.paths.frontendAvailable
+      ? 'Frontend build is available'
+      : `Frontend build not found at ${status.paths.frontendBuildRoot}`
+  );
+  addCheck(
+    'tile-config',
+    status.paths.tileMapConfigAvailable,
+    'error',
+    status.paths.tileMapConfigAvailable
+      ? 'Tile-map config is available'
+      : `Tile-map config not found at ${status.paths.tileMapConfig}`
+  );
+  addCheck(
+    'base-map-dir',
+    await pathWritable(config.baseMapRoot),
+    'error',
+    `Base map directory is writable: ${config.baseMapRoot}`
+  );
+  addCheck(
+    'editor-map-dir',
+    await pathWritable(config.editorMapRoot),
+    'error',
+    `Editor map directory is writable: ${config.editorMapRoot}`
+  );
+  addCheck(
+    'release-dir',
+    await pathWritable(config.releaseRoot),
+    'error',
+    `Release directory is writable: ${config.releaseRoot}`
+  );
+
+  if (config.runtimeMode === 'local') {
+    addCheck(
+      'editor-map-converter',
+      status.local.converterAvailable,
+      'error',
+      status.local.converterAvailable
+        ? 'Native editor_map_converter is available'
+        : `Native editor_map_converter is missing at ${status.local.converterBinary}`
+    );
+    addCheck(
+      'tile-map-images-creator',
+      status.local.tileMapCreatorAvailable,
+      'warning',
+      status.local.tileMapCreatorAvailable
+        ? 'Native tile_map_images_creator is available'
+        : `Native tile_map_images_creator is missing at ${status.local.tileMapCreatorBinary}`
+    );
+  }
+
+  if (config.runtimeMode === 'docker') {
+    addCheck(
+      'docker-runtime',
+      status.docker && status.docker.available,
+      'error',
+      status.docker ? status.docker.message : 'Docker runtime status is unavailable'
+    );
+  }
+
+  addCheck(
+    'edge-deploy',
+    status.edgeDeploy.enabled,
+    'warning',
+    status.edgeDeploy.enabled
+      ? `Edge deploy enabled for ${status.edgeDeploy.user}@${status.edgeDeploy.host}:${status.edgeDeploy.targetMapRoot}`
+      : 'Edge deploy is disabled'
+  );
+
+  const hasError = checks.some((check) => check.status === 'error');
+  const hasWarning = checks.some((check) => check.status === 'warning');
+  return {
+    ready: !hasError,
+    hasWarning,
+    status,
+    checks,
   };
 }
 
@@ -198,9 +350,26 @@ async function deployReleasedMap(config, params) {
   return { copyResult, postDeployResult };
 }
 
+async function deployLatestReleasedMap(config) {
+  const maps = await listReleasedMaps(config);
+  if (maps.length === 0) {
+    throw new Error(`no released maps found at ${config.releaseRoot}`);
+  }
+  const latest = maps[0];
+  const result = await deployReleasedMap(config, { mapName: latest.mapName });
+  return {
+    mapName: latest.mapName,
+    releasedMap: latest,
+    ...result,
+  };
+}
+
 module.exports = {
   getStatus,
+  getRuntimeDoctor,
+  listReleasedMaps,
   convertEditorMap,
   createBaseMap,
   deployReleasedMap,
+  deployLatestReleasedMap,
 };

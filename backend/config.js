@@ -57,6 +57,9 @@ if (fs.existsSync(configPath)) {
 
 const merged = Object.assign({}, defaults, userConfig);
 
+if (process.env.MAP_BACKEND_PORT || process.env.PORT) {
+  merged.port = Number(process.env.MAP_BACKEND_PORT || process.env.PORT);
+}
 if (process.env.MAP_BASE_MAP_ROOT) {
   merged.baseMapRoot = process.env.MAP_BASE_MAP_ROOT;
 }
@@ -71,6 +74,9 @@ if (process.env.MAP_CONVERTER_BINARY) {
 }
 if (process.env.MAP_FRONTEND_BUILD_ROOT) {
   merged.frontendBuildRoot = process.env.MAP_FRONTEND_BUILD_ROOT;
+}
+if (process.env.MAP_SKIP_VALIDATION) {
+  merged.skipValidation = process.env.MAP_SKIP_VALIDATION === 'true';
 }
 if (process.env.MAP_RUNTIME_MODE) {
   merged.runtimeMode = process.env.MAP_RUNTIME_MODE;

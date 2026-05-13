@@ -152,6 +152,8 @@ Diagnostics:
 GET http://localhost:58000/healthz
 GET http://localhost:58000/config
 GET http://localhost:58000/runtime/status
+GET http://localhost:58000/runtime/doctor
+GET http://localhost:58000/runtime/released-maps
 ```
 
 ## Edge deployment
@@ -174,6 +176,7 @@ Deploy endpoint:
 
 ```text
 POST /runtime/deploy-map
+POST /runtime/deploy-latest
 Content-Type: application/json
 
 {

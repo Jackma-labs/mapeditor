@@ -117,6 +117,36 @@ class FileService {
         return this.instance;
     }
 
+    private async requestJson(path: string, options: RequestInit = {}) {
+        const response = await fetch(`http://${baseHttpURL}${path}`, {
+            headers: {
+                'Content-Type': 'application/json',
+                ...(options.headers || {}),
+            },
+            ...options,
+        });
+        const payload = await response.json().catch(() => ({
+            code: response.status,
+            message: response.statusText,
+        }));
+        return payload;
+    }
+
+    async getRuntimeDoctor() {
+        return this.requestJson('/runtime/doctor');
+    }
+
+    async getReleasedMaps() {
+        return this.requestJson('/runtime/released-maps');
+    }
+
+    async deployLatestReleasedMap() {
+        return this.requestJson('/runtime/deploy-latest', {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
+    }
+
     getBaseMapInfo(dir: string) {
         return fetch(`http://${baseHttpURL}/mapcreator/${dir}/tiles.json?mode=0`)
             .then((response) => response.json())

@@ -1,11 +1,12 @@
 import React, { useEffect, useState, FC } from 'react';
 import PubSub from 'pubsub-js';
 import type { MenuProps } from 'antd';
-import { ConfigProvider, Dropdown, Tooltip } from 'antd';
+import { ConfigProvider, Dropdown, Modal, Tooltip } from 'antd';
 import './index.less';
 import { MapElementType, OperationType, PermissionStatus, ThreeElementType } from 'src/interface/commonInterFace';
 import { escKeyExitDrawHandle } from 'src/handle/escKeyHandle';
 import { useManagerStore } from 'src/store';
+import FileService from 'src/service/index';
 import { MenuItemType } from 'antd/lib/menu/hooks/useItems';
 import { SetOperationTypeCommand } from 'src/command/OperationTypeCommand';
 import DialogMap from './openFileDialog';
@@ -187,7 +188,83 @@ export default function Index(prop: { messageApi: any }) {
             key: '4',
             icon: <RenderIcon url={IssueIcon} />,
         },
+        {
+            type: 'divider',
+        },
+        {
+            label: 'Runtime status',
+            key: 'runtime-status',
+        },
+        {
+            label: 'Deploy latest',
+            key: 'deploy-latest',
+        },
     ];
+    const showRuntimeStatus = async () => {
+        try {
+            const response = await FileService.getRuntimeDoctor();
+            if (response?.code !== 0) {
+                throw new Error(response?.message || 'Runtime status request failed');
+            }
+            const doctor = response.data;
+            const checks = doctor.checks || [];
+            const runtimeLines = [
+                `Mode: ${doctor.status?.mode || ''}`,
+                `Ready: ${doctor.ready ? 'yes' : 'no'}`,
+                `Converter: ${doctor.status?.local?.converterAvailable ? 'available' : 'missing'}`,
+                `Tile creator: ${doctor.status?.local?.tileMapCreatorAvailable ? 'available' : 'missing'}`,
+                `Edge deploy: ${doctor.status?.edgeDeploy?.enabled ? 'enabled' : 'disabled'}`,
+            ];
+            Modal.info({
+                title: 'Runtime status',
+                width: 640,
+                content: (
+                    <div className="runtime-status-modal">
+                        {runtimeLines.map((line) => (
+                            <p key={line}>{line}</p>
+                        ))}
+                        <ul>
+                            {checks.map((check: any) => (
+                                <li key={check.name}>{`[${check.status}] ${check.message}`}</li>
+                            ))}
+                        </ul>
+                    </div>
+                ),
+            });
+        } catch (error: any) {
+            Modal.error({
+                title: 'Runtime status failed',
+                content: error?.message || 'Unknown error',
+            });
+        }
+    };
+
+    const deployLatestReleasedMap = () => {
+        Modal.confirm({
+            title: 'Deploy latest released map',
+            content: 'Deploy the newest released map to the configured edge device.',
+            okText: 'Deploy',
+            cancelText: 'Cancel',
+            onOk: async () => {
+                try {
+                    const response = await FileService.deployLatestReleasedMap();
+                    if (response?.code !== 0) {
+                        throw new Error(response?.message || 'Deploy failed');
+                    }
+                    Modal.success({
+                        title: 'Deploy finished',
+                        content: `Map ${response.data?.mapName || ''} deployed successfully.`,
+                    });
+                } catch (error: any) {
+                    Modal.error({
+                        title: 'Deploy failed',
+                        content: error?.message || 'Unknown error',
+                    });
+                }
+            },
+        });
+    };
+
     const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
         switch (key) {
             case '1':
@@ -207,9 +284,17 @@ export default function Index(prop: { messageApi: any }) {
                 setDialogTitle('保存标注地图');
                 setVisibleVal({ ...visibleVal, operate: true });
                 break;
-            default:
+            case '4':
                 setDialogTitle('发布地图');
                 setVisibleVal({ ...visibleVal, operate: true });
+                break;
+            case 'runtime-status':
+                showRuntimeStatus();
+                break;
+            case 'deploy-latest':
+                deployLatestReleasedMap();
+                break;
+            default:
                 break;
         }
     };
