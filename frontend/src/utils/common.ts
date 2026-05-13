@@ -6,16 +6,169 @@ import { Arrow, Boundary, Groud, PointElement } from 'src/interface/basicElement
 import { ThreeElementType } from 'src/interface/commonInterFace';
 import { Crosswalk } from 'src/interface/crosswalkInterFace';
 import { Junction } from 'src/interface/junctionInterFace';
-import { Lane, LaneTrend } from 'src/interface/laneInterFace';
+import {
+    Lane,
+    LaneBoundaryType,
+    LaneDireaciotn,
+    LaneTrend,
+    LaneType,
+    ProssibleDrivingDirection,
+} from 'src/interface/laneInterFace';
 import { ParkingSpace } from 'src/interface/parkingSpaceInterFace';
 import { SpeedBump } from 'src/interface/speedBumpInterFace';
 import { StopLine } from 'src/interface/stopLineInterFace';
 import { TrafficSignal } from 'src/interface/trafficSignal';
 import * as THREE from 'three';
 
-export function loadHdmp(data: any) {
+const DEFAULT_IMPORTED_LANE_WIDTH = 4;
+
+function isCenterlineLaneMap(data: any) {
+    const lanes = data?.lane || [];
+    const boundary = data?.boundary || [];
+    const roadBoundary = data?.roadBoundary || data?.road_boundary || [];
+    return (
+        Array.isArray(data?.point) &&
+        Array.isArray(lanes) &&
+        lanes.some((lane: any) => Array.isArray(lane.points)) &&
+        boundary.length === 0 &&
+        roadBoundary.length === 0
+    );
+}
+
+function getOffsetPolyline(points: THREE.Vector2[], offset: number) {
+    return points.map((point, index) => {
+        const direction = new THREE.Vector2();
+        if (index === 0) {
+            direction.subVectors(points[1], point);
+        } else if (index === points.length - 1) {
+            direction.subVectors(point, points[index - 1]);
+        } else {
+            const prev = new THREE.Vector2().subVectors(point, points[index - 1]).normalize();
+            const next = new THREE.Vector2().subVectors(points[index + 1], point).normalize();
+            direction.addVectors(prev, next);
+            if (direction.lengthSq() < 0.000001) {
+                direction.copy(next);
+            }
+        }
+        if (direction.lengthSq() < 0.000001) {
+            return point.clone();
+        }
+        direction.normalize();
+        const normal = new THREE.Vector2(-direction.y, direction.x).multiplyScalar(offset);
+        return point.clone().add(normal);
+    });
+}
+
+function loadCenterlineLaneMap(data: any) {
+    const sourcePoints: { [id: string]: THREE.Vector2 } = {};
+    const points: { [id: string]: PointElement } = {};
+    const boundarys: { [id: string]: Boundary } = {};
+    const lanes: { [id: string]: Lane } = {};
+    const basemapCenter = data.basemapCenter || data.basemap_center || new THREE.Vector2(0, 0);
+
+    (data.point || []).forEach((item: any) => {
+        if (!item?.id || !item?.position) {
+            return;
+        }
+        sourcePoints[item.id] = new THREE.Vector2(
+            Number(item.position.x.toFixed(4)),
+            Number(item.position.y.toFixed(4)),
+        );
+    });
+
+    (data.lane || []).forEach((item: any) => {
+        const lanePointIds = item.points || [];
+        const centerline = lanePointIds.map((id: string) => sourcePoints[id]).filter(Boolean);
+        if (!item.id || centerline.length < 2) {
+            return;
+        }
+        const width = Number(item.width || item.lane_width || DEFAULT_IMPORTED_LANE_WIDTH);
+        const leftPositions = getOffsetPolyline(centerline, width / 2);
+        const rightPositions = getOffsetPolyline(centerline, -width / 2);
+        const leftBoundaryId = `${item.id}-left-boundary`;
+        const rightBoundaryId = `${item.id}-right-boundary`;
+        const leftPointIds = leftPositions.map((position, index) => `${item.id}-left-point-${index}`);
+        const rightPointIds = rightPositions.map((position, index) => `${item.id}-right-point-${index}`);
+
+        leftPositions.forEach((position, index) => {
+            points[leftPointIds[index]] = {
+                id: leftPointIds[index],
+                position: new THREE.Vector3(position.x, position.y, mapElementZ[ThreeElementType.LanePoint]),
+                type: ThreeElementType.LanePoint,
+            };
+        });
+        rightPositions.forEach((position, index) => {
+            points[rightPointIds[index]] = {
+                id: rightPointIds[index],
+                position: new THREE.Vector3(position.x, position.y, mapElementZ[ThreeElementType.LanePoint]),
+                type: ThreeElementType.LanePoint,
+            };
+        });
+
+        boundarys[leftBoundaryId] = {
+            id: leftBoundaryId,
+            pointIds: leftPointIds,
+            type: ThreeElementType.LaneBoundary,
+            attr: { type: LaneBoundaryType.WHITESOLId },
+            origin: null,
+            controlsPosition: [],
+            relativeRoadBoundaryIds: [],
+            relativeLaneBoundaryIds: [],
+        };
+        boundarys[rightBoundaryId] = {
+            id: rightBoundaryId,
+            pointIds: rightPointIds,
+            type: ThreeElementType.LaneBoundary,
+            attr: { type: LaneBoundaryType.WHITESOLId },
+            origin: null,
+            controlsPosition: [],
+            relativeRoadBoundaryIds: [],
+            relativeLaneBoundaryIds: [],
+        };
+
+        lanes[item.id] = {
+            id: item.id,
+            attr: {
+                speed: Number(item.speed_limit || item.speed || 10),
+                direction: LaneDireaciotn.STRAIGHT,
+                prossibleDrivingDirection: ProssibleDrivingDirection.FORWARD,
+                laneType: LaneType.CityDriving,
+            },
+            leftBoundaryId,
+            rightBoundaryId,
+            groudId: `${item.id}-groud`,
+            arrowId: `${item.id}-arrow`,
+            leftBoundaryReverse: false,
+            rightBoundaryReverse: false,
+            width,
+            prossibleDrivingDirectionArrowId: `${item.id}-arrow`,
+            type: LaneTrend.Straight,
+        };
+    });
+
+    return {
+        boundarys,
+        lanes,
+        junctions: {},
+        crosswalks: {},
+        speedBumps: {},
+        points,
+        hdBasemapCenter: new THREE.Vector2(basemapCenter.x, basemapCenter.y),
+        stopLines: {},
+        parkingSpaces: {},
+        trafficSignals: {},
+        signs: {},
+        areas: {},
+        barrierGates: {},
+    };
+}
+
+export function loadHdmp(data: any): any {
     if (!data) {
         return {};
+    }
+    if (isCenterlineLaneMap(data)) {
+        return loadCenterlineLaneMap(data);
     }
     const point = data.point || [];
     const boundary = data.boundary || [];

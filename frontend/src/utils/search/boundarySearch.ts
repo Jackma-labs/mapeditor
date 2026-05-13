@@ -44,6 +44,9 @@ export function searchBoundaryPointsByBoundaryId(boundaryId: string) {
  */
 export function searchCurveControlsFromBoundaryId(boundaryId: string) {
     const boundary = searchBoundaryByBoundaryId(boundaryId);
+    if (!boundary) {
+        return [];
+    }
     if (!boundary.controlsPosition) {
         return [];
     }
