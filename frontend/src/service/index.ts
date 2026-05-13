@@ -136,6 +136,10 @@ class FileService {
         return this.requestJson('/runtime/doctor');
     }
 
+    async getRuntimeStatus() {
+        return this.requestJson('/runtime/status');
+    }
+
     async getReleasedMaps() {
         return this.requestJson('/runtime/released-maps');
     }

@@ -26,11 +26,11 @@ interface MenuItemData {
 // eslint-disable-next-line react/function-component-definition
 const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }) => {
     const Icon = title === '打开底图' ? FileIcon : MapIcon;
-    const name = title === '打开底图' ? '/apollo/data/base_map/' : '/apollo/data/editor_map/';
+    const defaultAddress = title === '打开底图' ? '/apollo/data/base_map/' : '/apollo/data/editor_map/';
     // 提交按钮禁用状态
     const [visible, setVisible] = useState(true);
     const [currentKey, setCurrentKey] = useState('0');
-    const [titleAddress, setTitleAddress] = useState(name);
+    const [titleAddress, setTitleAddress] = useState(defaultAddress);
     const [menuData, setMenuData] = useState<MenuItemData[]>([]);
     const [listLoading, setListLoading] = useState(false);
     const [importLoading, setImportLoading] = useState(false);
@@ -191,10 +191,20 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         }
     };
 
-    const getList = () => {
-        const address = title === '打开底图' ? '/apollo/data/base_map/' : '/apollo/data/editor_map/';
-        setTitleAddress(address);
+    const getList = async () => {
+        setTitleAddress(defaultAddress);
         if (open) {
+            try {
+                const status = await FileService.getRuntimeStatus();
+                const paths = status?.data?.paths;
+                if (title === '打开底图' && paths?.baseMapRoot) {
+                    setTitleAddress(paths.baseMapRoot);
+                } else if (title === '打开标注地图' && paths?.editorMapRoot) {
+                    setTitleAddress(paths.editorMapRoot);
+                }
+            } catch (error) {
+                console.log(error);
+            }
             fetchData();
         } else {
             setMenuData([]);
