@@ -435,17 +435,28 @@ app.post('/runtime/import-base-map', upload.single('file'), async (req, res) => 
   }
 });
 
-app.post('/runtime/import-point-cloud-base-map', upload.single('file'), async (req, res) => {
+app.post('/runtime/import-point-cloud-base-map', upload.any(), async (req, res) => {
   try {
-    if (!req.file) {
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    if (uploadedFiles.length === 0) {
       throw new Error('file is required');
     }
-    const result = await runtime.importPointCloudBaseMap(config, {
-      cloudPath: req.file.path,
-      originalName: req.file.originalname,
-      mapName: req.body.mapName,
-      overwrite: req.body.overwrite === 'true',
-    });
+    const result =
+      uploadedFiles.length === 1
+        ? await runtime.importPointCloudBaseMap(config, {
+            cloudPath: uploadedFiles[0].path,
+            originalName: uploadedFiles[0].originalname,
+            mapName: req.body.mapName,
+            overwrite: req.body.overwrite === 'true',
+          })
+        : await runtime.importPointCloudFilesBaseMap(config, {
+            files: uploadedFiles.map((file) => ({
+              path: file.path,
+              originalName: file.originalname,
+            })),
+            mapName: req.body.mapName,
+            overwrite: req.body.overwrite === 'true',
+          });
     res.json({
       code: 0,
       message: 'Success',
@@ -458,8 +469,11 @@ app.post('/runtime/import-point-cloud-base-map', upload.single('file'), async (r
       message: error.message,
     });
   } finally {
-    if (req.file && req.file.path) {
-      fsp.unlink(req.file.path).catch(() => {});
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    for (const file of uploadedFiles) {
+      if (file && file.path) {
+        fsp.unlink(file.path).catch(() => {});
+      }
     }
   }
 });

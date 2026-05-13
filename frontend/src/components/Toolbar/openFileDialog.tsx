@@ -24,6 +24,44 @@ interface MenuItemData {
 }
 type ImportMode = 'base-map-zip' | 'point-cloud' | 'map-package';
 
+const stripExtension = (name: string) => name.replace(/\.[^.]+$/i, '');
+
+const sanitizeMapName = (name: string) =>
+    name
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/\s+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 86);
+
+const getCommonPrefix = (values: string[]) => {
+    if (values.length === 0) {
+        return '';
+    }
+    let prefix = values[0];
+    for (let index = 1; index < values.length; index += 1) {
+        while (prefix && !values[index].startsWith(prefix)) {
+            prefix = prefix.slice(0, -1);
+        }
+    }
+    return prefix.replace(/[._\-\s]+$/g, '');
+};
+
+const createFallbackPointCloudName = () => {
+    const now = new Date();
+    const pad = (value: number) => value.toString().padStart(2, '0');
+    return `point_cloud_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(
+        now.getHours(),
+    )}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+};
+
+const buildImportMapName = (files: File[]) => {
+    if (files.length === 1) {
+        return sanitizeMapName(stripExtension(files[0].name));
+    }
+    const prefix = sanitizeMapName(getCommonPrefix(files.map((file) => stripExtension(file.name))));
+    return prefix.length >= 4 ? prefix : createFallbackPointCloudName();
+};
+
 // eslint-disable-next-line react/function-component-definition
 const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }) => {
     const Icon = title === '打开底图' ? FileIcon : MapIcon;
@@ -164,27 +202,38 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
     };
 
     const handleImportFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
+        const files = Array.from(event.target.files || []);
         if (importInputRef.current) {
             importInputRef.current.value = '';
         }
-        if (!file) {
+        if (files.length === 0) {
             return;
         }
-        const defaultName = file.name.replace(/\.[^.]+$/i, '');
+        const mode = isEditorMapDialog ? 'map-package' : importModeRef.current;
+        if (mode !== 'point-cloud' && files.length > 1) {
+            Modal.error({
+                title: '导入失败',
+                content: '这个入口一次只能上传一个 ZIP 文件。',
+            });
+            return;
+        }
+        const defaultName = mode === 'point-cloud' ? buildImportMapName(files) : buildImportMapName([files[0]]);
         if (!defaultName) {
             return;
         }
         setImportLoading(true);
         try {
-            const mode = isEditorMapDialog ? 'map-package' : importModeRef.current;
             let response;
             if (mode === 'point-cloud') {
-                response = await FileService.importPointCloudBaseMap(file, defaultName.trim(), false);
+                response = await FileService.importPointCloudBaseMap(
+                    files.length === 1 ? files[0] : files,
+                    defaultName.trim(),
+                    false,
+                );
             } else if (mode === 'base-map-zip') {
-                response = await FileService.importBaseMapZip(file, defaultName.trim(), false);
+                response = await FileService.importBaseMapZip(files[0], defaultName.trim(), false);
             } else {
-                response = await FileService.importMapPackageZip(file, defaultName.trim(), false);
+                response = await FileService.importMapPackageZip(files[0], defaultName.trim(), false);
             }
             if (response?.code !== 0) {
                 Modal.error({
@@ -200,6 +249,11 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                 content: <span>{`${importType} ${importedName} 导入成功`}</span>,
             });
             await fetchData();
+        } catch (error) {
+            Modal.error({
+                title: '导入失败',
+                content: error instanceof Error ? error.message : '上传或解析文件失败',
+            });
         } finally {
             setImportLoading(false);
         }
@@ -309,6 +363,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                     <input
                         ref={importInputRef}
                         type="file"
+                        multiple
                         accept=".zip,.pcd,.ply,.xyz,.txt,.csv,.las,.laz,application/zip"
                         style={{ display: 'none' }}
                         onChange={handleImportFileChange}

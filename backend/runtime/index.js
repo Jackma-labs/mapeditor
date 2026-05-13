@@ -731,6 +731,10 @@ function isSupportedPointCloudName(fileName) {
   return ['.pcd', '.ply', '.xyz', '.txt', '.csv', '.las'].includes(path.extname(fileName).toLowerCase());
 }
 
+function isSupportedPointCloudUploadName(fileName) {
+  return isSupportedPointCloudName(fileName) || ['.zip', '.laz'].includes(path.extname(fileName).toLowerCase());
+}
+
 function isImageName(fileName) {
   return ['.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff'].includes(path.extname(fileName).toLowerCase());
 }
@@ -822,6 +826,79 @@ async function importPointCloudBaseMap(config, params) {
     };
     await fsp.writeFile(path.join(stagingDir, 'map_images', 'tiles.json'), JSON.stringify(payload), 'utf8');
     await fsp.copyFile(cloudPath, path.join(stagingDir, originalName || 'source.pointcloud'));
+    await fsp.rm(targetDir, { recursive: true, force: true });
+    await fsp.rename(stagingDir, targetDir);
+    return {
+      mapName,
+      path: targetDir,
+      pointCount: parsed.totalPointCount,
+      renderedPointCount: parsed.points.length,
+      bounds: parsed.bounds,
+      sizeBytes: await getDirectorySize(targetDir),
+    };
+  } catch (error) {
+    await fsp.rm(stagingDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function importPointCloudFilesBaseMap(config, params) {
+  const mapName = validateMapName(params.mapName);
+  const files = Array.isArray(params.files) ? params.files : [];
+  const overwrite = params.overwrite === true;
+  if (files.length === 0) {
+    throw new Error('file is required');
+  }
+
+  const cloudFiles = files.filter((file) => isSupportedPointCloudUploadName(file.originalName || file.originalname || file.path));
+  const imageFiles = files.filter((file) => isImageName(file.originalName || file.originalname || file.path));
+  if (cloudFiles.length === 0) {
+    throw new Error('点云底图请上传 .pcd/.ply/.xyz/.txt/.csv/.las 文件，或包含这些文件的 .zip');
+  }
+
+  const targetDir = path.join(config.baseMapRoot, mapName);
+  const stagingDir = path.join(config.baseMapRoot, `.import-${mapName}-${Date.now()}`);
+  if ((await pathExists(targetDir)) && !overwrite) {
+    throw new Error(`base map already exists: ${mapName}`);
+  }
+
+  const accumulator = createPointCloudAccumulator();
+  const sourceFiles = [];
+  let imageFileCount = imageFiles.length;
+  for (const file of cloudFiles) {
+    const originalName = file.originalName || file.originalname || path.basename(file.path);
+    const parsed = await parsePointCloud(file.path, originalName);
+    accumulator.mergePointCloud(parsed);
+    sourceFiles.push(...(parsed.sourceFiles || [originalName]));
+    imageFileCount += parsed.imageFileCount || 0;
+  }
+  const parsed = accumulator.finalize();
+  parsed.sourceFiles = sourceFiles;
+  parsed.imageFileCount = imageFileCount;
+
+  await fsp.rm(stagingDir, { recursive: true, force: true });
+  await fsp.mkdir(path.join(stagingDir, 'map_images'), { recursive: true });
+  await fsp.mkdir(path.join(stagingDir, 'sources'), { recursive: true });
+  try {
+    const payload = {
+      type: 'point_cloud',
+      version: 1,
+      sourceFile: sourceFiles[0] || mapName,
+      sourceFiles: parsed.sourceFiles || sourceFiles,
+      imageFileCount: parsed.imageFileCount || 0,
+      pointCount: parsed.totalPointCount,
+      renderedPointCount: parsed.points.length,
+      center: parsed.center,
+      bounds: parsed.bounds,
+      points: parsed.points,
+    };
+    await fsp.writeFile(path.join(stagingDir, 'map_images', 'tiles.json'), JSON.stringify(payload), 'utf8');
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const originalName = file.originalName || file.originalname || `source-${index}`;
+      const safeName = `${index}-${path.basename(originalName) || 'source'}`;
+      await fsp.copyFile(file.path, path.join(stagingDir, 'sources', safeName));
+    }
     await fsp.rm(targetDir, { recursive: true, force: true });
     await fsp.rename(stagingDir, targetDir);
     return {
@@ -1172,6 +1249,7 @@ module.exports = {
   listReleasedMaps,
   importBaseMapZip,
   importPointCloudBaseMap,
+  importPointCloudFilesBaseMap,
   importMapPackageZip,
   convertEditorMap,
   createBaseMap,

@@ -159,9 +159,10 @@ class FileService {
         }));
     }
 
-    async importPointCloudBaseMap(file: File, mapName: string, overwrite: boolean = false) {
+    async importPointCloudBaseMap(file: File | File[], mapName: string, overwrite: boolean = false) {
         const formData = new FormData();
-        formData.append('file', file);
+        const files = Array.isArray(file) ? file : [file];
+        files.forEach((item) => formData.append(files.length === 1 ? 'file' : 'files', item));
         formData.append('mapName', mapName);
         formData.append('overwrite', overwrite ? 'true' : 'false');
         const response = await fetch(`http://${baseHttpURL}/runtime/import-point-cloud-base-map`, {

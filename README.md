@@ -178,15 +178,17 @@ POST /runtime/import-point-cloud-base-map
 Content-Type: multipart/form-data
 
 file=<point-cloud.pcd|ply|xyz|txt|csv|las|zip>
+files=<multiple point-cloud files, optional>
 mapName=<name>
 overwrite=false
 ```
 
 The server samples large point clouds for browser rendering and writes a
 `point_cloud` base-map descriptor under `data/base_map/<name>/map_images/`.
-The zip form may contain multiple supported point-cloud files; image files are
-recorded but not georeferenced or rendered yet. It is then available from the
-"打开底图" dialog as a drawable base layer.
+The upload can be one supported point-cloud file, one zip containing multiple
+supported point-cloud files, or several files selected together in the browser.
+Image files are recorded but not georeferenced or rendered yet. It is then
+available from the base-map open dialog as a drawable base layer.
 
 Apollo map package import:
 
