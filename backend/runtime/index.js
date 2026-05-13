@@ -1,6 +1,8 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const { pipeline } = require('stream/promises');
+const unzipper = require('unzipper');
 const { runCommand } = require('./process');
 
 async function pathExists(targetPath) {
@@ -58,6 +60,33 @@ function buildEdgeTarget(config) {
     return '';
   }
   return `${config.edgeDeploy.user}@${config.edgeDeploy.host}`;
+}
+
+function validateMapName(mapName) {
+  const normalized = String(mapName || '').trim();
+  if (!normalized) {
+    throw new Error('mapName is required');
+  }
+  if (normalized.length > 86) {
+    throw new Error('mapName must be 86 characters or fewer');
+  }
+  if (normalized === '.' || normalized === '..' || normalized.includes('/') || normalized.includes('\\')) {
+    throw new Error('mapName must not contain path separators');
+  }
+  if (/[\x00-\x1f:*?"<>|]/.test(normalized)) {
+    throw new Error('mapName contains unsupported characters');
+  }
+  return normalized;
+}
+
+function resolveInside(rootDir, relativePath) {
+  const resolvedRoot = path.resolve(rootDir);
+  const resolvedPath = path.resolve(resolvedRoot, relativePath);
+  const relative = path.relative(resolvedRoot, resolvedPath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`unsafe archive path: ${relativePath}`);
+  }
+  return resolvedPath;
 }
 
 async function checkDockerRuntime(config) {
@@ -162,6 +191,72 @@ async function listReleasedMaps(config) {
   }
   maps.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
   return maps;
+}
+
+async function importBaseMapZip(config, params) {
+  const mapName = validateMapName(params.mapName);
+  const zipPath = params.zipPath;
+  const overwrite = params.overwrite === true;
+  if (!zipPath || !(await pathExists(zipPath))) {
+    throw new Error('uploaded zip file not found');
+  }
+
+  const archive = await unzipper.Open.file(zipPath);
+  const entries = archive.files.filter((entry) => entry.type === 'File');
+  const normalizedPaths = entries.map((entry) => entry.path.replace(/\\/g, '/'));
+  const tilePath = normalizedPaths.find(
+    (entryPath) => entryPath === 'map_images/tiles.json' || entryPath.endsWith('/map_images/tiles.json')
+  );
+  if (!tilePath) {
+    throw new Error('base map zip must contain map_images/tiles.json');
+  }
+  const archivePrefix = tilePath.slice(0, tilePath.length - 'map_images/tiles.json'.length);
+  const targetDir = path.join(config.baseMapRoot, mapName);
+  const stagingDir = path.join(config.baseMapRoot, `.import-${mapName}-${Date.now()}`);
+
+  if ((await pathExists(targetDir)) && !overwrite) {
+    throw new Error(`base map already exists: ${mapName}`);
+  }
+
+  await fsp.rm(stagingDir, { recursive: true, force: true });
+  await fsp.mkdir(stagingDir, { recursive: true });
+  try {
+    for (const entry of entries) {
+      const entryPath = entry.path.replace(/\\/g, '/');
+      if (!entryPath.startsWith(archivePrefix)) {
+        continue;
+      }
+      const relativePath = entryPath.slice(archivePrefix.length);
+      if (!relativePath || relativePath.endsWith('/')) {
+        continue;
+      }
+      const outputPath = resolveInside(stagingDir, relativePath);
+      await fsp.mkdir(path.dirname(outputPath), { recursive: true });
+      await pipeline(entry.stream(), fs.createWriteStream(outputPath));
+    }
+
+    const importedTilesPath = path.join(stagingDir, 'map_images', 'tiles.json');
+    if (!(await pathExists(importedTilesPath))) {
+      throw new Error('imported archive did not produce map_images/tiles.json');
+    }
+    const tilesContent = (await fsp.readFile(importedTilesPath, 'utf8')).replace(/^\uFEFF/, '');
+    const tiles = JSON.parse(tilesContent);
+    if (!tiles || !Array.isArray(tiles.tiles)) {
+      throw new Error('map_images/tiles.json is not a valid base map tile index');
+    }
+
+    await fsp.rm(targetDir, { recursive: true, force: true });
+    await fsp.rename(stagingDir, targetDir);
+    return {
+      mapName,
+      path: targetDir,
+      tileCount: tiles.tiles.length,
+      sizeBytes: await getDirectorySize(targetDir),
+    };
+  } catch (error) {
+    await fsp.rm(stagingDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function getRuntimeDoctor(config) {
@@ -496,6 +591,7 @@ module.exports = {
   getDeployConfig,
   preflightEdgeDeploy,
   listReleasedMaps,
+  importBaseMapZip,
   convertEditorMap,
   createBaseMap,
   deployReleasedMap,

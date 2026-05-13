@@ -5,6 +5,7 @@ const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const multer = require('multer');
 const WebSocket = require('ws');
 
 const config = require('./config');
@@ -14,6 +15,15 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: '25mb' }));
 app.use(bodyParser.urlencoded({ extended: true }));
+
+const importTmpRoot = path.join(config.baseMapRoot, '..', 'import_tmp');
+fs.mkdirSync(importTmpRoot, { recursive: true });
+const upload = multer({
+  dest: importTmpRoot,
+  limits: {
+    fileSize: 5 * 1024 * 1024 * 1024,
+  },
+});
 
 if (fs.existsSync(config.frontendBuildRoot)) {
   app.use(express.static(config.frontendBuildRoot));
@@ -394,6 +404,33 @@ app.get('/runtime/released-maps', async (_req, res) => {
       code: 500,
       message: error.message,
     });
+  }
+});
+
+app.post('/runtime/import-base-map', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      throw new Error('file is required');
+    }
+    const result = await runtime.importBaseMapZip(config, {
+      zipPath: req.file.path,
+      mapName: req.body.mapName,
+      overwrite: req.body.overwrite === 'true',
+    });
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15050,
+      message: error.message,
+    });
+  } finally {
+    if (req.file && req.file.path) {
+      fsp.unlink(req.file.path).catch(() => {});
+    }
   }
 });
 

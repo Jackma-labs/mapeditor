@@ -1,6 +1,6 @@
 // import { rename } from 'fs';
 import PubSub from 'pubsub-js';
-import React, { ReactNode, useState } from 'react';
+import React, { ReactNode, useRef, useState } from 'react';
 import { Modal, Menu, Tooltip, Button, message } from 'antd';
 import { ModalProps } from 'antd/lib/modal';
 import FileService from 'src/service/index';
@@ -32,6 +32,10 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
     const [currentKey, setCurrentKey] = useState('0');
     const [titleAddress, setTitleAddress] = useState(name);
     const [menuData, setMenuData] = useState<MenuItemData[]>([]);
+    const [listLoading, setListLoading] = useState(false);
+    const [importLoading, setImportLoading] = useState(false);
+    const importInputRef = useRef<HTMLInputElement>(null);
+    const isBaseMapDialog = title === '打开底图';
 
     // 选中菜单项某个目录
     const handleItemClick = (event: any) => {
@@ -123,28 +127,70 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
 
     // 发起接口请求并处理返回的数据
     const fetchData = async () => {
+        setListLoading(true);
         let response: any;
-        if (title === '打开底图') {
-            response = await FileService.getBaseMapList();
-        } else if (title === '打开标注地图') {
-            response = await FileService.getHDMapList();
-        }
+        try {
+            if (title === '打开底图') {
+                response = await FileService.getBaseMapList();
+            } else if (title === '打开标注地图') {
+                response = await FileService.getHDMapList();
+            }
 
-        if (!title && !response) {
-            return;
-        }
+            if (!title && !response) {
+                return;
+            }
 
-        if (response?.info?.code !== 0) {
-            messageFunc({
-                type: 'error',
-                content: <span>{response?.info?.message}</span>,
-            });
-            return;
-        }
+            if (response?.info?.code !== 0) {
+                messageFunc({
+                    type: 'error',
+                    content: <span>{response?.info?.message}</span>,
+                });
+                return;
+            }
 
-        const data = response.info.data.map_list;
-        setMenuData(generateMenuItems(data));
+            const data = response.info.data.map_list;
+            setMenuData(generateMenuItems(data));
+        } finally {
+            setListLoading(false);
+        }
     };
+
+    const handleImportBaseMap = () => {
+        importInputRef.current?.click();
+    };
+
+    const handleImportFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (importInputRef.current) {
+            importInputRef.current.value = '';
+        }
+        if (!file) {
+            return;
+        }
+        const defaultName = file.name.replace(/\.zip$/i, '');
+        if (!defaultName) {
+            return;
+        }
+        setImportLoading(true);
+        try {
+            const response = await FileService.importBaseMapZip(file, defaultName.trim(), false);
+            if (response?.code !== 0) {
+                messageFunc({
+                    type: 'error',
+                    content: <span>{response?.message || '导入失败'}</span>,
+                });
+                return;
+            }
+            messageFunc({
+                type: 'success',
+                content: <span>{`底图 ${response.data?.mapName || defaultName} 导入成功`}</span>,
+            });
+            await fetchData();
+        } finally {
+            setImportLoading(false);
+        }
+    };
+
     const getList = () => {
         const address = title === '打开底图' ? '/apollo/data/base_map/' : '/apollo/data/editor_map/';
         setTitleAddress(address);
@@ -153,6 +199,30 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         } else {
             setMenuData([]);
         }
+    };
+
+    const renderDialogContent = () => {
+        if (listLoading) {
+            return (
+                <div className="dialog-body-doing">
+                    <img src={DoingIcon} alt="" className="file-icon" />
+                    <span>加载中...</span>
+                </div>
+            );
+        }
+        if (menuData.length === 0) {
+            const emptyText = isBaseMapDialog ? '还没有可用底图，请先导入底图 ZIP。' : '还没有可用标注地图。';
+            return (
+                <div className="dialog-body-empty">
+                    <span>{emptyText}</span>
+                </div>
+            );
+        }
+        return (
+            <div className="dialog-body-list">
+                <Menu mode="vertical" onClick={handleItemClick} selectedKeys={[currentKey]} items={menuData} />
+            </div>
+        );
     };
 
     return (
@@ -176,16 +246,22 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         >
             {items}
             <p className="dialog-body-title">{titleAddress}</p>
-            {menuData.length === 0 ? (
-                <div className="dialog-body-doing">
-                    <img src={DoingIcon} alt="" className="file-icon" />
-                    <span>加载中...</span>
-                </div>
-            ) : (
-                <div className="dialog-body-list">
-                    <Menu mode="vertical" onClick={handleItemClick} selectedKeys={[currentKey]} items={menuData} />
+            {isBaseMapDialog && (
+                <div className="base-map-import">
+                    <Button onClick={handleImportBaseMap} loading={importLoading} className="button-cancel">
+                        导入底图 ZIP
+                    </Button>
+                    <span>ZIP 文件名会作为底图名称，内容需包含 map_images/tiles.json</span>
+                    <input
+                        ref={importInputRef}
+                        type="file"
+                        accept=".zip,application/zip"
+                        style={{ display: 'none' }}
+                        onChange={handleImportFileChange}
+                    />
                 </div>
             )}
+            {renderDialogContent()}
         </Modal>
     );
 };

@@ -157,6 +157,20 @@ GET http://localhost:58000/runtime/released-maps
 GET http://localhost:58000/runtime/deploy-config
 ```
 
+Base map import:
+
+```text
+POST /runtime/import-base-map
+Content-Type: multipart/form-data
+
+file=<base-map.zip>
+mapName=<name>
+overwrite=false
+```
+
+The zip may contain `map_images/tiles.json` at the root or under one top-level
+folder. After import, it is available in the "打开底图" dialog.
+
 ## Edge deployment
 
 Configure `backend/server.config.json`:
