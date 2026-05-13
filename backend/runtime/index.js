@@ -1428,66 +1428,33 @@ function parsePcdHeaderBuffer(buffer, sourceName, sizeBytes = null) {
   };
 }
 
-function isChinaLatLon(lat, lon) {
-  return lat >= 3 && lat <= 55 && lon >= 70 && lon <= 140;
-}
-
-function addFilenameCoordinateCandidate(candidates, candidate) {
-  if (!Number.isFinite(candidate.lat) || !Number.isFinite(candidate.lon)) {
-    return;
-  }
-  if (!isChinaLatLon(candidate.lat, candidate.lon)) {
-    return;
-  }
-  const key = `${candidate.lat.toFixed(8)},${candidate.lon.toFixed(8)}`;
-  if (candidates.some((item) => `${item.lat.toFixed(8)},${item.lon.toFixed(8)}` === key)) {
-    return;
-  }
-  candidates.push(candidate);
-}
-
-function parseImageFilenameCoordinates(sourceName) {
+function parseImageFilenameGpsTime(sourceName) {
   const filename = String(sourceName || '').split(/[\\/]/).pop() || '';
-  const stem = filename.replace(/\.[^.]+$/i, '');
-  const candidates = [];
-  const explicitPattern = /(^|[^0-9.-])(-?\d{1,3}\.\d{4,})[,_\s-]+(-?\d{1,3}\.\d{4,})(?=$|[^0-9.])/g;
-  let match;
-  while ((match = explicitPattern.exec(stem)) !== null && candidates.length < 4) {
-    const first = Number(match[2]);
-    const second = Number(match[3]);
-    addFilenameCoordinateCandidate(candidates, {
-      lat: first,
-      lon: second,
-      confidence: 'medium',
-      source: 'filename_decimal_pair',
-      raw: match[0].trim(),
-      message: '文件名中存在小数经纬度候选值；仍需结合相机姿态、标定和轨迹才能贴图。',
-    });
-    addFilenameCoordinateCandidate(candidates, {
-      lat: second,
-      lon: first,
-      confidence: 'medium',
-      source: 'filename_decimal_pair_swapped',
-      raw: match[0].trim(),
-      message: '文件名中存在小数经纬度候选值，且经纬顺序可能相反；需要采集规则确认。',
-    });
+  const match = filename.match(/^(\d{4})-(\d{6})-(\d{3})_(\d+)-([LR])\.(?:jpe?g|png|webp|tiff?)$/i);
+  if (!match) {
+    return null;
   }
-
-  const compactMatch = stem.match(/^(\d{4})-(\d{6})-(\d{3})(?:[_-]|$)/);
-  if (compactMatch) {
-    const lat = Number(`${compactMatch[1].slice(0, 2)}.${compactMatch[1].slice(2)}`);
-    const lon = Number(`${compactMatch[2].slice(0, 3)}.${compactMatch[2].slice(3)}${compactMatch[3]}`);
-    addFilenameCoordinateCandidate(candidates, {
-      lat,
-      lon,
-      confidence: 'low',
-      source: 'filename_compact_lat_lon',
-      raw: compactMatch[0].replace(/[_-]$/, ''),
-      message:
-        '可按紧凑格式解释为经纬度，但纬度只有两位小数且缺少正式规则；只能作为粗定位候选。',
-    });
+  const gpsWeek = Number(match[1]);
+  const secondsOfWeek = Number(match[2]) + Number(match[3]) / 1000;
+  const frameIndex = Number(match[4]);
+  const cameraSide = match[5].toUpperCase();
+  if (!Number.isFinite(gpsWeek) || !Number.isFinite(secondsOfWeek)) {
+    return null;
   }
-  return candidates;
+  const gpsEpochMs = Date.UTC(1980, 0, 6, 0, 0, 0);
+  const gpsUtcLeapSeconds = 18;
+  const gpsMs = gpsEpochMs + gpsWeek * 7 * 24 * 60 * 60 * 1000 + secondsOfWeek * 1000;
+  const utcMs = gpsMs - gpsUtcLeapSeconds * 1000;
+  return {
+    gpsWeek,
+    secondsOfWeek,
+    gpsIso: new Date(gpsMs).toISOString(),
+    utcIso: new Date(utcMs).toISOString(),
+    frameIndex,
+    cameraSide,
+    raw: `${match[1]}-${match[2]}-${match[3]}`,
+    message: '文件名匹配 GPS 周 + 周内秒时间戳，可用于和 LAS GPS Time 或外部轨迹对齐；它不是经纬度。',
+  };
 }
 
 function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
@@ -1501,7 +1468,7 @@ function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
     model: null,
     dateTime: null,
     xmp: {},
-    filenameCoordinates: parseImageFilenameCoordinates(sourceName),
+    filenameGpsTime: parseImageFilenameGpsTime(sourceName),
     poseUsable: false,
   };
   if (!info.valid) {
@@ -1582,7 +1549,7 @@ function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
 function summarizePackageAnalysis(analysis) {
   const pointCount = analysis.pointClouds.reduce((total, item) => total + (item.pointCount || 0), 0);
   const usableImages = analysis.images.filter((image) => image.poseUsable).length;
-  const filenameCoordinateImages = analysis.images.filter((image) => image.filenameCoordinates?.length).length;
+  const filenameGpsTimeImages = analysis.images.filter((image) => image.filenameGpsTime).length;
   const crsKnown = analysis.pointClouds.some((item) => item.hasCrsVlr);
   const coordinateKinds = Array.from(new Set(analysis.pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
   const recommendations = [];
@@ -1593,8 +1560,8 @@ function summarizePackageAnalysis(analysis) {
     recommendations.push('点云文件未写入 CRS/EPSG；多批数据拼合需要外部提供坐标系或控制点。');
   }
   if (analysis.counts.imageFiles && usableImages === 0) {
-    if (filenameCoordinateImages) {
-      recommendations.push('图片文件名疑似包含经纬度，但缺少可信姿态、标定和轨迹；目前只能作为粗定位候选。');
+    if (filenameGpsTimeImages) {
+      recommendations.push('图片文件名包含 GPS 时间戳，可用于和 LAS GPS Time/轨迹对齐；但缺少可信姿态和标定，不能单独贴图。');
     } else {
       recommendations.push('图片有 EXIF/XMP，但样例未包含有效经纬度/姿态；需要相机标定、时间戳和轨迹才能自动贴图。');
     }
@@ -1626,7 +1593,7 @@ function summarizeCombinedPackageAnalysis(analyses) {
   };
   const pointClouds = analyses.flatMap((item) => item.pointClouds || []);
   const images = analyses.flatMap((item) => item.images || []);
-  const filenameCoordinateImages = images.filter((image) => image.filenameCoordinates?.length).length;
+  const filenameGpsTimeImages = images.filter((image) => image.filenameGpsTime).length;
   const coordinateKinds = Array.from(new Set(pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
   const recommendations = [];
   const addRecommendation = (message) => {
@@ -1641,8 +1608,8 @@ function summarizeCombinedPackageAnalysis(analyses) {
     addRecommendation('点云文件未写入 CRS/EPSG；多批数据拼合需要外部提供坐标系或控制点。');
   }
   if (counts.imageFiles && images.filter((image) => image.poseUsable).length === 0) {
-    if (filenameCoordinateImages) {
-      addRecommendation('图片文件名疑似包含经纬度，但缺少可信姿态、标定和轨迹；目前只能作为粗定位候选。');
+    if (filenameGpsTimeImages) {
+      addRecommendation('图片文件名包含 GPS 时间戳，可用于和 LAS GPS Time/轨迹对齐；但缺少可信姿态和标定，不能单独贴图。');
     } else {
       addRecommendation('图片有 EXIF/XMP，但样例未包含有效经纬度/姿态；需要相机标定、时间戳和轨迹才能自动贴图。');
     }
@@ -1685,7 +1652,7 @@ async function analyzeZipDataPackage(filePath, originalName) {
       analysis.counts.pointCloudFiles += 1;
       if (ext === '.las') analysis.counts.lasFiles += 1;
       if (ext === '.pcd') analysis.counts.pcdFiles += 1;
-      if (analysis.pointClouds.length < 8) {
+      if (analysis.pointClouds.length < 16) {
         const prefix = await readZipEntryPrefix(entry);
         const entrySize = getZipEntrySize(entry);
         analysis.pointClouds.push(
