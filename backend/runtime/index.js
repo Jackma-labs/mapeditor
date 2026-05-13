@@ -2220,6 +2220,7 @@ async function importPointCloudFilesBaseMap(config, params) {
       ground: createRasterTileAccumulator({ sourceType: 'point_cloud_ground' }),
       marking: createRasterTileAccumulator({ sourceType: 'point_cloud_marking' }),
       edge: createRasterTileAccumulator({ sourceType: 'point_cloud_edge' }),
+      structure: createRasterTileAccumulator({ sourceType: 'point_cloud_structure' }),
     };
 
     const renderEnhancedPoint = (x, y, z = 0, intensity = null) => {
@@ -2227,6 +2228,8 @@ async function importPointCloudFilesBaseMap(config, params) {
         return;
       }
       const value = stats.normalizeIntensityForRaster(intensity);
+      const groundZ = stats.getGroundZ(x, y);
+      const relativeZ = Number.isFinite(groundZ) ? z - groundZ : 0;
       const isGround = stats.isGroundPoint(x, y, z);
       const isMarking = isGround && stats.isHighIntensity(intensity);
       const isEdge = isGround && stats.isEdgeCell(x, y);
@@ -2244,6 +2247,12 @@ async function importPointCloudFilesBaseMap(config, params) {
         layers.marking.addPointValue(x, y, z, 255, 1);
         layers.enhanced.addPointValue(x, y, z, 255, 1);
       }
+      if (!isGround) {
+        const structureValue = Math.max(86, Math.min(210, Math.round(value * 0.72 + 46)));
+        const enhancedValue = relativeZ > 0.5 ? Math.max(96, structureValue) : Math.max(72, structureValue - 24);
+        layers.structure.addPointValue(x, y, z, structureValue, 0);
+        layers.enhanced.addPointValue(x, y, z, enhancedValue, 0);
+      }
     };
 
     for (const file of cloudFiles) {
@@ -2257,6 +2266,7 @@ async function importPointCloudFilesBaseMap(config, params) {
       { id: 'ground', name: '地面过滤', path: 'map_images_ground' },
       { id: 'marking', name: '标线增强', path: 'map_images_marking' },
       { id: 'edge', name: '路沿/边界', path: 'map_images_edge' },
+      { id: 'structure', name: '立物/杆牌', path: 'map_images_structure' },
     ].filter((layer) => layer.id === 'enhanced' || layers[layer.id].getPointCount() > 0);
     const metadata = {
       pointCount: stats.totalPointCount,
