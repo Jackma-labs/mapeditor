@@ -761,6 +761,34 @@ function isImageName(fileName) {
   return ['.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff'].includes(path.extname(fileName).toLowerCase());
 }
 
+function archiveBaseName(fileName) {
+  return String(fileName || '').split(/[\\/]/).pop() || '';
+}
+
+function getPointCloudEntryRank(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  if (ext === '.las') return 0;
+  if (ext === '.pcd') return 1;
+  if (ext === '.ply') return 2;
+  return 3;
+}
+
+function selectPreferredPointCloudEntries(entries) {
+  if (entries.length === 0) {
+    return entries;
+  }
+  const bestRank = Math.min(...entries.map((entry) => getPointCloudEntryRank(entry.path)));
+  return entries.filter((entry) => getPointCloudEntryRank(entry.path) === bestRank);
+}
+
+function selectPreferredPointCloudAnalyses(pointClouds) {
+  if (pointClouds.length === 0) {
+    return pointClouds;
+  }
+  const bestRank = Math.min(...pointClouds.map((item) => getPointCloudEntryRank(item.source || '')));
+  return pointClouds.filter((item) => getPointCloudEntryRank(item.source || '') === bestRank);
+}
+
 async function parsePointCloudZip(filePath) {
   const archive = await unzipper.Open.file(filePath);
   const entries = archive.files.filter((entry) => entry.type === 'File');
@@ -775,9 +803,10 @@ async function parsePointCloudZip(filePath) {
   await fsp.rm(tempRoot, { recursive: true, force: true });
   await fsp.mkdir(tempRoot, { recursive: true });
   try {
-    for (let index = 0; index < cloudEntries.length; index += 1) {
-      const entry = cloudEntries[index];
-      const safeName = path.basename(entry.path) || `cloud-${index}${path.extname(entry.path)}`;
+    const selectedCloudEntries = selectPreferredPointCloudEntries(cloudEntries);
+    for (let index = 0; index < selectedCloudEntries.length; index += 1) {
+      const entry = selectedCloudEntries[index];
+      const safeName = archiveBaseName(entry.path) || `cloud-${index}${path.extname(entry.path)}`;
       const tempPath = path.join(tempRoot, `${index}-${safeName}`);
       await pipeline(entry.stream(), fs.createWriteStream(tempPath));
       const parsed = await parsePointCloud(tempPath, safeName);
@@ -785,6 +814,7 @@ async function parsePointCloudZip(filePath) {
     }
     const parsed = accumulator.finalize();
     parsed.sourceFiles = cloudEntries.map((entry) => entry.path);
+    parsed.selectedSourceFiles = selectedCloudEntries.map((entry) => entry.path);
     parsed.imageFileCount = imageEntries.length;
     return parsed;
   } finally {
@@ -1547,7 +1577,8 @@ function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
 }
 
 function summarizePackageAnalysis(analysis) {
-  const pointCount = analysis.pointClouds.reduce((total, item) => total + (item.pointCount || 0), 0);
+  const pointCloudsForCount = selectPreferredPointCloudAnalyses(analysis.pointClouds);
+  const pointCount = pointCloudsForCount.reduce((total, item) => total + (item.pointCount || 0), 0);
   const usableImages = analysis.images.filter((image) => image.poseUsable).length;
   const filenameGpsTimeImages = analysis.images.filter((image) => image.filenameGpsTime).length;
   const crsKnown = analysis.pointClouds.some((item) => item.hasCrsVlr);
@@ -1747,6 +1778,108 @@ async function analyzeDataPackage(config, params) {
     await fsp.rm(targetDir, { recursive: true, force: true });
     throw error;
   }
+}
+
+function getImportPackageRoot(config) {
+  return path.resolve(config.baseMapRoot, '..', 'import_packages');
+}
+
+function validatePackageId(packageId) {
+  const normalized = String(packageId || '').trim();
+  if (!normalized) {
+    throw new Error('packageId is required');
+  }
+  if (normalized === '.' || normalized === '..' || normalized.includes('/') || normalized.includes('\\')) {
+    throw new Error('packageId must not contain path separators');
+  }
+  return normalized;
+}
+
+function defaultMapNameFromPackageId(packageId) {
+  return sanitizePackageName(String(packageId || '').replace(/^\d{14}-/, '') || packageId);
+}
+
+async function readAnalysisFile(packageDir) {
+  const analysisPath = path.join(packageDir, 'analysis.json');
+  if (!(await pathExists(analysisPath))) {
+    return null;
+  }
+  const content = await fsp.readFile(analysisPath, 'utf8');
+  return JSON.parse(content.replace(/^\uFEFF/, ''));
+}
+
+async function listDataPackages(config) {
+  const packageRoot = getImportPackageRoot(config);
+  if (!(await pathExists(packageRoot))) {
+    return [];
+  }
+  const entries = await fsp.readdir(packageRoot, { withFileTypes: true });
+  const packages = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const packageId = entry.name;
+    const packageDir = path.join(packageRoot, packageId);
+    const stat = await fsp.stat(packageDir);
+    const analysis = await readAnalysisFile(packageDir).catch(() => null);
+    packages.push({
+      packageId,
+      path: packageDir,
+      createdAt: stat.birthtime.toISOString(),
+      modifiedAt: stat.mtime.toISOString(),
+      defaultMapName: defaultMapNameFromPackageId(packageId),
+      summary: analysis?.summary || null,
+      uploadedFiles: analysis?.uploadedFiles || [],
+      sizeBytes: await getDirectorySize(packageDir),
+    });
+  }
+  packages.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
+  return packages;
+}
+
+async function resolveDataPackageDir(config, packageId) {
+  const normalizedPackageId = validatePackageId(packageId);
+  const packageRoot = getImportPackageRoot(config);
+  const packageDir = path.resolve(packageRoot, normalizedPackageId);
+  if (!packageDir.startsWith(`${packageRoot}${path.sep}`)) {
+    throw new Error('packageId resolved outside import package root');
+  }
+  if (!(await pathExists(packageDir))) {
+    throw new Error(`data package not found: ${normalizedPackageId}`);
+  }
+  return packageDir;
+}
+
+async function importDataPackageBaseMap(config, params) {
+  const packageId = validatePackageId(params.packageId);
+  const packageDir = await resolveDataPackageDir(config, packageId);
+  const uploadDir = path.join(packageDir, 'uploads');
+  if (!(await pathExists(uploadDir))) {
+    throw new Error(`data package uploads not found: ${packageId}`);
+  }
+  const entries = await fsp.readdir(uploadDir, { withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => ({
+      path: path.join(uploadDir, entry.name),
+      originalName: entry.name.replace(/^\d+-/, ''),
+    }))
+    .filter((file) => isSupportedPointCloudUploadName(file.originalName) || isImageName(file.originalName));
+  if (files.length === 0) {
+    throw new Error(`data package has no importable point cloud files: ${packageId}`);
+  }
+  const mapName = params.mapName || defaultMapNameFromPackageId(packageId);
+  const result = await importPointCloudFilesBaseMap(config, {
+    mapName,
+    overwrite: params.overwrite === true,
+    files,
+  });
+  return {
+    ...result,
+    packageId,
+    packagePath: packageDir,
+  };
 }
 
 async function scanTextPointCloud(filePath, onPoint) {
@@ -1963,15 +2096,17 @@ async function scanPointCloudZip(filePath, onPoint) {
   await fsp.rm(tempRoot, { recursive: true, force: true });
   await fsp.mkdir(tempRoot, { recursive: true });
   try {
-    for (let index = 0; index < cloudEntries.length; index += 1) {
-      const entry = cloudEntries[index];
-      const safeName = path.basename(entry.path) || `cloud-${index}${path.extname(entry.path)}`;
+    const selectedCloudEntries = selectPreferredPointCloudEntries(cloudEntries);
+    for (let index = 0; index < selectedCloudEntries.length; index += 1) {
+      const entry = selectedCloudEntries[index];
+      const safeName = archiveBaseName(entry.path) || `cloud-${index}${path.extname(entry.path)}`;
       const tempPath = path.join(tempRoot, `${index}-${safeName}`);
       await pipeline(entry.stream(), fs.createWriteStream(tempPath));
       await scanPointCloudFile(tempPath, safeName, onPoint);
     }
     return {
       sourceFiles: cloudEntries.map((entry) => entry.path),
+      selectedSourceFiles: selectedCloudEntries.map((entry) => entry.path),
       imageFileCount: imageEntries.length,
     };
   } finally {
@@ -2069,7 +2204,7 @@ async function importPointCloudFilesBaseMap(config, params) {
     for (const file of cloudFiles) {
       const originalName = file.originalName || file.originalname || path.basename(file.path);
       const parsed = await scanPointCloudFile(file.path, originalName, statsCollector.addPoint);
-      sourceFiles.push(...(parsed.sourceFiles || [originalName]));
+      sourceFiles.push(...(parsed.selectedSourceFiles || parsed.sourceFiles || [originalName]));
       imageFileCount += parsed.imageFileCount || 0;
     }
     const stats = statsCollector.finalize();
@@ -2499,6 +2634,8 @@ module.exports = {
   preflightEdgeDeploy,
   listReleasedMaps,
   analyzeDataPackage,
+  listDataPackages,
+  importDataPackageBaseMap,
   importBaseMapZip,
   importPointCloudBaseMap,
   importPointCloudFilesBaseMap,

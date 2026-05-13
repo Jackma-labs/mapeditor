@@ -512,6 +512,41 @@ app.post('/runtime/analyze-data-package', upload.any(), async (req, res) => {
   }
 });
 
+app.get('/runtime/data-packages', async (_req, res) => {
+  try {
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: {
+        packages: await runtime.listDataPackages(config),
+      },
+    });
+  } catch (error) {
+    log('List data packages failed:', error);
+    res.status(500).json({
+      code: 15054,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/import-data-package-base-map', async (req, res) => {
+  try {
+    const result = await runtime.importDataPackageBaseMap(config, req.body || {});
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    log('Import data package base map failed:', error);
+    res.status(500).json({
+      code: 15055,
+      message: error.message,
+    });
+  }
+});
+
 app.post('/runtime/import-map-package', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {

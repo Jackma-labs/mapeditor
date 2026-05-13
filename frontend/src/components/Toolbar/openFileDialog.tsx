@@ -110,6 +110,20 @@ const formatPackageAnalysis = (data: any) => {
     return lines.join('\n');
 };
 
+const formatPackageImportSummary = (data: any, mapName: string) => {
+    const summary = data?.summary || {};
+    return [
+        `包 ID: ${data?.packageId || ''}`,
+        `保存路径: ${data?.path || ''}`,
+        `生成底图名称: ${mapName}`,
+        `点云: ${summary.pointCloudFiles || 0} 个 (LAS ${summary.lasFiles || 0}, PCD ${summary.pcdFiles || 0})`,
+        `图片: ${summary.imageFiles || 0} 个`,
+        `估算点数: ${summary.pointCount || 0}`,
+        '',
+        '生成过程会读取预检包里的原始 ZIP，不需要再次上传。',
+    ].join('\n');
+};
+
 // eslint-disable-next-line react/function-component-definition
 const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }) => {
     const Icon = title === '打开底图' ? FileIcon : MapIcon;
@@ -247,6 +261,72 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
     const handleImportFile = (mode: ImportMode) => {
         importModeRef.current = mode;
         importInputRef.current?.click();
+    };
+
+    const handleImportLatestDataPackage = async () => {
+        setImportLoading(true);
+        try {
+            const response = await FileService.getDataPackages();
+            if (response?.code !== 0) {
+                Modal.error({
+                    title: '读取预检包失败',
+                    content: response?.message || '读取预检包失败',
+                });
+                return;
+            }
+            const packages = response?.data?.packages || [];
+            if (packages.length === 0) {
+                Modal.info({
+                    title: '没有预检包',
+                    content: '请先点击“预检数据包”上传并分析数据包。',
+                });
+                return;
+            }
+            const latestPackage = packages[0];
+            const defaultMapName = sanitizeMapName(latestPackage.defaultMapName || latestPackage.packageId);
+            Modal.confirm({
+                title: '从最近预检包生成底图',
+                width: 760,
+                okText: '生成底图',
+                cancelText: '取消',
+                content: (
+                    <pre style={{ whiteSpace: 'pre-wrap' }}>
+                        {formatPackageImportSummary(latestPackage, defaultMapName)}
+                    </pre>
+                ),
+                onOk: async () => {
+                    setImportLoading(true);
+                    try {
+                        const importResponse = await FileService.importDataPackageBaseMap(
+                            latestPackage.packageId,
+                            defaultMapName,
+                            false,
+                        );
+                        if (importResponse?.code !== 0) {
+                            Modal.error({
+                                title: '底图生成失败',
+                                content: importResponse?.message || '底图生成失败',
+                            });
+                            throw new Error(importResponse?.message || '底图生成失败');
+                        }
+                        messageFunc({
+                            type: 'success',
+                            content: <span>{`底图 ${importResponse.data?.mapName || defaultMapName} 生成成功`}</span>,
+                        });
+                        await fetchData();
+                    } finally {
+                        setImportLoading(false);
+                    }
+                },
+            });
+        } catch (error) {
+            Modal.error({
+                title: '读取预检包失败',
+                content: error instanceof Error ? error.message : '读取预检包失败',
+            });
+        } finally {
+            setImportLoading(false);
+        }
     };
 
     const handleImportFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -414,6 +494,13 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                                 className="button-cancel"
                             >
                                 预检数据包
+                            </Button>
+                            <Button
+                                onClick={handleImportLatestDataPackage}
+                                loading={importLoading}
+                                className="button-cancel"
+                            >
+                                最近预检包生成底图
                             </Button>
                         </>
                     )}
