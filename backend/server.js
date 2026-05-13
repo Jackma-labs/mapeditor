@@ -33,9 +33,71 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/plugins/map' });
 
 let lastAccessedBaseMapDir = null;
+const runtimeJobs = new Map();
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
+}
+
+function serializeRuntimeJob(job) {
+  return {
+    id: job.id,
+    type: job.type,
+    status: job.status,
+    message: job.message,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    result: job.result || null,
+    error: job.error || null,
+  };
+}
+
+function pruneRuntimeJobs() {
+  const maxAgeMs = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  for (const [jobId, job] of runtimeJobs.entries()) {
+    const finishedAt = job.finishedAt ? new Date(job.finishedAt).getTime() : null;
+    if (finishedAt && now - finishedAt > maxAgeMs) {
+      runtimeJobs.delete(jobId);
+    }
+  }
+}
+
+function startRuntimeJob(type, runner) {
+  pruneRuntimeJobs();
+  const job = {
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    type,
+    status: 'queued',
+    message: 'Queued',
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    finishedAt: null,
+    result: null,
+    error: null,
+  };
+  runtimeJobs.set(job.id, job);
+  setImmediate(async () => {
+    job.status = 'running';
+    job.message = 'Running';
+    job.startedAt = new Date().toISOString();
+    try {
+      job.result = await runner();
+      job.status = 'succeeded';
+      job.message = 'Success';
+    } catch (error) {
+      log(`Runtime job ${job.id} failed:`, error);
+      job.status = 'failed';
+      job.message = error.message;
+      job.error = {
+        message: error.message,
+      };
+    } finally {
+      job.finishedAt = new Date().toISOString();
+    }
+  });
+  return job;
 }
 
 async function pathExists(targetPath) {
@@ -545,6 +607,46 @@ app.post('/runtime/import-data-package-base-map', async (req, res) => {
       message: error.message,
     });
   }
+});
+
+app.post('/runtime/import-data-package-base-map-job', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const job = startRuntimeJob('import-data-package-base-map', () =>
+      runtime.importDataPackageBaseMap(config, body)
+    );
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    log('Start data package import job failed:', error);
+    res.status(500).json({
+      code: 15056,
+      message: error.message,
+    });
+  }
+});
+
+app.get('/runtime/jobs/:jobId', (req, res) => {
+  const job = runtimeJobs.get(req.params.jobId);
+  if (!job) {
+    res.status(404).json({
+      code: 404,
+      message: `job not found: ${req.params.jobId}`,
+    });
+    return;
+  }
+  res.json({
+    code: 0,
+    message: 'Success',
+    data: {
+      job: serializeRuntimeJob(job),
+    },
+  });
 });
 
 app.post('/runtime/import-map-package', upload.single('file'), async (req, res) => {

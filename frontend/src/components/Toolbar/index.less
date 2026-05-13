@@ -156,6 +156,8 @@
         }
         .ant-modal-body {
             margin-top: 30px;
+            max-height: calc(100vh - 170px);
+            overflow-y: auto;
             .dialog-body-title {
                 font-size: 14px;
                 color: #a6b5cc;
@@ -204,6 +206,66 @@
                 .ant-btn {
                     height: 32px;
                 }
+            }
+            .data-package-panel {
+                margin: 0 0 12px;
+                padding: 12px;
+                background: #181a1f;
+                border: 1px solid #383b45;
+                border-radius: 8px;
+                color: #a6b5cc;
+            }
+            .data-package-panel-title {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 10px;
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            .data-package-list {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+                max-height: 210px;
+                overflow-y: auto;
+            }
+            .data-package-item {
+                display: flex;
+                justify-content: space-between;
+                gap: 16px;
+                padding: 10px 12px;
+                background: #222631;
+                border-radius: 6px;
+            }
+            .data-package-main {
+                min-width: 0;
+            }
+            .data-package-name {
+                color: #ffffff;
+                font-size: 14px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .data-package-meta,
+            .data-package-path,
+            .data-package-progress {
+                margin-top: 4px;
+                color: #a6b5cc;
+                font-size: 12px;
+            }
+            .data-package-path {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .data-package-actions {
+                display: flex;
+                flex-shrink: 0;
+                align-items: center;
+                gap: 8px;
             }
             .dialog-body-list {
                 height: 368px;

@@ -205,6 +205,21 @@ class FileService {
         });
     }
 
+    async startDataPackageBaseMapJob(packageId: string, mapName: string, overwrite: boolean = false) {
+        return this.requestJson('/runtime/import-data-package-base-map-job', {
+            method: 'POST',
+            body: JSON.stringify({
+                packageId,
+                mapName,
+                overwrite,
+            }),
+        });
+    }
+
+    async getRuntimeJob(jobId: string) {
+        return this.requestJson(`/runtime/jobs/${encodeURIComponent(jobId)}`);
+    }
+
     async importMapPackageZip(file: File, mapName: string, overwrite: boolean = false) {
         const formData = new FormData();
         formData.append('file', file);

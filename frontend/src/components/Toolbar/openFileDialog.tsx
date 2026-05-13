@@ -62,6 +62,37 @@ const buildImportMapName = (files: File[]) => {
     return prefix.length >= 4 ? prefix : createFallbackPointCloudName();
 };
 
+const sleep = (ms: number) =>
+    new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+
+const formatCount = (value: any) => {
+    const numberValue = Number(value || 0);
+    return Number.isFinite(numberValue) ? numberValue.toLocaleString() : '0';
+};
+
+const formatBytes = (value: any) => {
+    const numberValue = Number(value || 0);
+    if (!Number.isFinite(numberValue) || numberValue <= 0) {
+        return '0 B';
+    }
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const power = Math.min(Math.floor(Math.log(numberValue) / Math.log(1024)), units.length - 1);
+    return `${(numberValue / 1024 ** power).toFixed(power === 0 ? 0 : 1)} ${units[power]}`;
+};
+
+const formatDateTime = (value: string) => {
+    if (!value) {
+        return '';
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+    return date.toLocaleString();
+};
+
 const formatPackageAnalysis = (data: any) => {
     const summary = data?.summary || {};
     const analyses = data?.analyses || [];
@@ -116,9 +147,11 @@ const formatPackageImportSummary = (data: any, mapName: string) => {
         `包 ID: ${data?.packageId || ''}`,
         `保存路径: ${data?.path || ''}`,
         `生成底图名称: ${mapName}`,
-        `点云: ${summary.pointCloudFiles || 0} 个 (LAS ${summary.lasFiles || 0}, PCD ${summary.pcdFiles || 0})`,
-        `图片: ${summary.imageFiles || 0} 个`,
-        `估算点数: ${summary.pointCount || 0}`,
+        `点云: ${formatCount(summary.pointCloudFiles)} 个 (LAS ${formatCount(summary.lasFiles)}, PCD ${formatCount(
+            summary.pcdFiles,
+        )})`,
+        `图片: ${formatCount(summary.imageFiles)} 个`,
+        `估算点数: ${formatCount(summary.pointCount)}`,
         '',
         '生成过程会读取预检包里的原始 ZIP，不需要再次上传。',
         '如果同名底图已存在，会覆盖重建。',
@@ -134,8 +167,11 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
     const [currentKey, setCurrentKey] = useState('0');
     const [titleAddress, setTitleAddress] = useState(defaultAddress);
     const [menuData, setMenuData] = useState<MenuItemData[]>([]);
+    const [dataPackages, setDataPackages] = useState<any[]>([]);
     const [listLoading, setListLoading] = useState(false);
+    const [packageLoading, setPackageLoading] = useState(false);
     const [importLoading, setImportLoading] = useState(false);
+    const [packageJobText, setPackageJobText] = useState('');
     const importInputRef = useRef<HTMLInputElement>(null);
     const importModeRef = useRef<ImportMode>('base-map-zip');
     const isBaseMapDialog = title === '打开底图';
@@ -259,9 +295,105 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         }
     };
 
+    const fetchDataPackages = async () => {
+        if (!isBaseMapDialog) {
+            setDataPackages([]);
+            return;
+        }
+        setPackageLoading(true);
+        try {
+            const response = await FileService.getDataPackages();
+            if (response?.code !== 0) {
+                messageFunc({
+                    type: 'error',
+                    content: <span>{response?.message || '读取预检包失败'}</span>,
+                });
+                return;
+            }
+            setDataPackages(response?.data?.packages || []);
+        } catch (error) {
+            messageFunc({
+                type: 'error',
+                content: <span>{error instanceof Error ? error.message : '读取预检包失败'}</span>,
+            });
+        } finally {
+            setPackageLoading(false);
+        }
+    };
+
     const handleImportFile = (mode: ImportMode) => {
         importModeRef.current = mode;
         importInputRef.current?.click();
+    };
+
+    const waitForRuntimeJob = async (jobId: string, label: string, attempt = 0): Promise<any> => {
+        if (attempt >= 600) {
+            setPackageJobText('');
+            throw new Error('后台任务等待超时');
+        }
+        const response = await FileService.getRuntimeJob(jobId);
+        if (response?.code !== 0) {
+            throw new Error(response?.message || '读取后台任务失败');
+        }
+        const job = response?.data?.job;
+        if (job?.status === 'succeeded') {
+            setPackageJobText('');
+            return job;
+        }
+        if (job?.status === 'failed') {
+            setPackageJobText('');
+            throw new Error(job?.message || '后台生成失败');
+        }
+        setPackageJobText(`${label}，状态：${job?.status || 'running'}`);
+        await sleep(3000);
+        return waitForRuntimeJob(jobId, label, attempt + 1);
+    };
+
+    const handleGenerateDataPackageBaseMap = async (packageInfo: any) => {
+        const defaultMapName = sanitizeMapName(packageInfo.defaultMapName || packageInfo.packageId);
+        Modal.confirm({
+            title: '从预检包生成底图',
+            width: 760,
+            okText: '生成底图',
+            cancelText: '取消',
+            content: (
+                <pre style={{ whiteSpace: 'pre-wrap' }}>{formatPackageImportSummary(packageInfo, defaultMapName)}</pre>
+            ),
+            onOk: async () => {
+                setImportLoading(true);
+                setPackageJobText(`正在提交后台生成任务：${defaultMapName}`);
+                try {
+                    const response = await FileService.startDataPackageBaseMapJob(
+                        packageInfo.packageId,
+                        defaultMapName,
+                        true,
+                    );
+                    if (response?.code !== 0) {
+                        throw new Error(response?.message || '提交后台生成任务失败');
+                    }
+                    const jobId = response?.data?.job?.id;
+                    if (!jobId) {
+                        throw new Error('后台任务没有返回 jobId');
+                    }
+                    const job = await waitForRuntimeJob(jobId, `正在生成底图 ${defaultMapName}`);
+                    messageFunc({
+                        type: 'success',
+                        content: <span>{`底图 ${job.result?.mapName || defaultMapName} 生成成功`}</span>,
+                    });
+                    await fetchData();
+                    await fetchDataPackages();
+                } catch (error) {
+                    Modal.error({
+                        title: '底图生成失败',
+                        content: error instanceof Error ? error.message : '底图生成失败',
+                    });
+                    throw error;
+                } finally {
+                    setImportLoading(false);
+                    setPackageJobText('');
+                }
+            },
+        });
     };
 
     const handleImportLatestDataPackage = async () => {
@@ -284,42 +416,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                 return;
             }
             const latestPackage = packages[0];
-            const defaultMapName = sanitizeMapName(latestPackage.defaultMapName || latestPackage.packageId);
-            Modal.confirm({
-                title: '从最近预检包生成底图',
-                width: 760,
-                okText: '生成底图',
-                cancelText: '取消',
-                content: (
-                    <pre style={{ whiteSpace: 'pre-wrap' }}>
-                        {formatPackageImportSummary(latestPackage, defaultMapName)}
-                    </pre>
-                ),
-                onOk: async () => {
-                    setImportLoading(true);
-                    try {
-                        const importResponse = await FileService.importDataPackageBaseMap(
-                            latestPackage.packageId,
-                            defaultMapName,
-                            true,
-                        );
-                        if (importResponse?.code !== 0) {
-                            Modal.error({
-                                title: '底图生成失败',
-                                content: importResponse?.message || '底图生成失败',
-                            });
-                            throw new Error(importResponse?.message || '底图生成失败');
-                        }
-                        messageFunc({
-                            type: 'success',
-                            content: <span>{`底图 ${importResponse.data?.mapName || defaultMapName} 生成成功`}</span>,
-                        });
-                        await fetchData();
-                    } finally {
-                        setImportLoading(false);
-                    }
-                },
-            });
+            await handleGenerateDataPackageBaseMap(latestPackage);
         } catch (error) {
             Modal.error({
                 title: '读取预检包失败',
@@ -380,6 +477,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                 return;
             }
             if (mode === 'analyze-package') {
+                await fetchDataPackages();
                 Modal.info({
                     title: '数据包预检结果',
                     width: 860,
@@ -419,9 +517,78 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                 console.log(error);
             }
             fetchData();
+            fetchDataPackages();
         } else {
             setMenuData([]);
+            setDataPackages([]);
+            setPackageJobText('');
         }
+    };
+
+    const renderDataPackagePanel = () => {
+        if (!isBaseMapDialog) {
+            return null;
+        }
+        if (packageLoading) {
+            return <div className="data-package-progress">正在读取预检包...</div>;
+        }
+        if (dataPackages.length === 0 && !packageJobText) {
+            return null;
+        }
+        return (
+            <div className="data-package-panel">
+                <div className="data-package-panel-title">
+                    <span>已上传预检包</span>
+                    <Button size="small" onClick={fetchDataPackages} disabled={importLoading} className="button-cancel">
+                        刷新
+                    </Button>
+                </div>
+                {packageJobText && <div className="data-package-progress">{packageJobText}</div>}
+                <div className="data-package-list">
+                    {dataPackages.slice(0, 5).map((packageInfo) => {
+                        const summary = packageInfo.summary || {};
+                        const mapName = sanitizeMapName(packageInfo.defaultMapName || packageInfo.packageId);
+                        const hasPointCloud = Number(summary.pointCloudFiles || 0) > 0;
+                        const metaText = `${formatCount(summary.pointCloudFiles)} 个点云 / ${formatCount(
+                            summary.imageFiles,
+                        )} 张图片 / ${formatCount(summary.pointCount)} 点 / ${formatBytes(packageInfo.sizeBytes)}`;
+                        const pathText = `${formatDateTime(packageInfo.modifiedAt)} · ${packageInfo.packageId}`;
+                        const showPackageAnalysis = () => {
+                            Modal.info({
+                                title: '数据包预检结果',
+                                width: 860,
+                                content: (
+                                    <pre style={{ whiteSpace: 'pre-wrap' }}>{formatPackageAnalysis(packageInfo)}</pre>
+                                ),
+                            });
+                        };
+                        return (
+                            <div className="data-package-item" key={packageInfo.packageId}>
+                                <div className="data-package-main">
+                                    <div className="data-package-name">{mapName}</div>
+                                    <div className="data-package-meta">{metaText}</div>
+                                    <div className="data-package-path">{pathText}</div>
+                                </div>
+                                <div className="data-package-actions">
+                                    <Button size="small" onClick={showPackageAnalysis} className="button-cancel">
+                                        详情
+                                    </Button>
+                                    <Button
+                                        size="small"
+                                        type="primary"
+                                        disabled={!hasPointCloud || importLoading}
+                                        loading={importLoading}
+                                        onClick={() => handleGenerateDataPackageBaseMap(packageInfo)}
+                                    >
+                                        生成底图
+                                    </Button>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        );
     };
 
     const renderDialogContent = () => {
@@ -529,6 +696,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                     />
                 </div>
             )}
+            {renderDataPackagePanel()}
             {renderDialogContent()}
         </Modal>
     );

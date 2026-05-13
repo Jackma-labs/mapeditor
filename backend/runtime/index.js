@@ -1830,6 +1830,7 @@ async function listDataPackages(config) {
       modifiedAt: stat.mtime.toISOString(),
       defaultMapName: defaultMapNameFromPackageId(packageId),
       summary: analysis?.summary || null,
+      analyses: analysis?.analyses || [],
       uploadedFiles: analysis?.uploadedFiles || [],
       sizeBytes: await getDirectorySize(packageDir),
     });
