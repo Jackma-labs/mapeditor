@@ -41,6 +41,39 @@ The script installs dependencies, builds the frontend, and starts the backend.
 It prefers a user `systemd` service and falls back to `nohup` if user services
 are not available in the SSH session.
 
+Server-specific settings live in:
+
+```text
+~/mapeditor/.env.server
+```
+
+The bootstrap script creates this file from
+`deploy/server/env.server.example` when it does not exist. Configure edge
+deployment there after passwordless SSH from the server to the edge device is
+ready.
+
+Minimum edge deployment settings:
+
+```bash
+MAP_EDGE_DEPLOY_MODE=ssh
+MAP_EDGE_HOST=192.168.110.10
+MAP_EDGE_USER=nvidia
+MAP_EDGE_TARGET_MAP_ROOT=/apollo/modules/map/data
+MAP_EDGE_POST_DEPLOY_COMMAND=
+```
+
+After changing `.env.server`, restart the service:
+
+```bash
+systemctl --user restart mapeditor.service
+```
+
+Then run the preflight check from the UI or through HTTP:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:58000/runtime/preflight-deploy
+```
+
 After deployment, open:
 
 ```text

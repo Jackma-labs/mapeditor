@@ -140,6 +140,17 @@ class FileService {
         return this.requestJson('/runtime/released-maps');
     }
 
+    async getDeployConfig() {
+        return this.requestJson('/runtime/deploy-config');
+    }
+
+    async preflightDeploy() {
+        return this.requestJson('/runtime/preflight-deploy', {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
+    }
+
     async deployLatestReleasedMap() {
         return this.requestJson('/runtime/deploy-latest', {
             method: 'POST',

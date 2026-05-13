@@ -196,6 +196,10 @@ export default function Index(prop: { messageApi: any }) {
             key: 'runtime-status',
         },
         {
+            label: 'Preflight deploy',
+            key: 'preflight-deploy',
+        },
+        {
             label: 'Deploy latest',
             key: 'deploy-latest',
         },
@@ -234,6 +238,44 @@ export default function Index(prop: { messageApi: any }) {
         } catch (error: any) {
             Modal.error({
                 title: 'Runtime status failed',
+                content: error?.message || 'Unknown error',
+            });
+        }
+    };
+
+    const showPreflightResult = async () => {
+        try {
+            const response = await FileService.preflightDeploy();
+            const result = response?.data;
+            const checks = result?.checks || [];
+            const content = (
+                <div className="runtime-status-modal">
+                    <p>{`Ready: ${result?.ready ? 'yes' : 'no'}`}</p>
+                    <p>{`Target: ${result?.deployConfig?.target || 'not configured'}`}</p>
+                    <p>{`Map root: ${result?.deployConfig?.targetMapRoot || ''}`}</p>
+                    <ul>
+                        {checks.map((check: any) => (
+                            <li key={check.name}>{`[${check.status}] ${check.message}`}</li>
+                        ))}
+                    </ul>
+                </div>
+            );
+            if (response?.code === 0) {
+                Modal.success({
+                    title: 'Deploy preflight passed',
+                    width: 640,
+                    content,
+                });
+                return;
+            }
+            Modal.warning({
+                title: 'Deploy preflight failed',
+                width: 640,
+                content,
+            });
+        } catch (error: any) {
+            Modal.error({
+                title: 'Deploy preflight failed',
                 content: error?.message || 'Unknown error',
             });
         }
@@ -290,6 +332,9 @@ export default function Index(prop: { messageApi: any }) {
                 break;
             case 'runtime-status':
                 showRuntimeStatus();
+                break;
+            case 'preflight-deploy':
+                showPreflightResult();
                 break;
             case 'deploy-latest':
                 deployLatestReleasedMap();

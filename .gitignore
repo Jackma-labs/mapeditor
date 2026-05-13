@@ -8,6 +8,7 @@ data/editor_map/*
 data/released_map/*
 runtime/bin/*
 *.log
+.env.server
 
 !data/bag/.gitkeep
 !data/base_map/.gitkeep

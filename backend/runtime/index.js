@@ -49,6 +49,17 @@ function normalizeForContainer(hostPath, config) {
   return hostPath.replace(/\\/g, '/');
 }
 
+function quoteShell(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function buildEdgeTarget(config) {
+  if (!config.edgeDeploy.user || !config.edgeDeploy.host) {
+    return '';
+  }
+  return `${config.edgeDeploy.user}@${config.edgeDeploy.host}`;
+}
+
 async function checkDockerRuntime(config) {
   const dockerInfo = await runCommand('docker', ['version', '--format', '{{.Server.Version}}']).catch((error) => ({
     code: 1,
@@ -246,6 +257,112 @@ async function getRuntimeDoctor(config) {
   };
 }
 
+function getDeployConfig(config) {
+  const edge = config.edgeDeploy;
+  return {
+    mode: edge.mode,
+    enabled: edge.mode !== 'disabled',
+    host: edge.host,
+    user: edge.user,
+    target: buildEdgeTarget(config),
+    targetMapRoot: edge.targetMapRoot,
+    postDeployCommandConfigured: Boolean(edge.postDeployCommand),
+  };
+}
+
+async function preflightEdgeDeploy(config) {
+  const deployConfig = getDeployConfig(config);
+  const checks = [];
+  const addCheck = (name, ok, severity, message, details = null) => {
+    checks.push({
+      name,
+      status: ok ? 'ok' : severity,
+      message,
+      details,
+    });
+  };
+
+  addCheck(
+    'edge-mode',
+    deployConfig.enabled,
+    'error',
+    deployConfig.enabled ? `Edge deploy mode is ${deployConfig.mode}` : 'Edge deploy is disabled'
+  );
+  addCheck(
+    'edge-target',
+    Boolean(deployConfig.host && deployConfig.user),
+    'error',
+    deployConfig.host && deployConfig.user
+      ? `Edge target is ${deployConfig.target}`
+      : 'MAP_EDGE_HOST and MAP_EDGE_USER are required'
+  );
+
+  if (!deployConfig.enabled || !deployConfig.host || !deployConfig.user) {
+    return {
+      ready: false,
+      deployConfig,
+      checks,
+    };
+  }
+
+  if (deployConfig.mode !== 'ssh') {
+    addCheck('edge-mode-supported', false, 'error', `Unsupported edge deploy mode: ${deployConfig.mode}`);
+    return {
+      ready: false,
+      deployConfig,
+      checks,
+    };
+  }
+
+  const sshBaseArgs = [
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'ConnectTimeout=5',
+    deployConfig.target,
+  ];
+
+  try {
+    const result = await runCommand('ssh', [...sshBaseArgs, 'echo mapeditor-ok'], {
+      timeoutMs: 10000,
+    });
+    addCheck('ssh-connectivity', true, 'error', `SSH connectivity ok: ${result.stdout.trim()}`);
+  } catch (error) {
+    addCheck('ssh-connectivity', false, 'error', 'SSH connectivity failed', error.message);
+  }
+
+  try {
+    const remoteCommand = [
+      'mkdir',
+      '-p',
+      quoteShell(deployConfig.targetMapRoot),
+      '&&',
+      'test',
+      '-w',
+      quoteShell(deployConfig.targetMapRoot),
+    ].join(' ');
+    await runCommand('ssh', [...sshBaseArgs, remoteCommand], {
+      timeoutMs: 10000,
+    });
+    addCheck('target-map-root', true, 'error', `Target map root is writable: ${deployConfig.targetMapRoot}`);
+  } catch (error) {
+    addCheck(
+      'target-map-root',
+      false,
+      'error',
+      `Target map root is not writable: ${deployConfig.targetMapRoot}`,
+      error.message
+    );
+  }
+
+  const ready = !checks.some((check) => check.status === 'error');
+  return {
+    ready,
+    deployConfig,
+    checks,
+  };
+}
+
 async function runLocalConverter(config, mapName, jsonPath, releaseDir, baseMapDir) {
   if (!(await pathExists(config.converterBinary))) {
     throw new Error(`converter binary not found at ${config.converterBinary}`);
@@ -338,16 +455,25 @@ async function deployReleasedMap(config, params) {
   if (!config.edgeDeploy.host || !config.edgeDeploy.user) {
     throw new Error('edgeDeploy.host and edgeDeploy.user are required');
   }
-  const target = `${config.edgeDeploy.user}@${config.edgeDeploy.host}:${config.edgeDeploy.targetMapRoot}/`;
+  const preflight = await preflightEdgeDeploy(config);
+  if (!preflight.ready) {
+    const failedChecks = preflight.checks
+      .filter((check) => check.status === 'error')
+      .map((check) => `${check.name}: ${check.message}`)
+      .join('; ');
+    throw new Error(`edge deploy preflight failed: ${failedChecks}`);
+  }
+  const edgeTarget = buildEdgeTarget(config);
+  const target = `${edgeTarget}:${config.edgeDeploy.targetMapRoot}/`;
   const copyResult = await runCommand('scp', ['-r', sourceDir, target], { timeoutMs: 10 * 60 * 1000 });
   let postDeployResult = null;
   if (config.edgeDeploy.postDeployCommand) {
     postDeployResult = await runCommand('ssh', [
-      `${config.edgeDeploy.user}@${config.edgeDeploy.host}`,
+      edgeTarget,
       config.edgeDeploy.postDeployCommand,
     ]);
   }
-  return { copyResult, postDeployResult };
+  return { preflight, copyResult, postDeployResult };
 }
 
 async function deployLatestReleasedMap(config) {
@@ -367,6 +493,8 @@ async function deployLatestReleasedMap(config) {
 module.exports = {
   getStatus,
   getRuntimeDoctor,
+  getDeployConfig,
+  preflightEdgeDeploy,
   listReleasedMaps,
   convertEditorMap,
   createBaseMap,

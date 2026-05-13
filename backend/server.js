@@ -397,6 +397,31 @@ app.get('/runtime/released-maps', async (_req, res) => {
   }
 });
 
+app.get('/runtime/deploy-config', (_req, res) => {
+  res.json({
+    code: 0,
+    message: 'Success',
+    data: runtime.getDeployConfig(config),
+  });
+});
+
+app.post('/runtime/preflight-deploy', async (_req, res) => {
+  try {
+    const result = await runtime.preflightEdgeDeploy(config);
+    res.status(result.ready ? 200 : 500).json({
+      code: result.ready ? 0 : 15042,
+      message: result.ready ? 'Success' : 'Preflight failed',
+      data: result,
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15042,
+      message: error.message,
+      data: error.result || null,
+    });
+  }
+});
+
 app.post('/runtime/create-base-map', async (req, res) => {
   try {
     const result = await runtime.createBaseMap(config, req.body || {});

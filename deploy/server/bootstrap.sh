@@ -43,6 +43,10 @@ log "building frontend"
 npm run build:frontend
 
 mkdir -p data/bag data/base_map data/editor_map data/released_map runtime/bin logs
+if [ ! -f "$APP_DIR/.env.server" ] && [ -f "$APP_DIR/deploy/server/env.server.example" ]; then
+  cp "$APP_DIR/deploy/server/env.server.example" "$APP_DIR/.env.server"
+  log "created $APP_DIR/.env.server from example"
+fi
 
 SERVICE_TEMPLATE="$APP_DIR/deploy/server/mapeditor.service"
 SERVICE_DIR="$HOME/.config/systemd/user"
@@ -60,6 +64,12 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
   systemctl --user --no-pager --full status mapeditor.service || true
 else
   log "systemd user service is unavailable; starting with nohup fallback"
+  if [ -f "$APP_DIR/.env.server" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$APP_DIR/.env.server"
+    set +a
+  fi
   PID_FILE="$APP_DIR/logs/mapeditor.pid"
   if [ -f "$PID_FILE" ]; then
     OLD_PID="$(cat "$PID_FILE" || true)"

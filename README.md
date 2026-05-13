@@ -154,6 +154,7 @@ GET http://localhost:58000/config
 GET http://localhost:58000/runtime/status
 GET http://localhost:58000/runtime/doctor
 GET http://localhost:58000/runtime/released-maps
+GET http://localhost:58000/runtime/deploy-config
 ```
 
 ## Edge deployment
@@ -177,6 +178,7 @@ Deploy endpoint:
 ```text
 POST /runtime/deploy-map
 POST /runtime/deploy-latest
+POST /runtime/preflight-deploy
 Content-Type: application/json
 
 {
