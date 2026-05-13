@@ -407,7 +407,33 @@ function createPointCloudAccumulator(maxPoints = MAX_POINT_CLOUD_RENDER_POINTS) 
     };
   };
 
-  return { addPoint, finalize };
+  const mergePointCloud = (parsed) => {
+    if (!parsed || !parsed.totalPointCount || !parsed.bounds) {
+      return;
+    }
+    const previousTotal = result.totalPointCount;
+    result.totalPointCount += parsed.totalPointCount;
+    result.bounds.minX = Math.min(result.bounds.minX, parsed.bounds.minX);
+    result.bounds.minY = Math.min(result.bounds.minY, parsed.bounds.minY);
+    result.bounds.minZ = Math.min(result.bounds.minZ, parsed.bounds.minZ);
+    result.bounds.maxX = Math.max(result.bounds.maxX, parsed.bounds.maxX);
+    result.bounds.maxY = Math.max(result.bounds.maxY, parsed.bounds.maxY);
+    result.bounds.maxZ = Math.max(result.bounds.maxZ, parsed.bounds.maxZ);
+
+    (parsed.points || []).forEach((point, sampleIndex) => {
+      if (result.points.length < maxPoints) {
+        result.points.push(point);
+        return;
+      }
+      const seen = previousTotal + sampleIndex + 1;
+      const replaceIndex = Math.floor(Math.random() * seen);
+      if (replaceIndex < maxPoints) {
+        result.points[replaceIndex] = point;
+      }
+    });
+  };
+
+  return { addPoint, finalize, mergePointCloud };
 }
 
 function parseNumericPointLine(line) {
@@ -477,6 +503,38 @@ function readPcdBinaryValue(buffer, offset, type, size) {
   return NaN;
 }
 
+function decompressLzf(input, outputSize) {
+  const output = Buffer.alloc(outputSize);
+  let inputOffset = 0;
+  let outputOffset = 0;
+  while (inputOffset < input.length) {
+    const control = input[inputOffset];
+    inputOffset += 1;
+    if (control < 32) {
+      const length = control + 1;
+      input.copy(output, outputOffset, inputOffset, inputOffset + length);
+      inputOffset += length;
+      outputOffset += length;
+      continue;
+    }
+    let length = control >> 5;
+    let reference = outputOffset - ((control & 0x1f) << 8) - 1;
+    if (length === 7) {
+      length += input[inputOffset];
+      inputOffset += 1;
+    }
+    reference -= input[inputOffset];
+    inputOffset += 1;
+    length += 2;
+    for (let index = 0; index < length; index += 1) {
+      output[outputOffset] = output[reference];
+      outputOffset += 1;
+      reference += 1;
+    }
+  }
+  return output;
+}
+
 async function parsePcdPointCloud(filePath) {
   const buffer = await fsp.readFile(filePath);
   const { header, dataOffset } = parsePcdHeader(buffer);
@@ -506,10 +564,6 @@ async function parsePcdPointCloud(filePath) {
     return accumulator.finalize();
   }
 
-  if (dataType !== 'binary') {
-    throw new Error(`暂不支持 PCD DATA ${dataType || 'unknown'}，请使用 ascii 或 binary PCD`);
-  }
-
   let pointStep = 0;
   const fieldOffsets = fields.map((_, index) => {
     const current = pointStep;
@@ -517,6 +571,41 @@ async function parsePcdPointCloud(filePath) {
     return current;
   });
   const pointCount = Number((header.POINTS || [])[0]) || Math.floor((buffer.length - dataOffset) / pointStep);
+
+  if (dataType === 'binary_compressed') {
+    const compressedSize = buffer.readUInt32LE(dataOffset);
+    const uncompressedSize = buffer.readUInt32LE(dataOffset + 4);
+    const compressed = buffer.slice(dataOffset + 8, dataOffset + 8 + compressedSize);
+    const dataBuffer = decompressLzf(compressed, uncompressedSize);
+    const fieldColumnOffsets = [];
+    let columnOffset = 0;
+    fields.forEach((_, index) => {
+      fieldColumnOffsets[index] = columnOffset;
+      columnOffset += (sizes[index] || 4) * (counts[index] || 1) * pointCount;
+    });
+    const accumulator = createPointCloudAccumulator();
+    for (let index = 0; index < pointCount; index += 1) {
+      const readField = (fieldIndex) =>
+        readPcdBinaryValue(
+          dataBuffer,
+          fieldColumnOffsets[fieldIndex] + index * (sizes[fieldIndex] || 4),
+          types[fieldIndex] || 'F',
+          sizes[fieldIndex] || 4,
+        );
+      accumulator.addPoint(
+        readField(xIndex),
+        readField(yIndex),
+        zIndex >= 0 ? readField(zIndex) : 0,
+        intensityIndex >= 0 ? readField(intensityIndex) : null,
+      );
+    }
+    return accumulator.finalize();
+  }
+
+  if (dataType !== 'binary') {
+    throw new Error(`暂不支持 PCD DATA ${dataType || 'unknown'}，请使用 ascii、binary 或 binary_compressed PCD`);
+  }
+
   for (let index = 0; index < pointCount; index += 1) {
     const base = dataOffset + index * pointStep;
     if (base + pointStep > buffer.length) {
@@ -569,18 +658,135 @@ async function parsePlyPointCloud(filePath) {
   return accumulator.finalize();
 }
 
+async function parseLasPointCloud(filePath) {
+  const handle = await fsp.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    if (stat.size < 227) {
+      throw new Error('LAS 文件头不完整');
+    }
+    const headerBuffer = Buffer.alloc(Math.min(375, stat.size));
+    await handle.read(headerBuffer, 0, headerBuffer.length, 0);
+    if (headerBuffer.slice(0, 4).toString('ascii') !== 'LASF') {
+      throw new Error('LAS 文件签名无效');
+    }
+    const offsetToPointData = headerBuffer.readUInt32LE(96);
+    const pointFormat = headerBuffer.readUInt8(104);
+    const pointRecordLength = headerBuffer.readUInt16LE(105);
+    if (pointFormat > 10 || pointRecordLength < 12) {
+      throw new Error(`暂不支持 LAS 点格式 ${pointFormat}`);
+    }
+    const legacyPointCount = headerBuffer.readUInt32LE(107);
+    let pointCount = legacyPointCount;
+    if (pointCount === 0 && headerBuffer.length >= 255) {
+      pointCount = Number(headerBuffer.readBigUInt64LE(247));
+    }
+    if (!pointCount || offsetToPointData >= stat.size) {
+      pointCount = Math.floor((stat.size - offsetToPointData) / pointRecordLength);
+    }
+    const scaleX = headerBuffer.readDoubleLE(131);
+    const scaleY = headerBuffer.readDoubleLE(139);
+    const scaleZ = headerBuffer.readDoubleLE(147);
+    const offsetX = headerBuffer.readDoubleLE(155);
+    const offsetY = headerBuffer.readDoubleLE(163);
+    const offsetZ = headerBuffer.readDoubleLE(171);
+
+    const accumulator = createPointCloudAccumulator();
+    const maxRecordsPerRead = Math.max(1, Math.floor((4 * 1024 * 1024) / pointRecordLength));
+    const chunk = Buffer.alloc(maxRecordsPerRead * pointRecordLength);
+    let readPointCount = 0;
+    while (readPointCount < pointCount) {
+      const remaining = pointCount - readPointCount;
+      const recordsToRead = Math.min(maxRecordsPerRead, remaining);
+      const bytesToRead = recordsToRead * pointRecordLength;
+      const { bytesRead } = await handle.read(
+        chunk,
+        0,
+        bytesToRead,
+        offsetToPointData + readPointCount * pointRecordLength,
+      );
+      if (bytesRead <= 0) {
+        break;
+      }
+      const actualRecords = Math.floor(bytesRead / pointRecordLength);
+      for (let index = 0; index < actualRecords; index += 1) {
+        const base = index * pointRecordLength;
+        const x = chunk.readInt32LE(base) * scaleX + offsetX;
+        const y = chunk.readInt32LE(base + 4) * scaleY + offsetY;
+        const z = chunk.readInt32LE(base + 8) * scaleZ + offsetZ;
+        accumulator.addPoint(x, y, z);
+      }
+      readPointCount += actualRecords;
+      if (actualRecords < recordsToRead) {
+        break;
+      }
+    }
+    return accumulator.finalize();
+  } finally {
+    await handle.close();
+  }
+}
+
+function isSupportedPointCloudName(fileName) {
+  return ['.pcd', '.ply', '.xyz', '.txt', '.csv', '.las'].includes(path.extname(fileName).toLowerCase());
+}
+
+function isImageName(fileName) {
+  return ['.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff'].includes(path.extname(fileName).toLowerCase());
+}
+
+async function parsePointCloudZip(filePath) {
+  const archive = await unzipper.Open.file(filePath);
+  const entries = archive.files.filter((entry) => entry.type === 'File');
+  const cloudEntries = entries.filter((entry) => isSupportedPointCloudName(entry.path));
+  const imageEntries = entries.filter((entry) => isImageName(entry.path));
+  if (cloudEntries.length === 0) {
+    throw new Error('点云 ZIP 中没有找到支持的点云文件，请包含 .pcd/.ply/.xyz/.txt/.csv/.las');
+  }
+
+  const accumulator = createPointCloudAccumulator();
+  const tempRoot = path.join(path.dirname(filePath), `.cloud-zip-${Date.now()}`);
+  await fsp.rm(tempRoot, { recursive: true, force: true });
+  await fsp.mkdir(tempRoot, { recursive: true });
+  try {
+    for (let index = 0; index < cloudEntries.length; index += 1) {
+      const entry = cloudEntries[index];
+      const safeName = path.basename(entry.path) || `cloud-${index}${path.extname(entry.path)}`;
+      const tempPath = path.join(tempRoot, `${index}-${safeName}`);
+      await pipeline(entry.stream(), fs.createWriteStream(tempPath));
+      const parsed = await parsePointCloud(tempPath, safeName);
+      accumulator.mergePointCloud(parsed);
+    }
+    const parsed = accumulator.finalize();
+    parsed.sourceFiles = cloudEntries.map((entry) => entry.path);
+    parsed.imageFileCount = imageEntries.length;
+    return parsed;
+  } finally {
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
 async function parsePointCloud(filePath, originalName = '') {
   const ext = path.extname(originalName || filePath).toLowerCase();
+  if (ext === '.zip') {
+    return parsePointCloudZip(filePath);
+  }
   if (ext === '.pcd') {
     return parsePcdPointCloud(filePath);
   }
   if (ext === '.ply') {
     return parsePlyPointCloud(filePath);
   }
+  if (ext === '.las') {
+    return parseLasPointCloud(filePath);
+  }
+  if (ext === '.laz') {
+    throw new Error('暂不支持压缩 LAZ，请先转换为 LAS 或 PCD 后导入');
+  }
   if (['.xyz', '.txt', '.csv'].includes(ext)) {
     return parseTextPointCloud(filePath);
   }
-  throw new Error('点云底图暂支持 .pcd、.ply、.xyz、.txt、.csv');
+  throw new Error('点云底图暂支持 .pcd、.ply、.xyz、.txt、.csv、.las，或包含这些文件的 .zip');
 }
 
 async function importPointCloudBaseMap(config, params) {
@@ -606,6 +812,8 @@ async function importPointCloudBaseMap(config, params) {
       type: 'point_cloud',
       version: 1,
       sourceFile: originalName,
+      sourceFiles: parsed.sourceFiles || [originalName],
+      imageFileCount: parsed.imageFileCount || 0,
       pointCount: parsed.totalPointCount,
       renderedPointCount: parsed.points.length,
       center: parsed.center,

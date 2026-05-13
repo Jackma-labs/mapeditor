@@ -303,13 +303,13 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                     )}
                     <span>
                         {isBaseMapDialog
-                            ? '点云支持 PCD/PLY/XYZ/TXT/CSV；瓦片 ZIP 需包含 map_images/tiles.json'
+                            ? '点云支持 PCD/PLY/XYZ/TXT/CSV/LAS 或 ZIP；瓦片 ZIP 需包含 map_images/tiles.json'
                             : 'ZIP 文件名会作为地图名称，内容需包含 editor_map.json'}
                     </span>
                     <input
                         ref={importInputRef}
                         type="file"
-                        accept=".zip,.pcd,.ply,.xyz,.txt,.csv,application/zip"
+                        accept=".zip,.pcd,.ply,.xyz,.txt,.csv,.las,.laz,application/zip"
                         style={{ display: 'none' }}
                         onChange={handleImportFileChange}
                     />

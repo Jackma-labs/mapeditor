@@ -423,6 +423,7 @@ app.post('/runtime/import-base-map', upload.single('file'), async (req, res) => 
       data: result,
     });
   } catch (error) {
+    log('Import base map failed:', error);
     res.status(500).json({
       code: 15050,
       message: error.message,
@@ -451,6 +452,7 @@ app.post('/runtime/import-point-cloud-base-map', upload.single('file'), async (r
       data: result,
     });
   } catch (error) {
+    log('Import point cloud base map failed:', error);
     res.status(500).json({
       code: 15052,
       message: error.message,
@@ -478,6 +480,7 @@ app.post('/runtime/import-map-package', upload.single('file'), async (req, res) 
       data: result,
     });
   } catch (error) {
+    log('Import map package failed:', error);
     res.status(500).json({
       code: 15051,
       message: error.message,
