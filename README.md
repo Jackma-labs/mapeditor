@@ -183,14 +183,20 @@ mapName=<name>
 overwrite=false
 ```
 
-The server rasterizes all parsed points into an Apollo-style `map_images`
-tile pyramid under `data/base_map/<name>/map_images/`. The finest level uses
-the editor's native `0.03125m/px` resolution, so full point-cloud detail is
-preserved in image tiles instead of being downsampled into one browser JSON.
+The server builds enhanced Apollo-style raster layers from all parsed points.
+The default `map_images` layer is a ground-filtered high-contrast layer for
+editing; sibling diagnostic layers are also generated when populated:
+`map_images_raw`, `map_images_ground`, `map_images_marking`, and
+`map_images_edge`. The finest level uses the editor's native `0.03125m/px`
+resolution, so full point-cloud detail is preserved in image tiles instead of
+being downsampled into one browser JSON.
 The upload can be one supported point-cloud file, one zip containing multiple
 supported point-cloud files, or several files selected together in the browser.
-Image files are recorded but not georeferenced or rendered yet. It is then
-available from the base-map open dialog as a drawable base layer.
+Zips may use production-style folders such as `Image/`, `las/`, and `pcd/`.
+Image files are extracted into `source_images/` and recorded in the map
+metadata, but they are not projected unless matching camera intrinsics,
+extrinsics, timestamps, and vehicle/lidar poses are available. The resulting
+map is available from the base-map open dialog as a drawable base layer.
 
 Apollo map package import:
 

@@ -16,6 +16,11 @@ const MAX_POINT_CLOUD_RENDER_POINTS = Number.isFinite(configuredPointCloudRender
   : DEFAULT_POINT_CLOUD_RENDER_POINTS;
 const POINT_CLOUD_TILE_SIZE = 1024;
 const POINT_CLOUD_TILE_LEVELS = [0, 1, 2, 3, 4];
+const GROUND_GRID_SIZE_METERS = 0.5;
+const GROUND_MIN_RELATIVE_Z = -0.2;
+const GROUND_MAX_RELATIVE_Z = 0.35;
+const CURB_EDGE_Z_DELTA = 0.12;
+const INTENSITY_SAMPLE_LIMIT = 200000;
 
 async function pathExists(targetPath) {
   try {
@@ -729,7 +734,8 @@ async function parseLasPointCloud(filePath) {
         const x = chunk.readInt32LE(base) * scaleX + offsetX;
         const y = chunk.readInt32LE(base + 4) * scaleY + offsetY;
         const z = chunk.readInt32LE(base + 8) * scaleZ + offsetZ;
-        accumulator.addPoint(x, y, z);
+        const intensity = pointRecordLength >= 14 ? chunk.readUInt16LE(base + 12) : null;
+        accumulator.addPoint(x, y, z, intensity);
       }
       readPointCount += actualRecords;
       if (actualRecords < recordsToRead) {
@@ -802,7 +808,7 @@ function normalizePointIntensity(intensity) {
   return Math.max(32, Math.min(255, Math.round(intensity / 256)));
 }
 
-function createRasterTileAccumulator() {
+function createRasterTileAccumulator(options = {}) {
   const finestLevel = Math.max(...POINT_CLOUD_TILE_LEVELS);
   const finestResolution = getPointCloudTileResolution(finestLevel);
   const tilesByLevel = new Map(POINT_CLOUD_TILE_LEVELS.map((level) => [level, new Map()]));
@@ -837,12 +843,20 @@ function createRasterTileAccumulator() {
   };
 
   const addAlpha = (tile, pixelX, pixelY, alpha) => {
+    if (
+      pixelX < 0 ||
+      pixelY < 0 ||
+      pixelX >= POINT_CLOUD_TILE_SIZE ||
+      pixelY >= POINT_CLOUD_TILE_SIZE
+    ) {
+      return;
+    }
     const index = pixelY * POINT_CLOUD_TILE_SIZE + pixelX;
     const current = tile.alpha[index];
     tile.alpha[index] = Math.max(current, alpha, Math.min(255, current + 24));
   };
 
-  const addPoint = (x, y, z = 0, intensity = null) => {
+  const addPointValue = (x, y, z = 0, value = 72, dilation = 0) => {
     if (![x, y, z].every(Number.isFinite)) {
       return;
     }
@@ -861,7 +875,19 @@ function createRasterTileAccumulator() {
     const pixelX = globalPixelX - tileX * POINT_CLOUD_TILE_SIZE;
     const localWorldPixelY = globalPixelY - tileY * POINT_CLOUD_TILE_SIZE;
     const pixelY = POINT_CLOUD_TILE_SIZE - 1 - localWorldPixelY;
-    addAlpha(getTile(finestLevel, tileX, tileY), pixelX, pixelY, normalizePointIntensity(intensity));
+    const tile = getTile(finestLevel, tileX, tileY);
+    const alpha = Math.max(0, Math.min(255, Math.round(value)));
+    for (let offsetY = -dilation; offsetY <= dilation; offsetY += 1) {
+      for (let offsetX = -dilation; offsetX <= dilation; offsetX += 1) {
+        const distance = Math.abs(offsetX) + Math.abs(offsetY);
+        const weight = distance === 0 ? 1 : 0.55;
+        addAlpha(tile, pixelX + offsetX, pixelY + offsetY, alpha * weight);
+      }
+    }
+  };
+
+  const addPoint = (x, y, z = 0, intensity = null) => {
+    addPointValue(x, y, z, normalizePointIntensity(intensity), 0);
   };
 
   const deriveLowerLevel = (sourceLevel, targetLevel) => {
@@ -915,25 +941,33 @@ function createRasterTileAccumulator() {
     await fsp.writeFile(filePath, PNG.sync.write(png));
   };
 
-  const writeTiles = async (mapImagesDir) => {
-    if (result.totalPointCount === 0) {
+  const writeTiles = async (mapImagesDir, metadata = {}) => {
+    if (result.totalPointCount === 0 && !metadata.allowEmpty) {
       throw new Error('点云文件没有解析到有效 x/y/z 点');
     }
-    derivePyramid();
+    if (result.totalPointCount > 0) {
+      derivePyramid();
+    }
+    const bounds = metadata.bounds || result.bounds;
     const center = {
-      x: roundPointValue((result.bounds.minX + result.bounds.maxX) / 2),
-      y: roundPointValue((result.bounds.minY + result.bounds.maxY) / 2),
-      z: roundPointValue((result.bounds.minZ + result.bounds.maxZ) / 2),
+      x: roundPointValue((bounds.minX + bounds.maxX) / 2),
+      y: roundPointValue((bounds.minY + bounds.maxY) / 2),
+      z: roundPointValue((bounds.minZ + bounds.maxZ) / 2),
     };
     const payload = {
       version: 1,
-      sourceType: 'point_cloud_raster',
+      sourceType: metadata.sourceType || options.sourceType || 'point_cloud_raster',
       tileSize: POINT_CLOUD_TILE_SIZE,
-      pointCount: result.totalPointCount,
-      sourceFiles: result.sourceFiles,
-      imageFileCount: result.imageFileCount,
+      pointCount: metadata.pointCount || result.totalPointCount,
+      layerPointCount: result.totalPointCount,
+      sourceFiles: metadata.sourceFiles || result.sourceFiles,
+      imageFileCount: metadata.imageFileCount ?? result.imageFileCount,
       center,
-      bounds: result.bounds,
+      bounds,
+      coordinate: metadata.coordinate || null,
+      imageOverlay: metadata.imageOverlay || null,
+      processing: metadata.processing || null,
+      layers: metadata.layers || null,
       tiles: {},
     };
 
@@ -952,11 +986,12 @@ function createRasterTileAccumulator() {
     }
     await fsp.writeFile(path.join(mapImagesDir, 'tiles.json'), JSON.stringify(payload), 'utf8');
     return {
-      totalPointCount: result.totalPointCount,
-      bounds: result.bounds,
-      center,
-      sourceFiles: result.sourceFiles,
-      imageFileCount: result.imageFileCount,
+      totalPointCount: payload.pointCount,
+      bounds: payload.bounds,
+      center: payload.center,
+      sourceFiles: payload.sourceFiles,
+      imageFileCount: payload.imageFileCount,
+      layerPointCount: result.totalPointCount,
       tileCount: POINT_CLOUD_TILE_LEVELS.reduce(
         (count, level) => count + tilesByLevel.get(level).size,
         0
@@ -972,7 +1007,256 @@ function createRasterTileAccumulator() {
     result.imageFileCount += count;
   };
 
-  return { addPoint, addSourceFile, addImageFiles, writeTiles };
+  const getPointCount = () => result.totalPointCount;
+
+  return { addPoint, addPointValue, addSourceFile, addImageFiles, getPointCount, writeTiles };
+}
+
+function createPointCloudProcessingStats() {
+  const cells = new Map();
+  const intensitySamples = [];
+  const stats = {
+    totalPointCount: 0,
+    intensityCount: 0,
+    bounds: {
+      minX: Infinity,
+      minY: Infinity,
+      minZ: Infinity,
+      maxX: -Infinity,
+      maxY: -Infinity,
+      maxZ: -Infinity,
+    },
+  };
+  const cellKey = (x, y) =>
+    `${Math.floor(x / GROUND_GRID_SIZE_METERS)},${Math.floor(y / GROUND_GRID_SIZE_METERS)}`;
+
+  const addIntensitySample = (intensity) => {
+    if (!Number.isFinite(intensity)) {
+      return;
+    }
+    stats.intensityCount += 1;
+    if (intensitySamples.length < INTENSITY_SAMPLE_LIMIT) {
+      intensitySamples.push(intensity);
+      return;
+    }
+    const replaceIndex = Math.floor(Math.random() * stats.intensityCount);
+    if (replaceIndex < INTENSITY_SAMPLE_LIMIT) {
+      intensitySamples[replaceIndex] = intensity;
+    }
+  };
+
+  const addPoint = (x, y, z = 0, intensity = null) => {
+    if (![x, y, z].every(Number.isFinite)) {
+      return;
+    }
+    stats.totalPointCount += 1;
+    stats.bounds.minX = Math.min(stats.bounds.minX, x);
+    stats.bounds.minY = Math.min(stats.bounds.minY, y);
+    stats.bounds.minZ = Math.min(stats.bounds.minZ, z);
+    stats.bounds.maxX = Math.max(stats.bounds.maxX, x);
+    stats.bounds.maxY = Math.max(stats.bounds.maxY, y);
+    stats.bounds.maxZ = Math.max(stats.bounds.maxZ, z);
+    addIntensitySample(intensity);
+
+    const key = cellKey(x, y);
+    let cell = cells.get(key);
+    if (!cell) {
+      cell = {
+        minZ: z,
+        maxZ: z,
+        count: 0,
+      };
+      cells.set(key, cell);
+    }
+    cell.count += 1;
+    cell.minZ = Math.min(cell.minZ, z);
+    cell.maxZ = Math.max(cell.maxZ, z);
+  };
+
+  const percentile = (sortedValues, ratio, fallback) => {
+    if (sortedValues.length === 0) {
+      return fallback;
+    }
+    const index = Math.max(0, Math.min(sortedValues.length - 1, Math.floor((sortedValues.length - 1) * ratio)));
+    return sortedValues[index];
+  };
+
+  const finalize = () => {
+    if (stats.totalPointCount === 0) {
+      throw new Error('点云文件没有解析到有效 x/y/z 点');
+    }
+    const sortedIntensity = intensitySamples
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right);
+    const p02 = percentile(sortedIntensity, 0.02, 0);
+    const p50 = percentile(sortedIntensity, 0.5, 0);
+    const p90 = percentile(sortedIntensity, 0.9, Infinity);
+    const p98 = percentile(sortedIntensity, 0.98, Math.max(p90, 1));
+    const dynamicRange = Math.max(1, p98 - p02);
+
+    const getCell = (x, y) => cells.get(cellKey(x, y));
+    const getGroundZ = (x, y) => {
+      const gx = Math.floor(x / GROUND_GRID_SIZE_METERS);
+      const gy = Math.floor(y / GROUND_GRID_SIZE_METERS);
+      let minZ = Infinity;
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          const cell = cells.get(`${gx + offsetX},${gy + offsetY}`);
+          if (cell && cell.count >= 2) {
+            minZ = Math.min(minZ, cell.minZ);
+          }
+        }
+      }
+      return Number.isFinite(minZ) ? minZ : null;
+    };
+
+    const isGroundPoint = (x, y, z) => {
+      const groundZ = getGroundZ(x, y);
+      if (!Number.isFinite(groundZ)) {
+        return true;
+      }
+      return z >= groundZ + GROUND_MIN_RELATIVE_Z && z <= groundZ + GROUND_MAX_RELATIVE_Z;
+    };
+
+    const isEdgeCell = (x, y) => {
+      const gx = Math.floor(x / GROUND_GRID_SIZE_METERS);
+      const gy = Math.floor(y / GROUND_GRID_SIZE_METERS);
+      const center = getCell(x, y);
+      if (!center) {
+        return false;
+      }
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          if (offsetX === 0 && offsetY === 0) {
+            continue;
+          }
+          const neighbor = cells.get(`${gx + offsetX},${gy + offsetY}`);
+          if (neighbor && Math.abs(neighbor.minZ - center.minZ) >= CURB_EDGE_Z_DELTA) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    const normalizeIntensityForRaster = (intensity) => {
+      if (!Number.isFinite(intensity)) {
+        return 72;
+      }
+      const clipped = Math.max(p02, Math.min(p98, intensity));
+      const normalized = (clipped - p02) / dynamicRange;
+      const sigmoid = 1 / (1 + Math.exp(-8 * (normalized - 0.55)));
+      return Math.max(28, Math.min(255, Math.round(28 + sigmoid * 227)));
+    };
+
+    const isHighIntensity = (intensity) =>
+      Number.isFinite(intensity) && Number.isFinite(p90) && intensity >= p90 && stats.intensityCount > 0;
+
+    return {
+      totalPointCount: stats.totalPointCount,
+      bounds: stats.bounds,
+      intensity: {
+        count: stats.intensityCount,
+        p02,
+        p50,
+        p90: Number.isFinite(p90) ? p90 : null,
+        p98,
+      },
+      groundGrid: {
+        cellSize: GROUND_GRID_SIZE_METERS,
+        cellCount: cells.size,
+        minRelativeZ: GROUND_MIN_RELATIVE_Z,
+        maxRelativeZ: GROUND_MAX_RELATIVE_Z,
+        edgeDeltaZ: CURB_EDGE_Z_DELTA,
+      },
+      getGroundZ,
+      isGroundPoint,
+      isEdgeCell,
+      normalizeIntensityForRaster,
+      isHighIntensity,
+    };
+  };
+
+  return { addPoint, finalize };
+}
+
+function classifyCoordinateSystem(bounds) {
+  const lonLatLike =
+    bounds.minX >= -180 &&
+    bounds.maxX <= 180 &&
+    bounds.minY >= -90 &&
+    bounds.maxY <= 90 &&
+    Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) < 5;
+  if (lonLatLike) {
+    return {
+      kind: 'lonlat_range_compatible',
+      message: '坐标范围落在经纬度合法区间内，但也可能只是小范围局部坐标；需要 LAS CRS/VLR、采集系统配置或控制点确认。',
+    };
+  }
+  const projectedLike = Math.max(Math.abs(bounds.minX), Math.abs(bounds.maxX), Math.abs(bounds.minY), Math.abs(bounds.maxY)) > 10000;
+  if (projectedLike) {
+    return {
+      kind: 'projected_meters_or_large_local',
+      message: '坐标范围像米制投影坐标或大范围局部坐标；需要结合采集系统确认 EPSG/投影。',
+    };
+  }
+  return {
+    kind: 'local_meters',
+    message: '坐标范围像局部米制坐标，不是经纬度；后续拼合要依赖同一局部坐标系或外部定位/控制点。',
+  };
+}
+
+function getImageOverlayMetadata(imageFileCount) {
+  if (!imageFileCount) {
+    return {
+      status: 'none',
+      message: '导入包中未发现图片。',
+    };
+  }
+  return {
+    status: 'stored_unplaced',
+    message:
+      '图片已随底图保存，但缺少相机内参、外参、时间戳和车辆轨迹，暂不能可靠贴到地图坐标上。',
+    requiredForProjection: [
+      'camera intrinsics',
+      'camera-to-lidar or camera-to-vehicle extrinsics',
+      'image timestamps',
+      'vehicle/lidar poses in the same map frame',
+    ],
+  };
+}
+
+async function extractImagesFromZip(zipPath, targetDir) {
+  const archive = await unzipper.Open.file(zipPath);
+  const imageEntries = archive.files.filter((entry) => entry.type === 'File' && isImageName(entry.path));
+  for (let index = 0; index < imageEntries.length; index += 1) {
+    const entry = imageEntries[index];
+    const safeName = `${index}-${entry.path.replace(/[\\/]/g, '_')}`;
+    await fsp.mkdir(targetDir, { recursive: true });
+    await pipeline(entry.stream(), fs.createWriteStream(path.join(targetDir, safeName)));
+  }
+  return imageEntries.length;
+}
+
+async function copyImportSources(files, stagingDir) {
+  const sourcesDir = path.join(stagingDir, 'sources');
+  const imageDir = path.join(stagingDir, 'source_images');
+  await fsp.mkdir(sourcesDir, { recursive: true });
+  let extractedImageCount = 0;
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const originalName = file.originalName || file.originalname || `source-${index}`;
+    const safeName = `${index}-${path.basename(originalName) || 'source'}`;
+    await fsp.copyFile(file.path, path.join(sourcesDir, safeName));
+    if (isImageName(originalName)) {
+      await fsp.mkdir(imageDir, { recursive: true });
+      await fsp.copyFile(file.path, path.join(imageDir, safeName));
+      extractedImageCount += 1;
+    } else if (path.extname(originalName).toLowerCase() === '.zip') {
+      extractedImageCount += await extractImagesFromZip(file.path, imageDir);
+    }
+  }
+  return extractedImageCount;
 }
 
 async function scanTextPointCloud(filePath, onPoint) {
@@ -1163,7 +1447,8 @@ async function scanLasPointCloud(filePath, onPoint) {
         const x = chunk.readInt32LE(base) * scaleX + offsetX;
         const y = chunk.readInt32LE(base + 4) * scaleY + offsetY;
         const z = chunk.readInt32LE(base + 8) * scaleZ + offsetZ;
-        onPoint(x, y, z, null);
+        const intensity = pointRecordLength >= 14 ? chunk.readUInt16LE(base + 12) : null;
+        onPoint(x, y, z, intensity);
       }
       readPointCount += actualRecords;
       if (actualRecords < recordsToRead) {
@@ -1287,21 +1572,90 @@ async function importPointCloudFilesBaseMap(config, params) {
   await fsp.mkdir(path.join(stagingDir, 'map_images'), { recursive: true });
   await fsp.mkdir(path.join(stagingDir, 'sources'), { recursive: true });
   try {
-    const raster = createRasterTileAccumulator();
-    raster.addImageFiles(imageFiles.length);
+    const statsCollector = createPointCloudProcessingStats();
+    const sourceFiles = [];
+    let imageFileCount = imageFiles.length;
     for (const file of cloudFiles) {
       const originalName = file.originalName || file.originalname || path.basename(file.path);
-      const parsed = await scanPointCloudFile(file.path, originalName, raster.addPoint);
-      (parsed.sourceFiles || [originalName]).forEach((sourceFile) => raster.addSourceFile(sourceFile));
-      raster.addImageFiles(parsed.imageFileCount || 0);
+      const parsed = await scanPointCloudFile(file.path, originalName, statsCollector.addPoint);
+      sourceFiles.push(...(parsed.sourceFiles || [originalName]));
+      imageFileCount += parsed.imageFileCount || 0;
     }
-    const parsed = await raster.writeTiles(path.join(stagingDir, 'map_images'));
-    for (let index = 0; index < files.length; index += 1) {
-      const file = files[index];
-      const originalName = file.originalName || file.originalname || `source-${index}`;
-      const safeName = `${index}-${path.basename(originalName) || 'source'}`;
-      await fsp.copyFile(file.path, path.join(stagingDir, 'sources', safeName));
+    const stats = statsCollector.finalize();
+    const coordinate = classifyCoordinateSystem(stats.bounds);
+    const imageOverlay = getImageOverlayMetadata(imageFileCount);
+    const layers = {
+      enhanced: createRasterTileAccumulator({ sourceType: 'point_cloud_enhanced' }),
+      raw: createRasterTileAccumulator({ sourceType: 'point_cloud_raw' }),
+      ground: createRasterTileAccumulator({ sourceType: 'point_cloud_ground' }),
+      marking: createRasterTileAccumulator({ sourceType: 'point_cloud_marking' }),
+      edge: createRasterTileAccumulator({ sourceType: 'point_cloud_edge' }),
+    };
+
+    const renderEnhancedPoint = (x, y, z = 0, intensity = null) => {
+      if (![x, y, z].every(Number.isFinite)) {
+        return;
+      }
+      const value = stats.normalizeIntensityForRaster(intensity);
+      const isGround = stats.isGroundPoint(x, y, z);
+      const isMarking = isGround && stats.isHighIntensity(intensity);
+      const isEdge = isGround && stats.isEdgeCell(x, y);
+      layers.raw.addPointValue(x, y, z, value, 0);
+      if (isGround) {
+        const groundValue = Math.max(34, Math.round(value * 0.58));
+        layers.ground.addPointValue(x, y, z, groundValue, 0);
+        layers.enhanced.addPointValue(x, y, z, Math.max(32, Math.round(value * 0.5)), 0);
+      }
+      if (isEdge) {
+        layers.edge.addPointValue(x, y, z, 185, 0);
+        layers.enhanced.addPointValue(x, y, z, 155, 0);
+      }
+      if (isMarking) {
+        layers.marking.addPointValue(x, y, z, 255, 1);
+        layers.enhanced.addPointValue(x, y, z, 255, 1);
+      }
+    };
+
+    for (const file of cloudFiles) {
+      const originalName = file.originalName || file.originalname || path.basename(file.path);
+      await scanPointCloudFile(file.path, originalName, renderEnhancedPoint);
     }
+
+    const layerDescriptors = [
+      { id: 'enhanced', name: '增强底图', path: 'map_images' },
+      { id: 'raw', name: '原始投影', path: 'map_images_raw' },
+      { id: 'ground', name: '地面过滤', path: 'map_images_ground' },
+      { id: 'marking', name: '标线增强', path: 'map_images_marking' },
+      { id: 'edge', name: '路沿/边界', path: 'map_images_edge' },
+    ].filter((layer) => layer.id === 'enhanced' || layers[layer.id].getPointCount() > 0);
+    const metadata = {
+      pointCount: stats.totalPointCount,
+      bounds: stats.bounds,
+      sourceFiles,
+      imageFileCount,
+      coordinate,
+      imageOverlay,
+      layers: layerDescriptors,
+      processing: {
+        mode: 'enhanced_point_cloud_raster',
+        tileResolutionMetersPerPixel: getPointCloudTileResolution(Math.max(...POINT_CLOUD_TILE_LEVELS)),
+        groundGrid: stats.groundGrid,
+        intensity: stats.intensity,
+        outputs: layerDescriptors.map((layer) => layer.id),
+      },
+    };
+    const parsed = await layers.enhanced.writeTiles(path.join(stagingDir, 'map_images'), metadata);
+    for (const layer of layerDescriptors) {
+      if (layer.id === 'enhanced') {
+        continue;
+      }
+      await layers[layer.id].writeTiles(path.join(stagingDir, layer.path), {
+        ...metadata,
+        sourceType: `point_cloud_${layer.id}`,
+        allowEmpty: true,
+      });
+    }
+    await copyImportSources(files, stagingDir);
     await fsp.rm(targetDir, { recursive: true, force: true });
     await fsp.rename(stagingDir, targetDir);
     return {
@@ -1309,6 +1663,9 @@ async function importPointCloudFilesBaseMap(config, params) {
       path: targetDir,
       pointCount: parsed.totalPointCount,
       tileCount: parsed.tileCount,
+      layers: layerDescriptors.map((layer) => layer.id),
+      coordinate,
+      imageOverlay,
       bounds: parsed.bounds,
       sizeBytes: await getDirectorySize(targetDir),
     };
