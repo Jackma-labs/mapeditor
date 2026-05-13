@@ -89,3 +89,18 @@ if [ "$HEALTH_OK" -ne 1 ]; then
   exit 1
 fi
 log "ready at http://$(hostname -I | awk '{print $1}'):$PORT/"
+
+if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
+  if ! sudo -n ufw status >/dev/null 2>&1; then
+    log "ufw is active; run this once if LAN access to port $PORT is blocked:"
+    log "sudo ufw allow $PORT/tcp"
+  fi
+fi
+
+if command -v loginctl >/dev/null 2>&1; then
+  LINGER="$(loginctl show-user "$USER" -p Linger 2>/dev/null | cut -d= -f2 || true)"
+  if [ "$LINGER" != "yes" ]; then
+    log "user service is installed; run this once for reboot persistence without login:"
+    log "sudo loginctl enable-linger $USER"
+  fi
+fi

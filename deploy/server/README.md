@@ -47,6 +47,20 @@ After deployment, open:
 http://192.168.110.2:58000/
 ```
 
+If the service is healthy on the server but another machine cannot open the URL,
+allow the backend port through the server firewall:
+
+```bash
+sudo ufw allow 58000/tcp
+```
+
+For reboot persistence without an interactive login session, enable lingering
+for the `dell` user:
+
+```bash
+sudo loginctl enable-linger dell
+```
+
 ## Runtime boundary
 
 The web system can run independently today. Full one-click map release still

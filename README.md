@@ -113,6 +113,12 @@ After it starts, open:
 http://192.168.110.2:58000/
 ```
 
+On the Dell server, LAN access currently requires the firewall rule:
+
+```bash
+sudo ufw allow 58000/tcp
+```
+
 See `deploy/server/README.md` and `runtime/native/README.md` for the server and
 native Apollo runtime details.
 
