@@ -192,15 +192,15 @@ export default function Index(prop: { messageApi: any }) {
             type: 'divider',
         },
         {
-            label: 'Runtime status',
+            label: '运行状态',
             key: 'runtime-status',
         },
         {
-            label: 'Preflight deploy',
+            label: '部署预检',
             key: 'preflight-deploy',
         },
         {
-            label: 'Deploy latest',
+            label: '部署最新地图',
             key: 'deploy-latest',
         },
     ];
@@ -213,14 +213,14 @@ export default function Index(prop: { messageApi: any }) {
             const doctor = response.data;
             const checks = doctor.checks || [];
             const runtimeLines = [
-                `Mode: ${doctor.status?.mode || ''}`,
-                `Ready: ${doctor.ready ? 'yes' : 'no'}`,
-                `Converter: ${doctor.status?.local?.converterAvailable ? 'available' : 'missing'}`,
-                `Tile creator: ${doctor.status?.local?.tileMapCreatorAvailable ? 'available' : 'missing'}`,
-                `Edge deploy: ${doctor.status?.edgeDeploy?.enabled ? 'enabled' : 'disabled'}`,
+                `运行模式: ${doctor.status?.mode || ''}`,
+                `生产就绪: ${doctor.ready ? '是' : '否'}`,
+                `地图转换器: ${doctor.status?.local?.converterAvailable ? '已安装' : '缺失'}`,
+                `底图生成器: ${doctor.status?.local?.tileMapCreatorAvailable ? '已安装' : '缺失'}`,
+                `边缘部署: ${doctor.status?.edgeDeploy?.enabled ? '已启用' : '未启用'}`,
             ];
             Modal.info({
-                title: 'Runtime status',
+                title: '运行状态',
                 width: 640,
                 content: (
                     <div className="runtime-status-modal">
@@ -237,7 +237,7 @@ export default function Index(prop: { messageApi: any }) {
             });
         } catch (error: any) {
             Modal.error({
-                title: 'Runtime status failed',
+                title: '运行状态获取失败',
                 content: error?.message || 'Unknown error',
             });
         }
@@ -250,9 +250,9 @@ export default function Index(prop: { messageApi: any }) {
             const checks = result?.checks || [];
             const content = (
                 <div className="runtime-status-modal">
-                    <p>{`Ready: ${result?.ready ? 'yes' : 'no'}`}</p>
-                    <p>{`Target: ${result?.deployConfig?.target || 'not configured'}`}</p>
-                    <p>{`Map root: ${result?.deployConfig?.targetMapRoot || ''}`}</p>
+                    <p>{`预检通过: ${result?.ready ? '是' : '否'}`}</p>
+                    <p>{`目标设备: ${result?.deployConfig?.target || '未配置'}`}</p>
+                    <p>{`地图目录: ${result?.deployConfig?.targetMapRoot || ''}`}</p>
                     <ul>
                         {checks.map((check: any) => (
                             <li key={check.name}>{`[${check.status}] ${check.message}`}</li>
@@ -262,20 +262,20 @@ export default function Index(prop: { messageApi: any }) {
             );
             if (response?.code === 0) {
                 Modal.success({
-                    title: 'Deploy preflight passed',
+                    title: '部署预检通过',
                     width: 640,
                     content,
                 });
                 return;
             }
             Modal.warning({
-                title: 'Deploy preflight failed',
+                title: '部署预检失败',
                 width: 640,
                 content,
             });
         } catch (error: any) {
             Modal.error({
-                title: 'Deploy preflight failed',
+                title: '部署预检失败',
                 content: error?.message || 'Unknown error',
             });
         }
@@ -283,10 +283,10 @@ export default function Index(prop: { messageApi: any }) {
 
     const deployLatestReleasedMap = () => {
         Modal.confirm({
-            title: 'Deploy latest released map',
-            content: 'Deploy the newest released map to the configured edge device.',
-            okText: 'Deploy',
-            cancelText: 'Cancel',
+            title: '部署最新地图',
+            content: '将最新发布的地图部署到已配置的边缘设备。',
+            okText: '部署',
+            cancelText: '取消',
             onOk: async () => {
                 try {
                     const response = await FileService.deployLatestReleasedMap();
@@ -294,12 +294,12 @@ export default function Index(prop: { messageApi: any }) {
                         throw new Error(response?.message || 'Deploy failed');
                     }
                     Modal.success({
-                        title: 'Deploy finished',
-                        content: `Map ${response.data?.mapName || ''} deployed successfully.`,
+                        title: '部署完成',
+                        content: `地图 ${response.data?.mapName || ''} 已部署完成。`,
                     });
                 } catch (error: any) {
                     Modal.error({
-                        title: 'Deploy failed',
+                        title: '部署失败',
                         content: error?.message || 'Unknown error',
                     });
                 }
