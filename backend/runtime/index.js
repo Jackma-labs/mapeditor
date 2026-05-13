@@ -1651,9 +1651,10 @@ function summarizeCombinedPackageAnalysis(analyses) {
   if (coordinateKinds.includes('projected_meters_or_large_local')) {
     addRecommendation('当前坐标不是经纬度，数值更像米制投影坐标或大范围局部坐标；如需跨批次对齐，需要确认 EPSG/投影或转换参数。');
   }
+  const pointCloudsForCount = selectPreferredPointCloudAnalyses(pointClouds);
   return {
     ...counts,
-    pointCount: analyses.reduce((total, item) => total + (item.summary.pointCount || 0), 0),
+    pointCount: pointCloudsForCount.reduce((total, item) => total + (item.pointCount || 0), 0),
     recommendations,
   };
 }
@@ -1823,14 +1824,16 @@ async function listDataPackages(config) {
     const packageDir = path.join(packageRoot, packageId);
     const stat = await fsp.stat(packageDir);
     const analysis = await readAnalysisFile(packageDir).catch(() => null);
+    const analyses = analysis?.analyses || [];
+    const summary = analyses.length ? summarizeCombinedPackageAnalysis(analyses) : analysis?.summary || null;
     packages.push({
       packageId,
       path: packageDir,
       createdAt: stat.birthtime.toISOString(),
       modifiedAt: stat.mtime.toISOString(),
       defaultMapName: defaultMapNameFromPackageId(packageId),
-      summary: analysis?.summary || null,
-      analyses: analysis?.analyses || [],
+      summary,
+      analyses,
       uploadedFiles: analysis?.uploadedFiles || [],
       sizeBytes: await getDirectorySize(packageDir),
     });
