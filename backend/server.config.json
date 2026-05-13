@@ -5,5 +5,22 @@
   "releaseRoot": "../data/released_map",
   "converterBinary": "../runtime/bin/editor_map_converter",
   "skipValidation": false,
-  "frontendBuildRoot": "../frontend/build/map_editor_frontend"
+  "frontendBuildRoot": "../frontend/build/map_editor_frontend",
+  "runtimeMode": "local",
+  "runtimeDockerContainer": "map_editor",
+  "runtimeDockerImage": "registry.cn-hangzhou.aliyuncs.com/wheelos/apollo:hdmap-aarch64-20.04-20251212_2123",
+  "apolloRootInContainer": "/apollo",
+  "dataRootInContainer": "/apollo/data",
+  "configRootInContainer": "/apollo/external_conf",
+  "tileMapCreatorInContainer": "/apollo/bazel-bin/modules/private_tools/tile_map_images_creator/tile_map_images_creator",
+  "editorMapConverterInContainer": "/apollo/bazel-bin/modules/private_tools/map_tool/editor_map_converter",
+  "tileMapCreatorBinary": "../runtime/bin/tile_map_images_creator",
+  "tileMapConfig": "../config/image_creator_conf.pb.txt",
+  "edgeDeploy": {
+    "mode": "disabled",
+    "host": "",
+    "user": "",
+    "targetMapRoot": "/apollo/modules/map/data",
+    "postDeployCommand": ""
+  }
 }

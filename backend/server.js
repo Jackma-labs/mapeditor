@@ -6,9 +6,9 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const WebSocket = require('ws');
-const { spawn } = require('child_process');
 
 const config = require('./config');
+const runtime = require('./runtime');
 
 const app = express();
 app.use(cors());
@@ -207,53 +207,17 @@ async function handleSaveMapFile(ws, requestId, info) {
 }
 
 async function runConverter(mapName, jsonPath, releaseDir) {
-  if (!(await pathExists(config.converterBinary))) {
-    throw new Error(
-      `converter binary not found at ${config.converterBinary}. ` +
-        'Please build //modules/private_tools/map_tool:editor_map_converter first.'
-    );
-  }
-  const args = [
-    `--input_json=${jsonPath}`,
-    `--output_dir=${releaseDir}`,
-  ];
   const baseMapDir =
     lastAccessedBaseMapDir &&
     (await pathExists(lastAccessedBaseMapDir))
       ? lastAccessedBaseMapDir
       : null;
-  if (baseMapDir) {
-    args.push(`--base_map_dir=${baseMapDir}`);
-  }
-  if (config.skipValidation) {
-    args.push(`--skip_validate=true`);
-  }
-  log(
-    `Launching converter for ${mapName}: ${config.converterBinary} ${args.join(' ')}`
-  );
-  return new Promise((resolve, reject) => {
-    const child = spawn(config.converterBinary, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-      } else {
-        const error = new Error(
-          `converter exited with code ${code}\n${stderr || stdout}`
-        );
-        reject(error);
-      }
-    });
-    child.on('error', (err) => reject(err));
+  log(`Launching converter for ${mapName} with ${config.runtimeMode} runtime`);
+  return runtime.convertEditorMap(config, {
+    mapName,
+    jsonPath,
+    releaseDir,
+    baseMapDir,
   });
 }
 
@@ -380,7 +344,62 @@ app.get('/config', (_req, res) => {
     converterAvailable: fs.existsSync(config.converterBinary),
     frontendBuildRoot: config.frontendBuildRoot,
     frontendAvailable: fs.existsSync(config.frontendBuildRoot),
+    runtimeMode: config.runtimeMode,
+    runtimeDockerContainer: config.runtimeDockerContainer,
+    edgeDeploy: config.edgeDeploy,
   });
+});
+
+app.get('/runtime/status', async (_req, res) => {
+  try {
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: await runtime.getStatus(config),
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 500,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/create-base-map', async (req, res) => {
+  try {
+    const result = await runtime.createBaseMap(config, req.body || {});
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: {
+        stdout: result.stdout.trim(),
+        stderr: result.stderr.trim(),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15030,
+      message: error.message,
+      data: error.result || null,
+    });
+  }
+});
+
+app.post('/runtime/deploy-map', async (req, res) => {
+  try {
+    const result = await runtime.deployReleasedMap(config, req.body || {});
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15040,
+      message: error.message,
+      data: error.result || null,
+    });
+  }
 });
 
 app.get('/mapcreator/:mapName/tiles.json', async (req, res) => {
