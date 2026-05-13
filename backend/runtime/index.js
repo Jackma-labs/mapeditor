@@ -89,6 +89,28 @@ function resolveInside(rootDir, relativePath) {
   return resolvedPath;
 }
 
+function findArchivePath(normalizedPaths, relativePath) {
+  return normalizedPaths.find(
+    (entryPath) => entryPath === relativePath || entryPath.endsWith(`/${relativePath}`)
+  );
+}
+
+async function extractArchivePrefix(entries, archivePrefix, targetDir) {
+  for (const entry of entries) {
+    const entryPath = entry.path.replace(/\\/g, '/');
+    if (!entryPath.startsWith(archivePrefix)) {
+      continue;
+    }
+    const relativePath = entryPath.slice(archivePrefix.length);
+    if (!relativePath || relativePath.endsWith('/')) {
+      continue;
+    }
+    const outputPath = resolveInside(targetDir, relativePath);
+    await fsp.mkdir(path.dirname(outputPath), { recursive: true });
+    await pipeline(entry.stream(), fs.createWriteStream(outputPath));
+  }
+}
+
 async function checkDockerRuntime(config) {
   const dockerInfo = await runCommand('docker', ['version', '--format', '{{.Server.Version}}']).catch((error) => ({
     code: 1,
@@ -204,11 +226,16 @@ async function importBaseMapZip(config, params) {
   const archive = await unzipper.Open.file(zipPath);
   const entries = archive.files.filter((entry) => entry.type === 'File');
   const normalizedPaths = entries.map((entry) => entry.path.replace(/\\/g, '/'));
-  const tilePath = normalizedPaths.find(
-    (entryPath) => entryPath === 'map_images/tiles.json' || entryPath.endsWith('/map_images/tiles.json')
-  );
+  const tilePath = findArchivePath(normalizedPaths, 'map_images/tiles.json');
   if (!tilePath) {
-    throw new Error('base map zip must contain map_images/tiles.json');
+    const looksLikeApolloMapPackage =
+      findArchivePath(normalizedPaths, 'editor_map.json') ||
+      findArchivePath(normalizedPaths, 'base_map.bin') ||
+      findArchivePath(normalizedPaths, 'routing_map.bin');
+    if (looksLikeApolloMapPackage) {
+      throw new Error('这是 Apollo 完整地图包，不是底图瓦片包；请在“打开标注地图”里导入，或上传包含 map_images/tiles.json 的底图 ZIP');
+    }
+    throw new Error('底图 ZIP 必须包含 map_images/tiles.json');
   }
   const archivePrefix = tilePath.slice(0, tilePath.length - 'map_images/tiles.json'.length);
   const targetDir = path.join(config.baseMapRoot, mapName);
@@ -221,19 +248,7 @@ async function importBaseMapZip(config, params) {
   await fsp.rm(stagingDir, { recursive: true, force: true });
   await fsp.mkdir(stagingDir, { recursive: true });
   try {
-    for (const entry of entries) {
-      const entryPath = entry.path.replace(/\\/g, '/');
-      if (!entryPath.startsWith(archivePrefix)) {
-        continue;
-      }
-      const relativePath = entryPath.slice(archivePrefix.length);
-      if (!relativePath || relativePath.endsWith('/')) {
-        continue;
-      }
-      const outputPath = resolveInside(stagingDir, relativePath);
-      await fsp.mkdir(path.dirname(outputPath), { recursive: true });
-      await pipeline(entry.stream(), fs.createWriteStream(outputPath));
-    }
+    await extractArchivePrefix(entries, archivePrefix, stagingDir);
 
     const importedTilesPath = path.join(stagingDir, 'map_images', 'tiles.json');
     if (!(await pathExists(importedTilesPath))) {
@@ -255,6 +270,74 @@ async function importBaseMapZip(config, params) {
     };
   } catch (error) {
     await fsp.rm(stagingDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function importMapPackageZip(config, params) {
+  const mapName = validateMapName(params.mapName);
+  const zipPath = params.zipPath;
+  const overwrite = params.overwrite === true;
+  if (!zipPath || !(await pathExists(zipPath))) {
+    throw new Error('uploaded zip file not found');
+  }
+
+  const archive = await unzipper.Open.file(zipPath);
+  const entries = archive.files.filter((entry) => entry.type === 'File');
+  const normalizedPaths = entries.map((entry) => entry.path.replace(/\\/g, '/'));
+  const editorMapPathInArchive = findArchivePath(normalizedPaths, 'editor_map.json');
+  if (!editorMapPathInArchive) {
+    throw new Error('Apollo 地图包 ZIP 必须包含 editor_map.json');
+  }
+
+  const archivePrefix = editorMapPathInArchive.slice(
+    0,
+    editorMapPathInArchive.length - 'editor_map.json'.length
+  );
+  const targetReleaseDir = path.join(config.releaseRoot, mapName);
+  const targetEditorMapPath = path.join(config.editorMapRoot, `${mapName}.json`);
+  const stagingReleaseDir = path.join(config.releaseRoot, `.import-${mapName}-${Date.now()}`);
+  const stagingEditorMapPath = path.join(config.editorMapRoot, `.import-${mapName}-${Date.now()}.json`);
+
+  const releaseExists = await pathExists(targetReleaseDir);
+  const editorMapExists = await pathExists(targetEditorMapPath);
+  if ((releaseExists || editorMapExists) && !overwrite) {
+    throw new Error(`地图已存在: ${mapName}`);
+  }
+
+  await fsp.mkdir(config.releaseRoot, { recursive: true });
+  await fsp.mkdir(config.editorMapRoot, { recursive: true });
+  await fsp.rm(stagingReleaseDir, { recursive: true, force: true });
+  await fsp.rm(stagingEditorMapPath, { force: true });
+  await fsp.mkdir(stagingReleaseDir, { recursive: true });
+
+  try {
+    await extractArchivePrefix(entries, archivePrefix, stagingReleaseDir);
+
+    const importedEditorMapPath = path.join(stagingReleaseDir, 'editor_map.json');
+    if (!(await pathExists(importedEditorMapPath))) {
+      throw new Error('imported archive did not produce editor_map.json');
+    }
+    const editorMapContent = (await fsp.readFile(importedEditorMapPath, 'utf8')).replace(/^\uFEFF/, '');
+    JSON.parse(editorMapContent);
+    await fsp.writeFile(stagingEditorMapPath, editorMapContent, 'utf8');
+
+    await fsp.rm(targetReleaseDir, { recursive: true, force: true });
+    await fsp.rm(targetEditorMapPath, { force: true });
+    await fsp.rename(stagingReleaseDir, targetReleaseDir);
+    await fsp.rename(stagingEditorMapPath, targetEditorMapPath);
+
+    const files = await fsp.readdir(targetReleaseDir).catch(() => []);
+    return {
+      mapName,
+      editorMapPath: targetEditorMapPath,
+      releasePath: targetReleaseDir,
+      files,
+      sizeBytes: await getDirectorySize(targetReleaseDir),
+    };
+  } catch (error) {
+    await fsp.rm(stagingReleaseDir, { recursive: true, force: true });
+    await fsp.rm(stagingEditorMapPath, { force: true });
     throw error;
   }
 }
@@ -592,6 +675,7 @@ module.exports = {
   preflightEdgeDeploy,
   listReleasedMaps,
   importBaseMapZip,
+  importMapPackageZip,
   convertEditorMap,
   createBaseMap,
   deployReleasedMap,

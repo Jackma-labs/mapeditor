@@ -434,6 +434,33 @@ app.post('/runtime/import-base-map', upload.single('file'), async (req, res) => 
   }
 });
 
+app.post('/runtime/import-map-package', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      throw new Error('file is required');
+    }
+    const result = await runtime.importMapPackageZip(config, {
+      zipPath: req.file.path,
+      mapName: req.body.mapName,
+      overwrite: req.body.overwrite === 'true',
+    });
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15051,
+      message: error.message,
+    });
+  } finally {
+    if (req.file && req.file.path) {
+      fsp.unlink(req.file.path).catch(() => {});
+    }
+  }
+});
+
 app.get('/runtime/deploy-config', (_req, res) => {
   res.json({
     code: 0,

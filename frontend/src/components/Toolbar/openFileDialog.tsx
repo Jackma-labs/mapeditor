@@ -36,6 +36,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
     const [importLoading, setImportLoading] = useState(false);
     const importInputRef = useRef<HTMLInputElement>(null);
     const isBaseMapDialog = title === '打开底图';
+    const isEditorMapDialog = title === '打开标注地图';
 
     // 选中菜单项某个目录
     const handleItemClick = (event: any) => {
@@ -173,17 +174,21 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         }
         setImportLoading(true);
         try {
-            const response = await FileService.importBaseMapZip(file, defaultName.trim(), false);
+            const response = isBaseMapDialog
+                ? await FileService.importBaseMapZip(file, defaultName.trim(), false)
+                : await FileService.importMapPackageZip(file, defaultName.trim(), false);
             if (response?.code !== 0) {
                 Modal.error({
-                    title: '底图导入失败',
+                    title: isBaseMapDialog ? '底图导入失败' : '地图包导入失败',
                     content: response?.message || '导入失败',
                 });
                 return;
             }
+            const importType = isBaseMapDialog ? '底图' : '地图包';
+            const importedName = response.data?.mapName || defaultName;
             messageFunc({
                 type: 'success',
-                content: <span>{`底图 ${response.data?.mapName || defaultName} 导入成功`}</span>,
+                content: <span>{`${importType} ${importedName} 导入成功`}</span>,
             });
             await fetchData();
         } finally {
@@ -221,7 +226,9 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
             );
         }
         if (menuData.length === 0) {
-            const emptyText = isBaseMapDialog ? '还没有可用底图，请先导入底图 ZIP。' : '还没有可用标注地图。';
+            const emptyText = isBaseMapDialog
+                ? '还没有可用底图，请先导入底图 ZIP。'
+                : '还没有可用标注地图，可导入 Apollo 地图包 ZIP。';
             return (
                 <div className="dialog-body-empty">
                     <span>{emptyText}</span>
@@ -256,12 +263,16 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         >
             {items}
             <p className="dialog-body-title">{titleAddress}</p>
-            {isBaseMapDialog && (
+            {(isBaseMapDialog || isEditorMapDialog) && (
                 <div className="base-map-import">
                     <Button onClick={handleImportBaseMap} loading={importLoading} className="button-cancel">
-                        导入底图 ZIP
+                        {isBaseMapDialog ? '导入底图 ZIP' : '导入 Apollo 地图包 ZIP'}
                     </Button>
-                    <span>ZIP 文件名会作为底图名称，内容需包含 map_images/tiles.json</span>
+                    <span>
+                        {isBaseMapDialog
+                            ? 'ZIP 文件名会作为底图名称，内容需包含 map_images/tiles.json'
+                            : 'ZIP 文件名会作为地图名称，内容需包含 editor_map.json'}
+                    </span>
                     <input
                         ref={importInputRef}
                         type="file"

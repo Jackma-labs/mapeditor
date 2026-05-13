@@ -171,6 +171,22 @@ overwrite=false
 The zip may contain `map_images/tiles.json` at the root or under one top-level
 folder. After import, it is available in the "打开底图" dialog.
 
+Apollo map package import:
+
+```text
+POST /runtime/import-map-package
+Content-Type: multipart/form-data
+
+file=<apollo-map.zip>
+mapName=<name>
+overwrite=false
+```
+
+The zip must contain `editor_map.json`; optional Apollo release outputs such as
+`base_map.bin`, `routing_map.bin`, and `sim_map.bin` are copied into
+`data/released_map/<name>/`. The editor JSON is copied into
+`data/editor_map/<name>.json` and is available in the "打开标注地图" dialog.
+
 ## Edge deployment
 
 Configure `backend/server.config.json`:
