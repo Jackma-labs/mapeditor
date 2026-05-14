@@ -34,6 +34,12 @@ export default class BaseMap {
 
     private loading: boolean = false;
 
+    private activeLayerId: string = 'enhanced';
+
+    private opacity: number = 1;
+
+    private currentMapExtent: number = 0;
+
     /**
      * @class RenderHelper
      * @description 渲染辅助类，主要用于实现地图和相机之间的同步操作
@@ -80,6 +86,11 @@ export default class BaseMap {
         );
 
         PubSub.subscribe('cameraMove', (_name, datas: number[][]) => this.cameraMoveToHdMapcenter(datas));
+        PubSub.subscribe('fitBaseMap', () => this.fitCurrentMap());
+        PubSub.subscribe('baseMapOpacity', (_name, opacity: number) => {
+            this.transparency(opacity);
+            this.renderer();
+        });
     }
 
     get Scene(): THREE.Scene {
@@ -120,9 +131,10 @@ export default class BaseMap {
     }
 
     public transparency(val: number) {
+        this.opacity = Math.max(0, Math.min(1, Number(val)));
         Object.keys(this.meshs).forEach((id: string) => {
             const mesh = this.meshs[id];
-            (mesh.material as THREE.MeshBasicMaterial).opacity = val;
+            (mesh.material as THREE.MeshBasicMaterial).opacity = this.opacity;
         });
     }
 
@@ -131,9 +143,10 @@ export default class BaseMap {
      *
      * @param dir 文件夹路径
      */
-    public async renderMap(dir: string, json: any) {
+    public async renderMap(dir: string, json: any, options: any = {}) {
         this.loading = true;
         this.deleteTile();
+        this.activeLayerId = json.layerId || options.layerId || 'enhanced';
         if (json.type === 'point_cloud') {
             this.renderPointCloudMap(dir, json);
             return;
@@ -176,7 +189,10 @@ export default class BaseMap {
         const coor3 = this.utmTransformThree(points[2]);
         const width = coor3.x - coor1.x;
         const height = coor3.y - coor1.y;
-        this.control.adapter(Math.max(width, height));
+        this.currentMapExtent = Math.max(width, height, 20);
+        if (!options.keepCamera) {
+            this.control.adapter(this.currentMapExtent);
+        }
         this.position.copy(this.camera.position);
         await this.drawTile(tiles)
             .then(() => {
@@ -191,7 +207,9 @@ export default class BaseMap {
             this.allElementsToOffset();
         }
         // 当切换标注地图的时候，不可以回退和重做了
-        useManagerStore.getState().resetCommand();
+        if (!options.preserveCommands) {
+            useManagerStore.getState().resetCommand();
+        }
         this.loading = false;
     }
 
@@ -241,7 +259,7 @@ export default class BaseMap {
             sizeAttenuation: false,
             vertexColors: true,
             transparent: true,
-            opacity: 0.88,
+            opacity: this.opacity,
             depthWrite: false,
         });
         const pointCloud = new THREE.Points(geometry, material);
@@ -258,7 +276,8 @@ export default class BaseMap {
         if (mapBounds) {
             const width = Number(mapBounds.maxX) - Number(mapBounds.minX);
             const height = Number(mapBounds.maxY) - Number(mapBounds.minY);
-            this.control.adapter(Math.max(width, height, 20));
+            this.currentMapExtent = Math.max(width, height, 20);
+            this.control.adapter(this.currentMapExtent);
             this.control.cameraControls.moveTo(0, 0, 0, false);
         }
         this.position.copy(this.camera.position);
@@ -284,6 +303,15 @@ export default class BaseMap {
         const width = maxX - minX;
         const height = maxY - minY;
         this.control.adapter(Math.max(width, height));
+    }
+
+    public fitCurrentMap() {
+        if (!this.currentMapExtent) {
+            return;
+        }
+        this.control.adapter(this.currentMapExtent);
+        this.control.cameraControls.moveTo(0, 0, 0, false);
+        this.renderer();
     }
 
     /**
@@ -323,6 +351,7 @@ export default class BaseMap {
             const material = new THREE.MeshBasicMaterial({
                 alphaMap: texture,
                 transparent: true,
+                opacity: this.opacity,
             });
 
             material.depthWrite = false;
@@ -387,7 +416,11 @@ export default class BaseMap {
         const promises = tiles.map((item) => {
             const x = item.offset_x;
             const y = item.offset_y;
-            const url = `http://${baseHttpURL}/mapcreator/${this.dir}/${this.scale}/${y}/${x}.png`;
+            const layerPath =
+                this.activeLayerId && this.activeLayerId !== 'enhanced'
+                    ? `/layers/${encodeURIComponent(this.activeLayerId)}`
+                    : '';
+            const url = `http://${baseHttpURL}/mapcreator/${this.dir}${layerPath}/${this.scale}/${y}/${x}.png`;
             const point = new THREE.Vector3(parseInt(x, 10) * pixel * resolution, parseInt(y, 10) * pixel * resolution);
             const id = `tile_${this.scale}_${x}_${y}`;
             if (this.meshs[id]) {

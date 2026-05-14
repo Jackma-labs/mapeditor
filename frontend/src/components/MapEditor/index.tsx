@@ -23,6 +23,7 @@ import { comparePointsWithPreCheck } from 'src/diff/compareWithPreCheck';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer';
 import { updateElements } from 'src/diff/updateElement';
 import { initialMapState } from 'src/constant/initialMapState';
+import FileService from 'src/service/index';
 import _ from 'lodash';
 import initThree from '../../threeUtil/initThree';
 import CameraControl from '../../threeUtil/cameraControl';
@@ -32,6 +33,15 @@ import './index.less';
 import BezierCurve3Control from '../../threeUtil/BezierCurve3Control';
 import noData from '../../assets/images/no_attr.png';
 import noPermission from '../../assets/images/no_permission.png';
+
+const layerDisplayName: { [key: string]: string } = {
+    enhanced: '增强',
+    raw: '原始',
+    ground: '地面',
+    marking: '标线',
+    edge: '边界',
+    structure: '立物',
+};
 
 export default function MapEditor() {
     const [mapState, setMapState, undo, redo, dataImport] = useManagerStore((state) => [
@@ -61,6 +71,12 @@ export default function MapEditor() {
     const destroyRequestAnimationHandle = useRef(null);
     const oldMapState = useRef(initialMapState);
     const [showRemind, setShowRemind] = useState(true);
+    const [baseMapUi, setBaseMapUi] = useState({
+        dir: '',
+        layers: [] as any[],
+        activeLayerId: 'enhanced',
+        opacity: 1,
+    });
     const render = () => {
         renderer.current?.render(scene.current, camera.current);
         labelRender.current?.render(scene.current, camera.current);
@@ -223,8 +239,18 @@ export default function MapEditor() {
             // 监听一些事件
             const baseMap = new BaseMap(renderer.current, scene.current, camera.current, cameraControl.current);
             PubSub.subscribe('renderMap', (_name, data: any) => {
-                baseMap.scale = 4;
-                baseMap.renderMap(data.dir, data.json);
+                if (!data.options?.keepCamera) {
+                    baseMap.scale = 4;
+                }
+                const layers = Array.isArray(data.json?.layers) ? data.json.layers : [];
+                setBaseMapUi((prev) => ({
+                    ...prev,
+                    dir: data.dir,
+                    layers,
+                    activeLayerId: data.json?.layerId || data.layerId || 'enhanced',
+                }));
+                setShowRemind(false);
+                baseMap.renderMap(data.dir, data.json, data.options || {});
             });
             PubSub.subscribe('renderHDMap', (_name, data: any) => {
                 // 当切换标注地图的时候，不可以回退和重做了
@@ -381,10 +407,70 @@ export default function MapEditor() {
         render();
     };
 
+    const handleLayerChange = async (layerId: string) => {
+        if (!baseMapUi.dir || layerId === baseMapUi.activeLayerId) {
+            return;
+        }
+        const response = await FileService.getBaseMapInfo(baseMapUi.dir, layerId);
+        if (!response || response.code) {
+            return;
+        }
+        PubSub.publish('renderMap', {
+            dir: baseMapUi.dir,
+            json: response,
+            layerId,
+            options: {
+                keepCamera: true,
+                preserveCommands: true,
+            },
+        });
+    };
+
+    const handleOpacityChange = (value: number) => {
+        setBaseMapUi((prev) => ({
+            ...prev,
+            opacity: value,
+        }));
+        PubSub.publish('baseMapOpacity', value);
+    };
+
     return (
         <div id="map-editor-container" onClick={handleClick} onMouseUp={handleMouseup} onDoubleClick={handleDbclick}>
             <div id="webgl" />
             <MapEditorBtn />
+            {baseMapUi.layers.length > 1 && (
+                <div
+                    className="basemap-layer-panel"
+                    onClick={(event) => event.stopPropagation()}
+                    onMouseUp={(event) => event.stopPropagation()}
+                >
+                    <div className="basemap-layer-buttons">
+                        {baseMapUi.layers.map((layer) => (
+                            <button
+                                key={layer.id}
+                                type="button"
+                                className={layer.id === baseMapUi.activeLayerId ? 'active' : ''}
+                                onClick={() => handleLayerChange(layer.id)}
+                            >
+                                {layerDisplayName[layer.id] || layer.name || layer.id}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="basemap-layer-actions">
+                        <input
+                            type="range"
+                            min="0.35"
+                            max="1"
+                            step="0.05"
+                            value={baseMapUi.opacity}
+                            onChange={(event) => handleOpacityChange(Number(event.target.value))}
+                        />
+                        <button type="button" onClick={() => PubSub.publish('fitBaseMap')}>
+                            居中
+                        </button>
+                    </div>
+                </div>
+            )}
             {showRemind && (
                 <div className="text-remind">
                     <img src={noData} alt="" className="no-data-img" />

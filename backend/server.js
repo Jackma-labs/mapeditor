@@ -36,6 +36,19 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/plugins/map' });
 
 let lastAccessedBaseMapDir = null;
+
+const BASE_MAP_LAYER_DIRS = {
+  enhanced: 'map_images',
+  raw: 'map_images_raw',
+  ground: 'map_images_ground',
+  marking: 'map_images_marking',
+  edge: 'map_images_edge',
+  structure: 'map_images_structure',
+};
+
+function getBaseMapLayerDir(layer = 'enhanced') {
+  return BASE_MAP_LAYER_DIRS[layer] || null;
+}
 const runtimeJobs = new Map();
 
 function log(...args) {
@@ -1027,6 +1040,29 @@ app.get('/mapcreator/:mapName/tiles.json', async (req, res) => {
   }
 });
 
+app.get('/mapcreator/:mapName/layers/:layer/tiles.json', async (req, res) => {
+  const { mapName, layer } = req.params;
+  const layerDir = getBaseMapLayerDir(layer);
+  if (!layerDir) {
+    res.status(404).json({ code: 404, message: `unknown base map layer: ${layer}` });
+    return;
+  }
+  const tilePath = path.join(config.baseMapRoot, mapName, layerDir, 'tiles.json');
+  if (!(await pathExists(tilePath))) {
+    res.status(404).json({ code: 404, message: `tiles.json not found for ${mapName}/${layer}` });
+    return;
+  }
+  try {
+    const payload = JSON.parse((await fsp.readFile(tilePath, 'utf8')).replace(/^\uFEFF/, ''));
+    payload.layerId = layer;
+    lastAccessedBaseMapDir = path.join(config.baseMapRoot, mapName);
+    res.set('Access-Control-Allow-Origin', '*');
+    res.type('application/json').send(JSON.stringify(payload));
+  } catch (error) {
+    res.status(500).json({ code: 500, message: error.message });
+  }
+});
+
 app.get('/mapcreator/:mapName/:level/proj.png', async (req, res) => {
   const { mapName, level } = req.params;
   const pngPath = path.join(
@@ -1064,6 +1100,22 @@ app.get('/mapcreator/:mapName/image_index.json', async (req, res) => {
   }
   res.set('Access-Control-Allow-Origin', '*');
   res.sendFile(indexPath);
+});
+
+app.get('/mapcreator/:mapName/layers/:layer/:level/:y/:file', async (req, res) => {
+  const { mapName, layer, level, y, file } = req.params;
+  const layerDir = getBaseMapLayerDir(layer);
+  if (!layerDir) {
+    res.status(404).send('Not Found');
+    return;
+  }
+  const pngPath = path.join(config.baseMapRoot, mapName, layerDir, level, y, file);
+  if (!(await pathExists(pngPath))) {
+    res.status(404).send('Not Found');
+    return;
+  }
+  res.set('Access-Control-Allow-Origin', '*');
+  res.sendFile(pngPath);
 });
 
 app.get('/mapcreator/:mapName/:level/:y/:file', async (req, res) => {

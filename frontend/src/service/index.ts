@@ -282,8 +282,9 @@ class FileService {
         });
     }
 
-    getBaseMapInfo(dir: string) {
-        return fetch(`http://${baseHttpURL}/mapcreator/${dir}/tiles.json?mode=0`)
+    getBaseMapInfo(dir: string, layerId: string = 'enhanced') {
+        const layerPath = layerId && layerId !== 'enhanced' ? `/layers/${encodeURIComponent(layerId)}` : '';
+        return fetch(`http://${baseHttpURL}/mapcreator/${dir}${layerPath}/tiles.json?mode=0`)
             .then((response) => response.json())
             .catch((error) => {
                 console.log(error);
