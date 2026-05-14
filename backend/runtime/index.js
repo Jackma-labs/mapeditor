@@ -1092,6 +1092,7 @@ function createRasterTileAccumulator(options = {}) {
       bounds,
       coordinate: metadata.coordinate || null,
       imageOverlay: metadata.imageOverlay || null,
+      stitchPlan: metadata.stitchPlan || null,
       processing: metadata.processing || null,
       layers: metadata.layers || null,
       tiles: {},
