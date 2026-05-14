@@ -22,7 +22,7 @@ export default class BaseMap {
 
     private control: CameraControl;
 
-    private meshs: { [id: string]: THREE.Mesh | THREE.Points | THREE.LineSegments } = {};
+    private meshs: { [id: string]: THREE.Mesh | THREE.Points } = {};
 
     public scale: number = 4;
 
@@ -86,7 +86,7 @@ export default class BaseMap {
         return this.scene;
     }
 
-    public addMesh(mesh: THREE.Mesh | THREE.Points | THREE.LineSegments, render: boolean = false) {
+    public addMesh(mesh: THREE.Mesh | THREE.Points, render: boolean = false) {
         this.scene.add(mesh);
 
         if (render) {
@@ -180,7 +180,6 @@ export default class BaseMap {
         this.position.copy(this.camera.position);
         await this.drawTile(tiles)
             .then(() => {
-                this.renderImageProjectionLayer(dir, json);
                 this.renderImagePoseLayer(dir, json);
                 this.renderer();
             })
@@ -236,58 +235,6 @@ export default class BaseMap {
         imagePoseLayer.renderOrder = 5;
         this.meshs.image_pose_layer = imagePoseLayer;
         this.addMesh(imagePoseLayer);
-    }
-
-    private renderImageProjectionLayer(dir: string, json: any) {
-        const items = json?.imageOverlay?.index?.items || [];
-        if (!Array.isArray(items) || items.length === 0 || !json?.center) {
-            return;
-        }
-        const segments: number[] = [];
-        const colors: number[] = [];
-        items.forEach((item: any) => {
-            const footprint = item?.projection?.footprint;
-            if (!Array.isArray(footprint) || footprint.length < 2) {
-                return;
-            }
-            const isLeft = item.side === 'L';
-            const color = isLeft ? [0.1, 0.85, 1] : [1, 0.65, 0.18];
-            for (let index = 0; index < footprint.length - 1; index += 1) {
-                const start = footprint[index];
-                const end = footprint[index + 1];
-                segments.push(
-                    Number(start.x || 0) - Number(json.center.x || 0),
-                    Number(start.y || 0) - Number(json.center.y || 0),
-                    3.2,
-                    Number(end.x || 0) - Number(json.center.x || 0),
-                    Number(end.y || 0) - Number(json.center.y || 0),
-                    3.2,
-                );
-                colors.push(...color, ...color);
-            }
-        });
-        if (segments.length === 0) {
-            return;
-        }
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.Float32BufferAttribute(segments, 3));
-        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-        const material = new THREE.LineBasicMaterial({
-            vertexColors: true,
-            transparent: true,
-            opacity: 0.35,
-            depthWrite: false,
-        });
-        const projectionLayer = new THREE.LineSegments(geometry, material);
-        projectionLayer.name = 'image_projection_layer';
-        projectionLayer.userData = {
-            id: 'image_projection_layer',
-            type: 'image_projection_layer',
-            baseMapDir: dir,
-        };
-        projectionLayer.renderOrder = 4;
-        this.meshs.image_projection_layer = projectionLayer;
-        this.addMesh(projectionLayer);
     }
 
     private renderPointCloudMap(dir: string, json: any) {
