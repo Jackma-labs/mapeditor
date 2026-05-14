@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import React, { useEffect, useRef, useState } from 'react';
 import PubSub from 'pubsub-js';
-import { Modal, Segmented } from 'antd';
 import DragControl from 'src/threeUtil/dragControl';
 import RotateControl from 'src/threeUtil/RotateControl';
 import { clickHandle } from 'src/handle/interactive/clickHandle';
@@ -11,13 +10,7 @@ import { isMac } from 'src/utils/common';
 import { useManagerStore } from 'src/store';
 import AddIconControl from 'src/threeUtil/AddIconControl';
 import { MouseMoveControl } from 'src/threeUtil/MouseMoveControl';
-import {
-    MapElementType,
-    OperationType,
-    PermissionStatus,
-    ThreeElementType,
-    ThreeObject,
-} from 'src/interface/commonInterFace';
+import { MapElementType, OperationType, ThreeElementType, ThreeObject } from 'src/interface/commonInterFace';
 import { disposeGroup } from 'src/utils/threeObjectUtil';
 import { findElementByIdAndType } from 'src/utils/search/common';
 import { objectSearch } from 'src/utils/search/objectSearch';
@@ -35,12 +28,10 @@ import initThree from '../../threeUtil/initThree';
 import CameraControl from '../../threeUtil/cameraControl';
 import BaseMap from '../../object/baseMap';
 import MapEditorBtn from './MapEditorBtn';
-import ImageCalibrationPreview from './ImageCalibrationPreview';
 import './index.less';
 import BezierCurve3Control from '../../threeUtil/BezierCurve3Control';
 import noData from '../../assets/images/no_attr.png';
 import noPermission from '../../assets/images/no_permission.png';
-import { baseHttpURL } from '../../config';
 
 export default function MapEditor() {
     const [mapState, setMapState, undo, redo, dataImport] = useManagerStore((state) => [
@@ -70,40 +61,9 @@ export default function MapEditor() {
     const destroyRequestAnimationHandle = useRef(null);
     const oldMapState = useRef(initialMapState);
     const [showRemind, setShowRemind] = useState(true);
-    const [imagePosePreview, setImagePosePreview] = useState<any>(null);
-    const [imagePreviewMode, setImagePreviewMode] = useState<'raw' | 'undistort'>('raw');
     const render = () => {
         renderer.current?.render(scene.current, camera.current);
         labelRender.current?.render(scene.current, camera.current);
-    };
-
-    const getImagePoseHit = (e: React.MouseEvent) => {
-        if (!camera.current || !scene.current || !dom.current) {
-            return null;
-        }
-        const raycaster = new THREE.Raycaster();
-        raycaster.params.Points.threshold = Math.max(1.5, camera.current.position.z / 220);
-        const pointer = new THREE.Vector2();
-        const domRect = dom.current.getBoundingClientRect();
-        pointer.x = ((e.clientX - domRect.left) / dom.current.clientWidth) * 2 - 1;
-        pointer.y = -((e.clientY - domRect.top) / dom.current.clientHeight) * 2 + 1;
-        raycaster.setFromCamera(pointer, camera.current);
-        const layers = scene.current.children.filter((item) => item.userData?.type === 'image_pose_layer');
-        const hits = raycaster.intersectObjects(layers);
-        if (hits.length === 0) {
-            return null;
-        }
-        const hit = hits[0];
-        const items = hit.object.userData.imagePoses || [];
-        const item = items[hit.index ?? 0];
-        if (!item) {
-            return null;
-        }
-        return {
-            item,
-            baseMapDir: hit.object.userData.baseMapDir,
-            related: items.filter((pose: any) => pose.frameIndex === item.frameIndex),
-        };
     };
 
     const visibilitychangeHandle = () => {
@@ -383,13 +343,6 @@ export default function MapEditor() {
         if (setTimer.current) {
             clearTimeout(setTimer.current);
         }
-        if (!currentDrawData.drawElementType && !operationType) {
-            const imagePoseHit = getImagePoseHit(e);
-            if (imagePoseHit) {
-                setImagePosePreview(imagePoseHit);
-                return;
-            }
-        }
         if (
             currentDrawData.drawElementType === MapElementType.TrafficSignal ||
             currentDrawData.drawElementType === MapElementType.SpeedBump ||
@@ -428,21 +381,6 @@ export default function MapEditor() {
         render();
     };
 
-    const getSourceImageUrl = (item: any) =>
-        `http://${baseHttpURL}/mapcreator/${encodeURIComponent(imagePosePreview.baseMapDir)}/source_images/${encodeURIComponent(
-            item.imageFile,
-        )}`;
-    const getPreviewMetaText = () => {
-        const map = imagePosePreview?.item?.map || {};
-        const projection = imagePosePreview?.item?.projection || {};
-        const heading = projection.cameraHeadingDeg ?? map.bodyHeadingDeg;
-        return `X ${map.x}, Y ${map.y}, Z ${map.z}${heading !== undefined && heading !== null ? `, 相机朝向 ${heading}°` : ''}`;
-    };
-    const getPreviewImageTitle = (item: any) => {
-        const fov = item?.projection?.fovDeg || item?.calibration?.fov?.nominalHorizontalDeg;
-        return `${item.side} / ${item.imageName}${fov ? ` / FOV ${fov}°` : ''}`;
-    };
-
     return (
         <div id="map-editor-container" onClick={handleClick} onMouseUp={handleMouseup} onDoubleClick={handleDbclick}>
             <div id="webgl" />
@@ -473,46 +411,6 @@ export default function MapEditor() {
             {/*        </div>*/}
             {/*    </div>*/}
             {/*)}*/}
-            <Modal
-                title={
-                    imagePosePreview
-                        ? `图片帧 ${imagePosePreview.item.frameIndex} / ${imagePosePreview.item.secondsOfWeek.toFixed(3)}`
-                        : '图片'
-                }
-                open={Boolean(imagePosePreview)}
-                footer={null}
-                width={1200}
-                onCancel={() => setImagePosePreview(null)}
-            >
-                {imagePosePreview && (
-                    <div className="image-pose-preview">
-                        <div className="image-pose-toolbar">
-                            <div className="image-pose-meta">{getPreviewMetaText()}</div>
-                            <Segmented
-                                size="small"
-                                value={imagePreviewMode}
-                                options={[
-                                    { label: '原图', value: 'raw' },
-                                    { label: '近似去畸变', value: 'undistort' },
-                                ]}
-                                onChange={(value) => setImagePreviewMode(value as 'raw' | 'undistort')}
-                            />
-                        </div>
-                        <div className="image-pose-grid">
-                            {imagePosePreview.related.map((item: any) => (
-                                <div className="image-pose-card" key={item.imageName}>
-                                    <div className="image-pose-card-title">{getPreviewImageTitle(item)}</div>
-                                    <ImageCalibrationPreview
-                                        src={getSourceImageUrl(item)}
-                                        item={item}
-                                        mode={imagePreviewMode}
-                                    />
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                )}
-            </Modal>
             <RecoverDataRemind />
         </div>
     );
