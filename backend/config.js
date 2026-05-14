@@ -35,6 +35,7 @@ const defaults = {
     mode: process.env.MAP_EDGE_DEPLOY_MODE || 'disabled',
     host: process.env.MAP_EDGE_HOST || '',
     user: process.env.MAP_EDGE_USER || '',
+    port: Number(process.env.MAP_EDGE_PORT || 22),
     targetMapRoot: process.env.MAP_EDGE_TARGET_MAP_ROOT || '/apollo/modules/map/data',
     postDeployCommand: process.env.MAP_EDGE_POST_DEPLOY_COMMAND || '',
   },
@@ -120,6 +121,9 @@ if (process.env.MAP_EDGE_HOST) {
 }
 if (process.env.MAP_EDGE_USER) {
   merged.edgeDeploy.user = process.env.MAP_EDGE_USER;
+}
+if (process.env.MAP_EDGE_PORT) {
+  merged.edgeDeploy.port = Number(process.env.MAP_EDGE_PORT);
 }
 if (process.env.MAP_EDGE_TARGET_MAP_ROOT) {
   merged.edgeDeploy.targetMapRoot = process.env.MAP_EDGE_TARGET_MAP_ROOT;

@@ -945,6 +945,23 @@ app.get('/runtime/deploy-config', (_req, res) => {
   });
 });
 
+app.get('/runtime/deployments', async (_req, res) => {
+  try {
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: {
+        deployments: await runtime.listDeployments(config),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15046,
+      message: error.message,
+    });
+  }
+});
+
 app.post('/runtime/preflight-deploy', async (_req, res) => {
   try {
     const result = await runtime.preflightEdgeDeploy(config);
@@ -978,6 +995,67 @@ app.post('/runtime/create-base-map', async (req, res) => {
       code: 15030,
       message: error.message,
       data: error.result || null,
+    });
+  }
+});
+
+app.post('/runtime/deploy-map-job', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const job = startRuntimeJob('deploy-map', () => runtime.deployReleasedMap(config, body), {
+      mapName: body.mapName || '',
+    });
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15047,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/deploy-latest-job', async (_req, res) => {
+  try {
+    const job = startRuntimeJob('deploy-latest', () => runtime.deployLatestReleasedMap(config), {});
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15048,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/rollback-deployment-job', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const job = startRuntimeJob('rollback-deployment', () => runtime.rollbackDeployment(config, body), {
+      deploymentId: body.deploymentId || '',
+      mapName: body.mapName || '',
+    });
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15049,
+      message: error.message,
     });
   }
 });

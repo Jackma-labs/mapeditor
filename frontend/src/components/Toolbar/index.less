@@ -558,3 +558,21 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
+
+.deployment-history-modal {
+    max-height: 520px;
+    overflow-y: auto;
+
+    .deployment-history-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 10px 0;
+        border-bottom: 1px solid #e6e8ef;
+
+        p {
+            margin: 0 0 4px;
+        }
+    }
+}

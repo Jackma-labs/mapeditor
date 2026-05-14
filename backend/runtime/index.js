@@ -81,6 +81,61 @@ function buildEdgeTarget(config) {
   return `${config.edgeDeploy.user}@${config.edgeDeploy.host}`;
 }
 
+function buildSshBaseArgs(config) {
+  const args = [
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'ConnectTimeout=5',
+  ];
+  if (config.edgeDeploy.port) {
+    args.push('-p', String(config.edgeDeploy.port));
+  }
+  args.push(buildEdgeTarget(config));
+  return args;
+}
+
+function buildScpBaseArgs(config) {
+  const args = [];
+  if (config.edgeDeploy.port) {
+    args.push('-P', String(config.edgeDeploy.port));
+  }
+  return args;
+}
+
+function createDeploymentId(prefix = 'deploy') {
+  return `${prefix}-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function getDeploymentHistoryPath(config) {
+  return path.join(path.resolve(config.releaseRoot, '..'), 'deployments', 'history.json');
+}
+
+async function readDeploymentHistory(config) {
+  const historyPath = getDeploymentHistoryPath(config);
+  if (!(await pathExists(historyPath))) {
+    return [];
+  }
+  const content = await fsp.readFile(historyPath, 'utf8');
+  const parsed = JSON.parse(content.replace(/^\uFEFF/, ''));
+  return Array.isArray(parsed.records) ? parsed.records : [];
+}
+
+async function appendDeploymentRecord(config, record) {
+  const historyPath = getDeploymentHistoryPath(config);
+  await fsp.mkdir(path.dirname(historyPath), { recursive: true });
+  const records = await readDeploymentHistory(config).catch(() => []);
+  records.unshift(record);
+  await fsp.writeFile(historyPath, JSON.stringify({ records: records.slice(0, 200) }, null, 2), 'utf8');
+  return record;
+}
+
+async function listDeployments(config) {
+  return readDeploymentHistory(config);
+}
+
 function validateMapName(mapName) {
   const normalized = String(mapName || '').trim();
   if (!normalized) {
@@ -196,6 +251,7 @@ async function getStatus(config) {
       mode: config.edgeDeploy.mode,
       host: config.edgeDeploy.host,
       user: config.edgeDeploy.user,
+      port: config.edgeDeploy.port,
       targetMapRoot: config.edgeDeploy.targetMapRoot,
       enabled: config.edgeDeploy.mode !== 'disabled',
     },
@@ -3262,6 +3318,7 @@ function getDeployConfig(config) {
     enabled: edge.mode !== 'disabled',
     host: edge.host,
     user: edge.user,
+    port: edge.port || 22,
     target: buildEdgeTarget(config),
     targetMapRoot: edge.targetMapRoot,
     postDeployCommandConfigured: Boolean(edge.postDeployCommand),
@@ -3312,13 +3369,7 @@ async function preflightEdgeDeploy(config) {
     };
   }
 
-  const sshBaseArgs = [
-    '-o',
-    'BatchMode=yes',
-    '-o',
-    'ConnectTimeout=5',
-    deployConfig.target,
-  ];
+  const sshBaseArgs = buildSshBaseArgs(config);
 
   try {
     const result = await runCommand('ssh', [...sshBaseArgs, 'echo mapeditor-ok'], {
@@ -3437,41 +3488,112 @@ async function createBaseMap(config, params = {}) {
 
 async function deployReleasedMap(config, params) {
   const { mapName } = params;
+  const deploymentId = params.deploymentId || createDeploymentId('deploy');
+  const startedAt = new Date().toISOString();
+  const baseRecord = {
+    id: deploymentId,
+    type: 'deploy',
+    mapName: mapName || '',
+    startedAt,
+    finishedAt: null,
+    status: 'failed',
+    target: getDeployConfig(config),
+  };
   if (!mapName) {
     throw new Error('mapName is required');
   }
-  if (config.edgeDeploy.mode === 'disabled') {
-    throw new Error('edge deploy is disabled');
-  }
-  const sourceDir = path.join(config.releaseRoot, mapName);
-  if (!(await pathExists(sourceDir))) {
-    throw new Error(`released map not found at ${sourceDir}`);
-  }
-  if (config.edgeDeploy.mode !== 'ssh') {
-    throw new Error(`unsupported edge deploy mode: ${config.edgeDeploy.mode}`);
-  }
-  if (!config.edgeDeploy.host || !config.edgeDeploy.user) {
-    throw new Error('edgeDeploy.host and edgeDeploy.user are required');
-  }
-  const preflight = await preflightEdgeDeploy(config);
-  if (!preflight.ready) {
-    const failedChecks = preflight.checks
-      .filter((check) => check.status === 'error')
-      .map((check) => `${check.name}: ${check.message}`)
-      .join('; ');
-    throw new Error(`edge deploy preflight failed: ${failedChecks}`);
-  }
-  const edgeTarget = buildEdgeTarget(config);
-  const target = `${edgeTarget}:${config.edgeDeploy.targetMapRoot}/`;
-  const copyResult = await runCommand('scp', ['-r', sourceDir, target], { timeoutMs: 10 * 60 * 1000 });
-  let postDeployResult = null;
-  if (config.edgeDeploy.postDeployCommand) {
-    postDeployResult = await runCommand('ssh', [
-      edgeTarget,
-      config.edgeDeploy.postDeployCommand,
+  try {
+    if (config.edgeDeploy.mode === 'disabled') {
+      throw new Error('edge deploy is disabled');
+    }
+    const sourceDir = path.join(config.releaseRoot, mapName);
+    if (!(await pathExists(sourceDir))) {
+      throw new Error(`released map not found at ${sourceDir}`);
+    }
+    if (config.edgeDeploy.mode !== 'ssh') {
+      throw new Error(`unsupported edge deploy mode: ${config.edgeDeploy.mode}`);
+    }
+    if (!config.edgeDeploy.host || !config.edgeDeploy.user) {
+      throw new Error('edgeDeploy.host and edgeDeploy.user are required');
+    }
+    const preflight = await preflightEdgeDeploy(config);
+    if (!preflight.ready) {
+      const failedChecks = preflight.checks
+        .filter((check) => check.status === 'error')
+        .map((check) => `${check.name}: ${check.message}`)
+        .join('; ');
+      throw new Error(`edge deploy preflight failed: ${failedChecks}`);
+    }
+    const edgeTarget = buildEdgeTarget(config);
+    const sshBaseArgs = buildSshBaseArgs(config);
+    const remoteRoot = config.edgeDeploy.targetMapRoot.replace(/\/+$/, '');
+    const remoteMapDir = `${remoteRoot}/${mapName}`;
+    const backupRoot = `${remoteRoot}/.mapeditor_backups`;
+    const rollbackRoot = `${remoteRoot}/.mapeditor_replaced`;
+    const uploadParent = `${remoteRoot}/.mapeditor_uploads/${deploymentId}`;
+    const backupDir = `${backupRoot}/${mapName}-${deploymentId}`;
+    const remoteUploadedDir = `${uploadParent}/${path.basename(sourceDir)}`;
+    const hadBackupResult = await runCommand('ssh', [
+      ...sshBaseArgs,
+      `[ -d ${quoteShell(remoteMapDir)} ] && echo yes || echo no`,
     ]);
+    const hadBackup = hadBackupResult.stdout.trim() === 'yes';
+    await runCommand('ssh', [
+      ...sshBaseArgs,
+      `mkdir -p ${quoteShell(uploadParent)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`,
+    ]);
+    const copyTarget = `${edgeTarget}:${uploadParent}/`;
+    const copyResult = await runCommand('scp', [...buildScpBaseArgs(config), '-r', sourceDir, copyTarget], {
+      timeoutMs: 10 * 60 * 1000,
+    });
+    const activateCommand = [
+      `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(backupDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
+        backupDir
+      )} || true`,
+      `rm -rf ${quoteShell(remoteMapDir)}`,
+      `mv ${quoteShell(remoteUploadedDir)} ${quoteShell(remoteMapDir)}`,
+      `rm -rf ${quoteShell(uploadParent)}`,
+    ].join(' && ');
+    const activateResult = await runCommand('ssh', [...sshBaseArgs, activateCommand], {
+      timeoutMs: 2 * 60 * 1000,
+    });
+    let postDeployResult = null;
+    if (config.edgeDeploy.postDeployCommand) {
+      postDeployResult = await runCommand('ssh', [...sshBaseArgs, config.edgeDeploy.postDeployCommand]);
+    }
+    const record = await appendDeploymentRecord(config, {
+      ...baseRecord,
+      status: 'succeeded',
+      finishedAt: new Date().toISOString(),
+      sourceDir,
+      remoteMapDir,
+      backupDir: hadBackup ? backupDir : null,
+      hadBackup,
+      copy: {
+        code: copyResult.code,
+        stderr: copyResult.stderr,
+      },
+      activate: {
+        code: activateResult.code,
+        stderr: activateResult.stderr,
+      },
+      postDeploy: postDeployResult
+        ? {
+            code: postDeployResult.code,
+            stdout: postDeployResult.stdout,
+            stderr: postDeployResult.stderr,
+          }
+        : null,
+    });
+    return { deployment: record, preflight, copyResult, activateResult, postDeployResult };
+  } catch (error) {
+    await appendDeploymentRecord(config, {
+      ...baseRecord,
+      finishedAt: new Date().toISOString(),
+      error: error.message,
+    }).catch(() => {});
+    throw error;
   }
-  return { preflight, copyResult, postDeployResult };
 }
 
 async function deployLatestReleasedMap(config) {
@@ -3488,12 +3610,101 @@ async function deployLatestReleasedMap(config) {
   };
 }
 
+async function rollbackDeployment(config, params = {}) {
+  const records = await listDeployments(config);
+  const targetRecord = params.deploymentId
+    ? records.find((record) => record.id === params.deploymentId)
+    : records.find(
+        (record) =>
+          record.type === 'deploy' &&
+          record.status === 'succeeded' &&
+          record.mapName === params.mapName &&
+          record.backupDir
+      );
+  if (!targetRecord) {
+    throw new Error(params.deploymentId ? `deployment not found: ${params.deploymentId}` : 'no rollbackable deployment found');
+  }
+  if (!targetRecord.backupDir) {
+    throw new Error(`deployment has no backup to rollback: ${targetRecord.id}`);
+  }
+  const rollbackId = createDeploymentId('rollback');
+  const preflight = await preflightEdgeDeploy(config);
+  if (!preflight.ready) {
+    const failedChecks = preflight.checks
+      .filter((check) => check.status === 'error')
+      .map((check) => `${check.name}: ${check.message}`)
+      .join('; ');
+    throw new Error(`edge deploy preflight failed: ${failedChecks}`);
+  }
+  const sshBaseArgs = buildSshBaseArgs(config);
+  const remoteRoot = config.edgeDeploy.targetMapRoot.replace(/\/+$/, '');
+  const remoteMapDir = targetRecord.remoteMapDir || `${remoteRoot}/${targetRecord.mapName}`;
+  const replacedDir = `${remoteRoot}/.mapeditor_replaced/${targetRecord.mapName}-${rollbackId}`;
+  const rollbackCommand = [
+    `[ -d ${quoteShell(targetRecord.backupDir)} ]`,
+    `mkdir -p ${quoteShell(path.posix.dirname(replacedDir))}`,
+    `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(replacedDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
+      replacedDir
+    )} || true`,
+    `mv ${quoteShell(targetRecord.backupDir)} ${quoteShell(remoteMapDir)}`,
+  ].join(' && ');
+  try {
+    const rollbackResult = await runCommand('ssh', [...sshBaseArgs, rollbackCommand], {
+      timeoutMs: 2 * 60 * 1000,
+    });
+    let postDeployResult = null;
+    if (config.edgeDeploy.postDeployCommand) {
+      postDeployResult = await runCommand('ssh', [...sshBaseArgs, config.edgeDeploy.postDeployCommand]);
+    }
+    const record = await appendDeploymentRecord(config, {
+      id: rollbackId,
+      type: 'rollback',
+      mapName: targetRecord.mapName,
+      status: 'succeeded',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      target: getDeployConfig(config),
+      rollbackOf: targetRecord.id,
+      restoredFrom: targetRecord.backupDir,
+      replacedDir,
+      remoteMapDir,
+      result: {
+        code: rollbackResult.code,
+        stdout: rollbackResult.stdout,
+        stderr: rollbackResult.stderr,
+      },
+      postDeploy: postDeployResult
+        ? {
+            code: postDeployResult.code,
+            stdout: postDeployResult.stdout,
+            stderr: postDeployResult.stderr,
+          }
+        : null,
+    });
+    return { deployment: record, preflight, rollbackResult, postDeployResult };
+  } catch (error) {
+    await appendDeploymentRecord(config, {
+      id: rollbackId,
+      type: 'rollback',
+      mapName: targetRecord.mapName,
+      status: 'failed',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      target: getDeployConfig(config),
+      rollbackOf: targetRecord.id,
+      error: error.message,
+    }).catch(() => {});
+    throw error;
+  }
+}
+
 module.exports = {
   getStatus,
   getRuntimeDoctor,
   getDeployConfig,
   preflightEdgeDeploy,
   listReleasedMaps,
+  listDeployments,
   analyzeDataPackage,
   refreshDataPackageAnalysis,
   listDataPackages,
@@ -3506,4 +3717,5 @@ module.exports = {
   createBaseMap,
   deployReleasedMap,
   deployLatestReleasedMap,
+  rollbackDeployment,
 };

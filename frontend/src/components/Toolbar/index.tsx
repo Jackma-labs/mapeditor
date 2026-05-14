@@ -1,7 +1,7 @@
 import React, { useEffect, useState, FC } from 'react';
 import PubSub from 'pubsub-js';
 import type { MenuProps } from 'antd';
-import { ConfigProvider, Dropdown, Modal, Tooltip } from 'antd';
+import { Button, ConfigProvider, Dropdown, Modal, Tooltip } from 'antd';
 import './index.less';
 import { MapElementType, OperationType, PermissionStatus, ThreeElementType } from 'src/interface/commonInterFace';
 import { escKeyExitDrawHandle } from 'src/handle/escKeyHandle';
@@ -48,6 +48,11 @@ interface RenderIconProps {
 
 // eslint-disable-next-line react/function-component-definition
 const RenderIcon: FC<RenderIconProps> = ({ url }) => <img src={url} alt="My SVG" />;
+
+const sleep = (ms: number) =>
+    new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
 
 enum RotateStatus {
     Disable = 1,
@@ -212,7 +217,30 @@ export default function Index(prop: { messageApi: any }) {
             label: '部署最新地图',
             key: 'deploy-latest',
         },
+        {
+            label: '部署历史',
+            key: 'deploy-history',
+        },
     ];
+
+    const waitForRuntimeJob = async (jobId: string, label: string, attempt = 0): Promise<any> => {
+        if (attempt >= 600) {
+            throw new Error(`${label}等待超时`);
+        }
+        const response = await FileService.getRuntimeJob(jobId);
+        if (response?.code !== 0) {
+            throw new Error(response?.message || '读取后台任务失败');
+        }
+        const job = response?.data?.job;
+        if (job?.status === 'succeeded') {
+            return job;
+        }
+        if (job?.status === 'failed') {
+            throw new Error(job?.message || `${label}失败`);
+        }
+        await sleep(3000);
+        return waitForRuntimeJob(jobId, label, attempt + 1);
+    };
     const showRuntimeStatus = async () => {
         try {
             const response = await FileService.getRuntimeDoctor();
@@ -298,13 +326,18 @@ export default function Index(prop: { messageApi: any }) {
             cancelText: '取消',
             onOk: async () => {
                 try {
-                    const response = await FileService.deployLatestReleasedMap();
+                    const response = await FileService.startDeployLatestReleasedMapJob();
                     if (response?.code !== 0) {
-                        throw new Error(response?.message || 'Deploy failed');
+                        throw new Error(response?.message || '提交部署任务失败');
                     }
+                    const jobId = response?.data?.job?.id;
+                    if (!jobId) {
+                        throw new Error('后台任务没有返回 jobId');
+                    }
+                    const job = await waitForRuntimeJob(jobId, '部署最新地图');
                     Modal.success({
                         title: '部署完成',
-                        content: `地图 ${response.data?.mapName || ''} 已部署完成。`,
+                        content: `地图 ${job.result?.mapName || job.result?.deployment?.mapName || ''} 已部署完成。`,
                     });
                 } catch (error: any) {
                     Modal.error({
@@ -314,6 +347,68 @@ export default function Index(prop: { messageApi: any }) {
                 }
             },
         });
+    };
+
+    const rollbackDeployment = async (deploymentId: string) => {
+        try {
+            const response = await FileService.startRollbackDeploymentJob(deploymentId);
+            if (response?.code !== 0) {
+                throw new Error(response?.message || '提交回滚任务失败');
+            }
+            const jobId = response?.data?.job?.id;
+            if (!jobId) {
+                throw new Error('后台任务没有返回 jobId');
+            }
+            const job = await waitForRuntimeJob(jobId, '回滚部署');
+            Modal.success({
+                title: '回滚完成',
+                content: `地图 ${job.result?.deployment?.mapName || ''} 已恢复到上一个备份。`,
+            });
+        } catch (error: any) {
+            Modal.error({
+                title: '回滚失败',
+                content: error?.message || 'Unknown error',
+            });
+        }
+    };
+
+    const showDeploymentHistory = async () => {
+        try {
+            const response = await FileService.getDeployments();
+            if (response?.code !== 0) {
+                throw new Error(response?.message || '读取部署历史失败');
+            }
+            const deployments = response?.data?.deployments || [];
+            Modal.info({
+                title: '部署历史',
+                width: 760,
+                content: (
+                    <div className="runtime-status-modal deployment-history-modal">
+                        {deployments.length === 0 && <p>还没有部署记录。</p>}
+                        {deployments.slice(0, 12).map((item: any) => (
+                            <div className="deployment-history-row" key={item.id}>
+                                <div>
+                                    <p>{`${item.type || 'deploy'} / ${item.status} / ${item.mapName || ''}`}</p>
+                                    <p>{`${item.finishedAt || item.startedAt || ''}`}</p>
+                                </div>
+                                <Button
+                                    size="small"
+                                    disabled={item.type !== 'deploy' || item.status !== 'succeeded' || !item.backupDir}
+                                    onClick={() => rollbackDeployment(item.id)}
+                                >
+                                    回滚
+                                </Button>
+                            </div>
+                        ))}
+                    </div>
+                ),
+            });
+        } catch (error: any) {
+            Modal.error({
+                title: '读取部署历史失败',
+                content: error?.message || 'Unknown error',
+            });
+        }
     };
 
     const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
@@ -350,6 +445,9 @@ export default function Index(prop: { messageApi: any }) {
                 break;
             case 'deploy-latest':
                 deployLatestReleasedMap();
+                break;
+            case 'deploy-history':
+                showDeploymentHistory();
                 break;
             default:
                 break;

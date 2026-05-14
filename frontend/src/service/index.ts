@@ -275,10 +275,30 @@ class FileService {
         });
     }
 
+    async getDeployments() {
+        return this.requestJson('/runtime/deployments');
+    }
+
+    async startDeployLatestReleasedMapJob() {
+        return this.requestJson('/runtime/deploy-latest-job', {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
+    }
+
     async deployLatestReleasedMap() {
         return this.requestJson('/runtime/deploy-latest', {
             method: 'POST',
             body: JSON.stringify({}),
+        });
+    }
+
+    async startRollbackDeploymentJob(deploymentId: string) {
+        return this.requestJson('/runtime/rollback-deployment-job', {
+            method: 'POST',
+            body: JSON.stringify({
+                deploymentId,
+            }),
         });
     }
 
