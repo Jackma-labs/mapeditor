@@ -22,7 +22,7 @@ interface MenuItemData {
     content: string;
     label: ReactNode;
 }
-type ImportMode = 'base-map-zip' | 'point-cloud' | 'map-package' | 'analyze-package';
+type ImportMode = 'base-map-zip' | 'point-cloud' | 'map-package';
 
 const stripExtension = (name: string) => name.replace(/\.[^.]+$/i, '');
 
@@ -176,6 +176,8 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
     const importModeRef = useRef<ImportMode>('base-map-zip');
     const isBaseMapDialog = title === '打开底图';
     const isEditorMapDialog = title === '打开标注地图';
+    const dataPackagePanelDesc =
+        '完整资产管理、重命名、删除、多包合并请走“文件 > 采图包工作台”；这里只保留从已预检包快速生成单张底图。';
 
     // 选中菜单项某个目录
     const handleItemClick = (event: any) => {
@@ -396,37 +398,6 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         });
     };
 
-    const handleImportLatestDataPackage = async () => {
-        setImportLoading(true);
-        try {
-            const response = await FileService.getDataPackages();
-            if (response?.code !== 0) {
-                Modal.error({
-                    title: '读取预检包失败',
-                    content: response?.message || '读取预检包失败',
-                });
-                return;
-            }
-            const packages = response?.data?.packages || [];
-            if (packages.length === 0) {
-                Modal.info({
-                    title: '没有预检包',
-                    content: '请先点击“预检数据包”上传并分析数据包。',
-                });
-                return;
-            }
-            const latestPackage = packages[0];
-            await handleGenerateDataPackageBaseMap(latestPackage);
-        } catch (error) {
-            Modal.error({
-                title: '读取预检包失败',
-                content: error instanceof Error ? error.message : '读取预检包失败',
-            });
-        } finally {
-            setImportLoading(false);
-        }
-    };
-
     const handleImportFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const files = Array.from(event.target.files || []);
         if (importInputRef.current) {
@@ -436,17 +407,14 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
             return;
         }
         const mode = isEditorMapDialog ? 'map-package' : importModeRef.current;
-        if (mode !== 'point-cloud' && mode !== 'analyze-package' && files.length > 1) {
+        if (mode !== 'point-cloud' && files.length > 1) {
             Modal.error({
                 title: '导入失败',
                 content: '这个入口一次只能上传一个 ZIP 文件。',
             });
             return;
         }
-        const defaultName =
-            mode === 'point-cloud' || mode === 'analyze-package'
-                ? buildImportMapName(files)
-                : buildImportMapName([files[0]]);
+        const defaultName = mode === 'point-cloud' ? buildImportMapName(files) : buildImportMapName([files[0]]);
         if (!defaultName) {
             return;
         }
@@ -459,11 +427,6 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                     defaultName.trim(),
                     false,
                 );
-            } else if (mode === 'analyze-package') {
-                response = await FileService.analyzeDataPackage(
-                    files.length === 1 ? files[0] : files,
-                    defaultName.trim(),
-                );
             } else if (mode === 'base-map-zip') {
                 response = await FileService.importBaseMapZip(files[0], defaultName.trim(), false);
             } else {
@@ -473,15 +436,6 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                 Modal.error({
                     title: isBaseMapDialog ? '底图导入失败' : '地图包导入失败',
                     content: response?.message || '导入失败',
-                });
-                return;
-            }
-            if (mode === 'analyze-package') {
-                await fetchDataPackages();
-                Modal.info({
-                    title: '数据包预检结果',
-                    width: 860,
-                    content: <pre style={{ whiteSpace: 'pre-wrap' }}>{formatPackageAnalysis(response.data)}</pre>,
                 });
                 return;
             }
@@ -538,11 +492,12 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         return (
             <div className="data-package-panel">
                 <div className="data-package-panel-title">
-                    <span>已上传预检包</span>
+                    <span>采图包快捷生成</span>
                     <Button size="small" onClick={fetchDataPackages} disabled={importLoading} className="button-cancel">
                         刷新
                     </Button>
                 </div>
+                <div className="data-package-panel-desc">{dataPackagePanelDesc}</div>
                 {packageJobText && <div className="data-package-progress">{packageJobText}</div>}
                 <div className="data-package-list">
                     {dataPackages.slice(0, 5).map((packageInfo) => {
@@ -617,6 +572,14 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         );
     };
 
+    const selectedItem = menuData.find((item) => item.key === currentKey);
+    const libraryTitle = isBaseMapDialog ? '底图库' : '标注地图库';
+    const libraryDescription = isBaseMapDialog
+        ? '选择已经生成好的点云/瓦片底图进入画布。原始采图包请先在采图包工作台完成预检和底图生成。'
+        : '选择已经保存的 Apollo 标注地图继续编辑，也可以导入已有地图包。';
+    const selectedText = selectedItem?.content || '未选择';
+    const countText = `${formatCount(menuData.length)} 个文件`;
+
     return (
         <Modal
             title={title}
@@ -638,6 +601,22 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         >
             {items}
             <p className="dialog-body-title">{titleAddress}</p>
+            <div className="file-dialog-overview">
+                <div className="file-dialog-overview-main">
+                    <div className="file-dialog-overview-title">{libraryTitle}</div>
+                    <div className="file-dialog-overview-desc">{libraryDescription}</div>
+                </div>
+                <div className="file-dialog-overview-stats">
+                    <div>
+                        <span>当前库</span>
+                        <strong>{countText}</strong>
+                    </div>
+                    <div>
+                        <span>当前选择</span>
+                        <strong>{selectedText}</strong>
+                    </div>
+                </div>
+            </div>
             {(isBaseMapDialog || isEditorMapDialog) && (
                 <div className="base-map-import">
                     {isBaseMapDialog && (
@@ -656,19 +635,8 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                             >
                                 导入点云底图
                             </Button>
-                            <Button
-                                onClick={() => handleImportFile('analyze-package')}
-                                loading={importLoading}
-                                className="button-cancel"
-                            >
-                                预检数据包
-                            </Button>
-                            <Button
-                                onClick={handleImportLatestDataPackage}
-                                loading={importLoading}
-                                className="button-cancel"
-                            >
-                                最近预检包生成底图
+                            <Button onClick={fetchData} disabled={listLoading} className="button-cancel">
+                                刷新底图库
                             </Button>
                         </>
                     )}
@@ -683,7 +651,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                     )}
                     <span>
                         {isBaseMapDialog
-                            ? '点云支持 PCD/PLY/XYZ/TXT/CSV/LAS 或 ZIP；瓦片 ZIP 需包含 map_images/tiles.json'
+                            ? '兼容导入旧格式；原始 Image/LAS/PCD 采图包请从采图包工作台进入。'
                             : 'ZIP 文件名会作为地图名称，内容需包含 editor_map.json'}
                     </span>
                     <input
