@@ -13,6 +13,15 @@ export interface TileItem {
     offset_y: string;
 }
 
+const layerMaterialStyles: { [key: string]: { color: number; opacity: number } } = {
+    enhanced: { color: 0xffffff, opacity: 1 },
+    raw: { color: 0x82aaff, opacity: 0.92 },
+    ground: { color: 0x64d98a, opacity: 0.9 },
+    marking: { color: 0xffd45c, opacity: 1 },
+    edge: { color: 0x46d7ff, opacity: 1 },
+    structure: { color: 0xff9d4d, opacity: 0.95 },
+};
+
 export default class BaseMap {
     private render: THREE.WebGL1Renderer;
 
@@ -132,9 +141,10 @@ export default class BaseMap {
 
     public transparency(val: number) {
         this.opacity = Math.max(0, Math.min(1, Number(val)));
+        const style = layerMaterialStyles[this.activeLayerId] || layerMaterialStyles.enhanced;
         Object.keys(this.meshs).forEach((id: string) => {
             const mesh = this.meshs[id];
-            (mesh.material as THREE.MeshBasicMaterial).opacity = this.opacity;
+            (mesh.material as THREE.MeshBasicMaterial).opacity = this.opacity * style.opacity;
         });
     }
 
@@ -161,7 +171,7 @@ export default class BaseMap {
         const inViewTile = this.getInviewTile(tiles, this.position);
         if (inViewTile.length < tiles.length && this.scale > 0) {
             this.scale -= 1;
-            this.renderMap(dir, json);
+            this.renderMap(dir, json, options);
             return;
         }
         this.tiles = json.tiles;
@@ -348,10 +358,12 @@ export default class BaseMap {
     private addTile(size: number, texture: THREE.Texture, position: THREE.Vector3, id: string) {
         const geometry = new THREE.PlaneGeometry(size, size, 1);
         if (texture) {
+            const style = layerMaterialStyles[this.activeLayerId] || layerMaterialStyles.enhanced;
             const material = new THREE.MeshBasicMaterial({
                 alphaMap: texture,
                 transparent: true,
-                opacity: this.opacity,
+                opacity: this.opacity * style.opacity,
+                color: style.color,
             });
 
             material.depthWrite = false;

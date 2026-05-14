@@ -35,12 +35,12 @@ import noData from '../../assets/images/no_attr.png';
 import noPermission from '../../assets/images/no_permission.png';
 
 const layerDisplayName: { [key: string]: string } = {
-    enhanced: '增强',
-    raw: '原始',
+    enhanced: '增强底图',
+    raw: '原始点云',
     ground: '地面',
-    marking: '标线',
-    edge: '边界',
-    structure: '立物',
+    marking: '标线高亮',
+    edge: '边界/路沿',
+    structure: '立物/杆牌',
 };
 
 export default function MapEditor() {
@@ -76,6 +76,8 @@ export default function MapEditor() {
         layers: [] as any[],
         activeLayerId: 'enhanced',
         opacity: 1,
+        pointCount: 0,
+        layerPointCount: 0,
     });
     const render = () => {
         renderer.current?.render(scene.current, camera.current);
@@ -248,6 +250,8 @@ export default function MapEditor() {
                     dir: data.dir,
                     layers,
                     activeLayerId: data.json?.layerId || data.layerId || 'enhanced',
+                    pointCount: data.json?.pointCount || 0,
+                    layerPointCount: data.json?.layerPointCount || data.json?.pointCount || 0,
                 }));
                 setShowRemind(false);
                 baseMap.renderMap(data.dir, data.json, data.options || {});
@@ -422,6 +426,7 @@ export default function MapEditor() {
             options: {
                 keepCamera: true,
                 preserveCommands: true,
+                layerId,
             },
         });
     };
@@ -444,6 +449,18 @@ export default function MapEditor() {
                     onClick={(event) => event.stopPropagation()}
                     onMouseUp={(event) => event.stopPropagation()}
                 >
+                    <div className="basemap-layer-header">
+                        <div>
+                            <div className="basemap-layer-title">点云底图图层</div>
+                            <div className="basemap-layer-subtitle">
+                                {layerDisplayName[baseMapUi.activeLayerId] || baseMapUi.activeLayerId}
+                                {baseMapUi.layerPointCount ? ` · ${baseMapUi.layerPointCount.toLocaleString()} 点` : ''}
+                            </div>
+                        </div>
+                        <button type="button" onClick={() => PubSub.publish('fitBaseMap')}>
+                            居中
+                        </button>
+                    </div>
                     <div className="basemap-layer-buttons">
                         {baseMapUi.layers.map((layer) => (
                             <button
@@ -452,11 +469,13 @@ export default function MapEditor() {
                                 className={layer.id === baseMapUi.activeLayerId ? 'active' : ''}
                                 onClick={() => handleLayerChange(layer.id)}
                             >
+                                <span className={`basemap-layer-dot layer-${layer.id}`} />
                                 {layerDisplayName[layer.id] || layer.name || layer.id}
                             </button>
                         ))}
                     </div>
                     <div className="basemap-layer-actions">
+                        <span>透明度</span>
                         <input
                             type="range"
                             min="0.35"
@@ -465,9 +484,6 @@ export default function MapEditor() {
                             value={baseMapUi.opacity}
                             onChange={(event) => handleOpacityChange(Number(event.target.value))}
                         />
-                        <button type="button" onClick={() => PubSub.publish('fitBaseMap')}>
-                            居中
-                        </button>
                     </div>
                 </div>
             )}

@@ -332,6 +332,10 @@ class FileService {
         const layerPath = layerId && layerId !== 'enhanced' ? `/layers/${encodeURIComponent(layerId)}` : '';
         return fetch(`http://${baseHttpURL}/mapcreator/${dir}${layerPath}/tiles.json?mode=0`)
             .then((response) => response.json())
+            .then((json) => ({
+                ...json,
+                layerId,
+            }))
             .catch((error) => {
                 console.log(error);
             });

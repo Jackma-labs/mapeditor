@@ -3367,24 +3367,24 @@ async function importPointCloudFilesBaseMap(config, params) {
       const isGround = stats.isGroundPoint(x, y, z);
       const isMarking = isGround && stats.isHighIntensity(intensity);
       const isEdge = isGround && stats.isEdgeCell(x, y);
-      layers.raw.addPointValue(x, y, z, value, 0);
+      layers.raw.addPointValue(x, y, z, Math.max(32, Math.round(value * 0.72)), 0);
       if (isGround) {
-        const groundValue = Math.max(34, Math.round(value * 0.58));
+        const groundValue = Math.max(48, Math.round(value * 0.72));
         layers.ground.addPointValue(x, y, z, groundValue, 0);
-        layers.enhanced.addPointValue(x, y, z, Math.max(32, Math.round(value * 0.5)), 0);
+        layers.enhanced.addPointValue(x, y, z, Math.max(38, Math.round(value * 0.54)), 0);
       }
       if (isEdge) {
-        layers.edge.addPointValue(x, y, z, 185, 0);
-        layers.enhanced.addPointValue(x, y, z, 155, 0);
+        layers.edge.addPointValue(x, y, z, 245, 1);
+        layers.enhanced.addPointValue(x, y, z, 180, 1);
       }
       if (isMarking) {
-        layers.marking.addPointValue(x, y, z, 255, 1);
+        layers.marking.addPointValue(x, y, z, 255, 2);
         layers.enhanced.addPointValue(x, y, z, 255, 1);
       }
       if (!isGround) {
         const structureValue = Math.max(86, Math.min(210, Math.round(value * 0.72 + 46)));
         const enhancedValue = relativeZ > 0.5 ? Math.max(96, structureValue) : Math.max(72, structureValue - 24);
-        layers.structure.addPointValue(x, y, z, structureValue, 0);
+        layers.structure.addPointValue(x, y, z, Math.max(120, structureValue), 1);
         layers.enhanced.addPointValue(x, y, z, enhancedValue, 0);
       }
     };
