@@ -420,3 +420,108 @@
         overflow: auto;
     }
 }
+
+.asset-manager-dialog {
+    .ant-modal-content {
+        background: #282b36;
+        color: #a6b5cc;
+    }
+
+    .ant-modal-header {
+        background: #282b36;
+    }
+
+    .ant-modal-title {
+        color: #ffffff;
+        font-size: 16px;
+        font-weight: 500;
+    }
+
+    .asset-manager-toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 12px;
+    }
+
+    .asset-manager-title {
+        color: #ffffff;
+        font-size: 15px;
+        font-weight: 500;
+    }
+
+    .asset-manager-subtitle,
+    .asset-manager-id,
+    .asset-manager-size div + div {
+        color: #7f8da3;
+        font-size: 12px;
+    }
+
+    .asset-manager-job {
+        margin-bottom: 12px;
+        padding: 8px 12px;
+        border: 1px solid #41506a;
+        border-radius: 6px;
+        background: #1f2633;
+        color: #d9e7ff;
+    }
+
+    .asset-manager-table {
+        .ant-table {
+            background: #181a1f;
+            color: #a6b5cc;
+        }
+
+        .ant-table-thead > tr > th {
+            background: #222631;
+            color: #dbe6f5;
+            border-bottom: 1px solid #383b45;
+        }
+
+        .ant-table-tbody > tr > td {
+            background: #181a1f;
+            color: #a6b5cc;
+            border-bottom: 1px solid #2e3440;
+        }
+
+        .ant-table-tbody > tr.ant-table-row:hover > td {
+            background: #202633;
+        }
+
+        .ant-empty-description,
+        .ant-pagination-item a,
+        .ant-pagination-prev .ant-pagination-item-link,
+        .ant-pagination-next .ant-pagination-item-link {
+            color: #a6b5cc;
+        }
+    }
+
+    .asset-manager-name-cell {
+        min-width: 0;
+    }
+
+    .asset-manager-name {
+        color: #ffffff;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .asset-manager-content {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 12px;
+    }
+
+    .asset-manager-size {
+        color: #ffffff;
+    }
+}
+
+.asset-manager-detail {
+    max-height: 520px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}

@@ -12,6 +12,7 @@ import { SetOperationTypeCommand } from 'src/command/OperationTypeCommand';
 import DialogMap from './openFileDialog';
 import DialogOperate from './operateDialog';
 import DialogMessage from './messageDialog';
+import AssetManagerDialog from './AssetManagerDialog';
 import arrowsDown from '../../assets/images/ic_arrows_down.svg';
 import RemindModal from '../RemindModal';
 
@@ -150,10 +151,11 @@ export default function Index(prop: { messageApi: any }) {
         map: false,
         operate: false,
         message: false,
+        assets: false,
     });
 
     const handleCloseDialog = () => {
-        setVisibleVal({ map: false, operate: false, message: false });
+        setVisibleVal({ map: false, operate: false, message: false, assets: false });
     };
 
     const items: MenuProps['items'] = [
@@ -174,6 +176,13 @@ export default function Index(prop: { messageApi: any }) {
             label: '打开标注地图',
             key: '2',
             icon: <RenderIcon url={LabelIcon} />,
+        },
+        {
+            type: 'divider',
+        },
+        {
+            label: '采图包资产',
+            key: 'asset-manager',
         },
         {
             type: 'divider',
@@ -330,6 +339,9 @@ export default function Index(prop: { messageApi: any }) {
                 setDialogTitle('发布地图');
                 setVisibleVal({ ...visibleVal, operate: true });
                 break;
+            case 'asset-manager':
+                setVisibleVal({ ...visibleVal, assets: true });
+                break;
             case 'runtime-status':
                 showRuntimeStatus();
                 break;
@@ -451,6 +463,7 @@ export default function Index(prop: { messageApi: any }) {
                 {visibleVal.message && (
                     <DialogMessage title="重复" open={visibleVal.message} onCancel={handleCloseDialog} />
                 )}
+                {visibleVal.assets && <AssetManagerDialog open={visibleVal.assets} onCancel={handleCloseDialog} />}
             </ConfigProvider>
             <Tooltip
                 title="还没有编辑内容!"
