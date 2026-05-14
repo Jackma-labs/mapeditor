@@ -22,6 +22,7 @@ const GROUND_MIN_RELATIVE_Z = -0.2;
 const GROUND_MAX_RELATIVE_Z = 0.35;
 const CURB_EDGE_Z_DELTA = 0.12;
 const INTENSITY_SAMPLE_LIMIT = 200000;
+const TRAJECTORY_METADATA_READ_BYTES = 8 * 1024 * 1024;
 
 async function pathExists(targetPath) {
   try {
@@ -2107,9 +2108,41 @@ function gpsWeekSecondsToIso(gpsWeek, secondsOfWeek) {
   return new Date(gpsMs - gpsUtcLeapSeconds * 1000).toISOString();
 }
 
+function isLikelyTextBuffer(buffer) {
+  const length = Math.min(buffer.length, 4096);
+  if (length === 0) {
+    return true;
+  }
+  let suspicious = 0;
+  for (let index = 0; index < length; index += 1) {
+    const byte = buffer[index];
+    if (byte === 0) {
+      return false;
+    }
+    if (byte === 9 || byte === 10 || byte === 13) {
+      continue;
+    }
+    if (byte < 32 || (byte > 126 && byte < 160)) {
+      suspicious += 1;
+    }
+  }
+  return suspicious / length < 0.08;
+}
+
+function isLowMotionTrajectory(coordinateKind, range) {
+  const xyRange = Math.hypot(range.x || 0, range.y || 0);
+  if (coordinateKind === 'lonlat_range_compatible') {
+    return xyRange < 0.00005;
+  }
+  return xyRange < 5;
+}
+
 function parseTrajectoryMetadataBuffer(buffer, sourceName, sizeBytes = null) {
   const sourceKind = classifyTrajectorySource(sourceName);
   if (!sourceKind) {
+    return null;
+  }
+  if (!isLikelyTextBuffer(buffer)) {
     return null;
   }
   const text = buffer.toString('utf8').replace(/\0/g, ' ');
@@ -2209,6 +2242,12 @@ function parseTrajectoryMetadataBuffer(buffer, sourceName, sizeBytes = null) {
     coordinate.kind = 'ecef_xyz';
     coordinate.message = '轨迹坐标更像地心地固 ECEF XYZ，需要转换到地图投影坐标后才能直接用于拼图。';
   }
+  const range = {
+    x: bounds.maxX - bounds.minX,
+    y: bounds.maxY - bounds.minY,
+    z: bounds.maxZ - bounds.minZ,
+  };
+  const lowMotion = isLowMotionTrajectory(coordinate.kind, range);
   return {
     source: sourceName,
     kind: sourceKind,
@@ -2224,9 +2263,13 @@ function parseTrajectoryMetadataBuffer(buffer, sourceName, sizeBytes = null) {
       end: gpsWeekSecondsToIso(gpsWeekRange.max, secondsOfWeekRange.max),
     },
     bounds,
+    range,
     coordinate,
     firstSamples: samples,
     fixStatusCounts,
+    lowMotion,
+    usableForStitching: !lowMotion,
+    message: lowMotion ? '轨迹坐标变化过小，不适合作为多包拼图的主基准。' : null,
   };
 }
 
@@ -2249,10 +2292,22 @@ function summarizeTrajectoryAnalyses(trajectories) {
     pose_quaternion: 3,
     camera_pose: 4,
   };
+  const coordinatePriority = {
+    projected_meters_or_large_local: 0,
+    lonlat_range_compatible: 1,
+    ecef_xyz: 2,
+    local_meters: 3,
+  };
   const preferred = [...parsed].sort((left, right) => {
+    const leftUsable = left.usableForStitching === false ? 1 : 0;
+    const rightUsable = right.usableForStitching === false ? 1 : 0;
+    if (leftUsable !== rightUsable) return leftUsable - rightUsable;
     const leftRank = priority[left.kind] ?? 99;
     const rightRank = priority[right.kind] ?? 99;
     if (leftRank !== rightRank) return leftRank - rightRank;
+    const leftCoordinateRank = coordinatePriority[left.coordinate?.kind] ?? 99;
+    const rightCoordinateRank = coordinatePriority[right.coordinate?.kind] ?? 99;
+    if (leftCoordinateRank !== rightCoordinateRank) return leftCoordinateRank - rightCoordinateRank;
     return (right.sampleCount || 0) - (left.sampleCount || 0);
   })[0];
   const coordinateKinds = Array.from(new Set(parsed.map((item) => item.coordinate?.kind).filter(Boolean)));
@@ -2272,12 +2327,15 @@ function summarizeTrajectoryAnalyses(trajectories) {
       sampleCount: item.sampleCount,
       coordinateKind: item.coordinate?.kind || null,
       utcRange: item.utcRange || null,
+      lowMotion: item.lowMotion === true,
     })),
     message:
-      preferred.coordinate?.kind === 'projected_meters_or_large_local' ||
-      preferred.coordinate?.kind === 'lonlat_range_compatible'
-        ? '已解析到可作为多包拼合先验的定位轨迹。'
-        : '已解析到轨迹，但需要坐标转换或控制点后才能作为拼图基准。',
+      preferred.usableForStitching === false
+        ? '已解析到轨迹，但可用轨迹变化过小，需要换用 GNSS/ECEF 转换或人工控制点。'
+        : preferred.coordinate?.kind === 'projected_meters_or_large_local' ||
+            preferred.coordinate?.kind === 'lonlat_range_compatible'
+          ? '已解析到可作为多包拼合先验的定位轨迹。'
+          : '已解析到轨迹，但需要坐标转换或控制点后才能作为拼图基准。',
   };
 }
 
@@ -2443,7 +2501,7 @@ async function analyzeZipDataPackage(filePath, originalName) {
         analysis.metadataFiles.push(entry.path);
       }
       if (analysis.trajectories.length < 16) {
-        const prefix = await readZipEntryPrefix(entry);
+        const prefix = await readZipEntryPrefix(entry, TRAJECTORY_METADATA_READ_BYTES);
         const trajectory = parseTrajectoryMetadataBuffer(prefix, entry.path, getZipEntrySize(entry));
         if (trajectory) {
           analysis.trajectories.push(trajectory);
@@ -2461,7 +2519,10 @@ async function analyzeSingleDataFile(filePath, originalName) {
   if (ext === '.zip') {
     return analyzeZipDataPackage(filePath, originalName);
   }
-  const prefix = await readFilePrefix(filePath);
+  const prefix = await readFilePrefix(
+    filePath,
+    isKnownMetadataName(originalName) ? TRAJECTORY_METADATA_READ_BYTES : 512 * 1024
+  );
   const analysis = {
     source: originalName,
     kind: 'files',
