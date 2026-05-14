@@ -49,6 +49,15 @@ interface RenderIconProps {
 // eslint-disable-next-line react/function-component-definition
 const RenderIcon: FC<RenderIconProps> = ({ url }) => <img src={url} alt="My SVG" />;
 
+function FileMenuLabel({ title, description }: { title: string; description?: string }) {
+    return (
+        <span className="file-menu-label">
+            <span className="file-menu-label-title">{title}</span>
+            {description && <span className="file-menu-label-desc">{description}</span>}
+        </span>
+    );
+}
+
 const sleep = (ms: number) =>
     new Promise((resolve) => {
         setTimeout(resolve, ms);
@@ -165,61 +174,76 @@ export default function Index(prop: { messageApi: any }) {
 
     const items: MenuProps['items'] = [
         {
-            label: (
-                <span
-                    onFocus={() => false}
-                    onMouseOver={() => setCurHoverTool(HoverTool.OpenImg)}
-                    onMouseLeave={() => setCurHoverTool(null)}
-                >
-                    打开底图
-                </span>
-            ),
-            key: '1',
-            icon: <RenderIcon url={LeadIcon} />,
+            type: 'group',
+            label: '1 数据准备',
+            children: [
+                {
+                    label: <FileMenuLabel title="采图包工作台" description="上传、预检、管理、生成底图、合并拼图" />,
+                    key: 'asset-manager',
+                },
+                {
+                    label: (
+                        <span
+                            onFocus={() => false}
+                            onMouseOver={() => setCurHoverTool(HoverTool.OpenImg)}
+                            onMouseLeave={() => setCurHoverTool(null)}
+                        >
+                            <FileMenuLabel title="打开点云底图" description="选择已生成底图，进入图层辅助标注" />
+                        </span>
+                    ),
+                    key: '1',
+                    icon: <RenderIcon url={LeadIcon} />,
+                },
+            ],
         },
         {
-            label: '打开标注地图',
-            key: '2',
-            icon: <RenderIcon url={LabelIcon} />,
+            type: 'group',
+            label: '2 标注生产',
+            children: [
+                {
+                    label: <FileMenuLabel title="打开标注地图" description="载入已有 Apollo 地图继续编辑" />,
+                    key: '2',
+                    icon: <RenderIcon url={LabelIcon} />,
+                },
+                {
+                    label: <FileMenuLabel title="保存标注地图" description="保存当前编辑结果" />,
+                    key: '3',
+                    icon: <RenderIcon url={SaveIcon} />,
+                },
+                {
+                    label: <FileMenuLabel title="发布地图包" description="生成可部署的 Apollo 地图产物" />,
+                    key: '4',
+                    icon: <RenderIcon url={IssueIcon} />,
+                },
+            ],
         },
         {
-            type: 'divider',
+            type: 'group',
+            label: '3 部署运维',
+            children: [
+                {
+                    label: <FileMenuLabel title="部署预检" description="检查本地服务器到边缘设备的部署条件" />,
+                    key: 'preflight-deploy',
+                },
+                {
+                    label: <FileMenuLabel title="一键部署最新地图" description="把最新发布地图推送到边缘设备" />,
+                    key: 'deploy-latest',
+                },
+                {
+                    label: <FileMenuLabel title="部署历史 / 回滚" description="查看部署记录，必要时回滚" />,
+                    key: 'deploy-history',
+                },
+            ],
         },
         {
-            label: '采图包资产',
-            key: 'asset-manager',
-        },
-        {
-            type: 'divider',
-        },
-        {
-            label: '保存',
-            key: '3',
-            icon: <RenderIcon url={SaveIcon} />,
-        },
-        {
-            label: '发布',
-            key: '4',
-            icon: <RenderIcon url={IssueIcon} />,
-        },
-        {
-            type: 'divider',
-        },
-        {
-            label: '运行状态',
-            key: 'runtime-status',
-        },
-        {
-            label: '部署预检',
-            key: 'preflight-deploy',
-        },
-        {
-            label: '部署最新地图',
-            key: 'deploy-latest',
-        },
-        {
-            label: '部署历史',
-            key: 'deploy-history',
+            type: 'group',
+            label: '4 系统诊断',
+            children: [
+                {
+                    label: <FileMenuLabel title="运行状态" description="查看导入、转换、底图生成、部署环境状态" />,
+                    key: 'runtime-status',
+                },
+            ],
         },
     ];
 
