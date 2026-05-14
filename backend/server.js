@@ -16,12 +16,15 @@ app.use(cors());
 app.use(bodyParser.json({ limit: '25mb' }));
 app.use(bodyParser.urlencoded({ extended: true }));
 
-const importTmpRoot = path.join(config.baseMapRoot, '..', 'import_tmp');
+const dataRoot = path.resolve(config.baseMapRoot, '..');
+const importTmpRoot = path.join(dataRoot, 'import_tmp');
+const runtimeJobRoot = path.join(dataRoot, 'runtime_jobs');
 fs.mkdirSync(importTmpRoot, { recursive: true });
+fs.mkdirSync(runtimeJobRoot, { recursive: true });
 const upload = multer({
   dest: importTmpRoot,
   limits: {
-    fileSize: 5 * 1024 * 1024 * 1024,
+    fileSize: config.uploadFileSizeBytes,
   },
 });
 
@@ -39,8 +42,31 @@ function log(...args) {
   console.log(new Date().toISOString(), ...args);
 }
 
-function serializeRuntimeJob(job) {
-  return {
+function buildRuntimeJobPath(jobId) {
+  return path.join(runtimeJobRoot, `${jobId}.json`);
+}
+
+function buildRuntimeJobLogPath(jobId) {
+  return path.join(runtimeJobRoot, `${jobId}.log`);
+}
+
+function readRuntimeJobLogs(jobId, tail = 200) {
+  const logPath = buildRuntimeJobLogPath(jobId);
+  if (!fs.existsSync(logPath)) {
+    return [];
+  }
+  const lines = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
+  return lines.slice(-Math.max(1, Math.min(Number(tail) || 200, 1000))).map((line) => {
+    try {
+      return JSON.parse(line);
+    } catch (_error) {
+      return { time: '', level: 'info', message: line };
+    }
+  });
+}
+
+function serializeRuntimeJob(job, options = {}) {
+  const payload = {
     id: job.id,
     type: job.type,
     status: job.status,
@@ -48,23 +74,119 @@ function serializeRuntimeJob(job) {
     createdAt: job.createdAt,
     startedAt: job.startedAt,
     finishedAt: job.finishedAt,
+    updatedAt: job.updatedAt,
+    request: job.request || null,
     result: job.result || null,
     error: job.error || null,
+    logPath: buildRuntimeJobLogPath(job.id),
+  };
+  if (options.includeLogs) {
+    payload.logs = readRuntimeJobLogs(job.id, options.tail);
+  }
+  return payload;
+}
+
+async function persistRuntimeJob(job) {
+  job.updatedAt = new Date().toISOString();
+  await fsp.mkdir(runtimeJobRoot, { recursive: true });
+  await fsp.writeFile(buildRuntimeJobPath(job.id), JSON.stringify(serializeRuntimeJob(job), null, 2), 'utf8');
+}
+
+async function appendRuntimeJobLog(job, message, level = 'info') {
+  const entry = {
+    time: new Date().toISOString(),
+    level,
+    message,
+  };
+  await fsp.mkdir(runtimeJobRoot, { recursive: true });
+  await fsp.appendFile(buildRuntimeJobLogPath(job.id), `${JSON.stringify(entry)}\n`, 'utf8');
+  job.lastLog = entry;
+  await persistRuntimeJob(job);
+}
+
+function loadRuntimeJobs() {
+  const files = fs.readdirSync(runtimeJobRoot).filter((file) => file.endsWith('.json'));
+  for (const file of files) {
+    try {
+      const raw = fs.readFileSync(path.join(runtimeJobRoot, file), 'utf8');
+      const job = JSON.parse(raw);
+      if (job.status === 'queued' || job.status === 'running') {
+        job.status = 'failed';
+        job.message = 'Server restarted before the job finished';
+        job.error = { message: job.message };
+        job.finishedAt = job.finishedAt || new Date().toISOString();
+        fs.writeFileSync(path.join(runtimeJobRoot, file), JSON.stringify(job, null, 2), 'utf8');
+        fs.appendFileSync(
+          buildRuntimeJobLogPath(job.id),
+          `${JSON.stringify({ time: new Date().toISOString(), level: 'error', message: job.message })}\n`,
+          'utf8'
+        );
+      }
+      runtimeJobs.set(job.id, job);
+    } catch (error) {
+      log('Failed to load runtime job:', file, error);
+    }
+  }
+}
+
+function listRuntimeJobs() {
+  return Array.from(runtimeJobs.values())
+    .map((job) => serializeRuntimeJob(job))
+    .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
+}
+
+async function removeRuntimeJobFiles(jobId) {
+  await Promise.all([
+    fsp.rm(buildRuntimeJobPath(jobId), { force: true }),
+    fsp.rm(buildRuntimeJobLogPath(jobId), { force: true }),
+  ]);
+}
+
+function sanitizeUploadFileName(name, index) {
+  const base = path.basename(String(name || `upload-${index}`))
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+    .replace(/\s+/g, '_')
+    .slice(0, 180);
+  return `${index}-${base || 'upload'}`;
+}
+
+async function moveUploadedFilesToJobDir(jobId, uploadedFiles) {
+  const jobTmpDir = path.join(importTmpRoot, `job-${jobId}`);
+  await fsp.mkdir(jobTmpDir, { recursive: true });
+  const files = [];
+  for (let index = 0; index < uploadedFiles.length; index += 1) {
+    const file = uploadedFiles[index];
+    const targetPath = path.join(jobTmpDir, sanitizeUploadFileName(file.originalname, index));
+    try {
+      await fsp.rename(file.path, targetPath);
+    } catch (_error) {
+      await fsp.copyFile(file.path, targetPath);
+      await fsp.unlink(file.path).catch(() => {});
+    }
+    files.push({
+      path: targetPath,
+      originalName: file.originalname,
+    });
+  }
+  return {
+    jobTmpDir,
+    files,
   };
 }
 
 function pruneRuntimeJobs() {
-  const maxAgeMs = 24 * 60 * 60 * 1000;
+  const maxAgeMs = 7 * 24 * 60 * 60 * 1000;
   const now = Date.now();
   for (const [jobId, job] of runtimeJobs.entries()) {
     const finishedAt = job.finishedAt ? new Date(job.finishedAt).getTime() : null;
     if (finishedAt && now - finishedAt > maxAgeMs) {
       runtimeJobs.delete(jobId);
+      removeRuntimeJobFiles(jobId).catch(() => {});
     }
   }
 }
 
-function startRuntimeJob(type, runner) {
+function startRuntimeJob(type, runner, request = null) {
   pruneRuntimeJobs();
   const job = {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
@@ -74,18 +196,24 @@ function startRuntimeJob(type, runner) {
     createdAt: new Date().toISOString(),
     startedAt: null,
     finishedAt: null,
+    updatedAt: new Date().toISOString(),
+    request,
     result: null,
     error: null,
   };
   runtimeJobs.set(job.id, job);
+  persistRuntimeJob(job).catch((error) => log(`Persist runtime job ${job.id} failed:`, error));
+  appendRuntimeJobLog(job, 'Queued').catch(() => {});
   setImmediate(async () => {
     job.status = 'running';
     job.message = 'Running';
     job.startedAt = new Date().toISOString();
+    await appendRuntimeJobLog(job, 'Running');
     try {
-      job.result = await runner();
+      job.result = await runner(job);
       job.status = 'succeeded';
       job.message = 'Success';
+      await appendRuntimeJobLog(job, 'Success');
     } catch (error) {
       log(`Runtime job ${job.id} failed:`, error);
       job.status = 'failed';
@@ -93,12 +221,16 @@ function startRuntimeJob(type, runner) {
       job.error = {
         message: error.message,
       };
+      await appendRuntimeJobLog(job, error.message, 'error');
     } finally {
       job.finishedAt = new Date().toISOString();
+      await persistRuntimeJob(job);
     }
   });
   return job;
 }
+
+loadRuntimeJobs();
 
 async function pathExists(targetPath) {
   try {
@@ -574,6 +706,60 @@ app.post('/runtime/analyze-data-package', upload.any(), async (req, res) => {
   }
 });
 
+app.post('/runtime/analyze-data-package-job', upload.any(), async (req, res) => {
+  let staged = null;
+  try {
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    if (uploadedFiles.length === 0) {
+      throw new Error('file is required');
+    }
+    const stagingId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    staged = await moveUploadedFilesToJobDir(stagingId, uploadedFiles);
+    const request = {
+      packageName: req.body.packageName || '',
+      fileCount: uploadedFiles.length,
+      uploadedFiles: uploadedFiles.map((file) => file.originalname),
+    };
+    const job = startRuntimeJob(
+      'analyze-data-package',
+      async (runtimeJob) => {
+        try {
+          await appendRuntimeJobLog(runtimeJob, `Analyzing ${staged.files.length} uploaded file(s)`);
+          return await runtime.analyzeDataPackage(config, {
+            files: staged.files,
+            packageName: req.body.packageName,
+          });
+        } finally {
+          await fsp.rm(staged.jobTmpDir, { recursive: true, force: true }).catch(() => {});
+        }
+      },
+      request
+    );
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    log('Start analyze data package job failed:', error);
+    if (staged?.jobTmpDir) {
+      await fsp.rm(staged.jobTmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    for (const file of uploadedFiles) {
+      if (file && file.path) {
+        await fsp.unlink(file.path).catch(() => {});
+      }
+    }
+    res.status(500).json({
+      code: 15057,
+      message: error.message,
+    });
+  }
+});
+
 app.get('/runtime/data-packages', async (_req, res) => {
   try {
     res.json({
@@ -613,7 +799,12 @@ app.post('/runtime/import-data-package-base-map-job', async (req, res) => {
   try {
     const body = req.body || {};
     const job = startRuntimeJob('import-data-package-base-map', () =>
-      runtime.importDataPackageBaseMap(config, body)
+      runtime.importDataPackageBaseMap(config, body),
+      {
+        packageId: body.packageId || '',
+        mapName: body.mapName || '',
+        overwrite: body.overwrite === true,
+      }
     );
     res.status(202).json({
       code: 0,
@@ -631,6 +822,17 @@ app.post('/runtime/import-data-package-base-map-job', async (req, res) => {
   }
 });
 
+app.get('/runtime/jobs', (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+  res.json({
+    code: 0,
+    message: 'Success',
+    data: {
+      jobs: listRuntimeJobs().slice(0, limit),
+    },
+  });
+});
+
 app.get('/runtime/jobs/:jobId', (req, res) => {
   const job = runtimeJobs.get(req.params.jobId);
   if (!job) {
@@ -644,7 +846,27 @@ app.get('/runtime/jobs/:jobId', (req, res) => {
     code: 0,
     message: 'Success',
     data: {
-      job: serializeRuntimeJob(job),
+      job: serializeRuntimeJob(job, {
+        includeLogs: req.query.logs === 'true',
+        tail: req.query.tail,
+      }),
+    },
+  });
+});
+
+app.get('/runtime/jobs/:jobId/logs', (req, res) => {
+  if (!runtimeJobs.has(req.params.jobId)) {
+    res.status(404).json({
+      code: 404,
+      message: `job not found: ${req.params.jobId}`,
+    });
+    return;
+  }
+  res.json({
+    code: 0,
+    message: 'Success',
+    data: {
+      logs: readRuntimeJobLogs(req.params.jobId, req.query.tail),
     },
   });
 });

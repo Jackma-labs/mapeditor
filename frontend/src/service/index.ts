@@ -190,6 +190,21 @@ class FileService {
         }));
     }
 
+    async startAnalyzeDataPackageJob(file: File | File[], packageName: string) {
+        const formData = new FormData();
+        const files = Array.isArray(file) ? file : [file];
+        files.forEach((item) => formData.append(files.length === 1 ? 'file' : 'files', item));
+        formData.append('packageName', packageName);
+        const response = await fetch(`http://${baseHttpURL}/runtime/analyze-data-package-job`, {
+            method: 'POST',
+            body: formData,
+        });
+        return response.json().catch(() => ({
+            code: response.status,
+            message: response.statusText,
+        }));
+    }
+
     async getDataPackages() {
         return this.requestJson('/runtime/data-packages');
     }
@@ -216,8 +231,13 @@ class FileService {
         });
     }
 
-    async getRuntimeJob(jobId: string) {
-        return this.requestJson(`/runtime/jobs/${encodeURIComponent(jobId)}`);
+    async getRuntimeJob(jobId: string, includeLogs: boolean = false) {
+        const query = includeLogs ? '?logs=true&tail=200' : '';
+        return this.requestJson(`/runtime/jobs/${encodeURIComponent(jobId)}${query}`);
+    }
+
+    async getRuntimeJobs(limit: number = 50) {
+        return this.requestJson(`/runtime/jobs?limit=${encodeURIComponent(String(limit))}`);
     }
 
     async importMapPackageZip(file: File, mapName: string, overwrite: boolean = false) {

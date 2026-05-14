@@ -5,6 +5,7 @@ const appRoot = path.resolve(__dirname, '..');
 
 const defaults = {
   port: Number(process.env.MAP_BACKEND_PORT || process.env.PORT || 58000),
+  uploadFileSizeBytes: Number(process.env.MAP_UPLOAD_FILE_SIZE_BYTES || 30 * 1024 * 1024 * 1024),
   baseMapRoot: path.join(appRoot, 'data/base_map'),
   editorMapRoot: path.join(appRoot, 'data/editor_map'),
   releaseRoot: path.join(appRoot, 'data/released_map'),
@@ -59,6 +60,9 @@ const merged = Object.assign({}, defaults, userConfig);
 
 if (process.env.MAP_BACKEND_PORT || process.env.PORT) {
   merged.port = Number(process.env.MAP_BACKEND_PORT || process.env.PORT);
+}
+if (process.env.MAP_UPLOAD_FILE_SIZE_BYTES) {
+  merged.uploadFileSizeBytes = Number(process.env.MAP_UPLOAD_FILE_SIZE_BYTES);
 }
 if (process.env.MAP_BASE_MAP_ROOT) {
   merged.baseMapRoot = process.env.MAP_BASE_MAP_ROOT;

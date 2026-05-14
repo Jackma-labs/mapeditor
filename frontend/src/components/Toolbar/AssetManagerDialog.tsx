@@ -1,5 +1,5 @@
 import PubSub from 'pubsub-js';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Modal, Space, Table, Tag, message } from 'antd';
 import { ModalProps } from 'antd/lib/modal';
 import FileService from 'src/service/index';
@@ -68,6 +68,19 @@ const formatDateTime = (value: string) => {
     return date.toLocaleString();
 };
 
+const getJobStatusColor = (status: string) => {
+    if (status === 'succeeded') {
+        return 'green';
+    }
+    if (status === 'failed') {
+        return 'red';
+    }
+    if (status === 'running') {
+        return 'blue';
+    }
+    return 'default';
+};
+
 const formatPackageAnalysis = (packageInfo: any) => {
     const summary = packageInfo?.summary || {};
     const analyses = packageInfo?.analyses || [];
@@ -123,11 +136,12 @@ const formatPackageAnalysis = (packageInfo: any) => {
 export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetManagerDialogProps) {
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const [packages, setPackages] = useState<any[]>([]);
+    const [jobs, setJobs] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [jobText, setJobText] = useState('');
 
-    const loadPackages = async () => {
+    const loadPackages = useCallback(async () => {
         setLoading(true);
         try {
             const response = await FileService.getDataPackages();
@@ -143,7 +157,22 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
+
+    const loadJobs = useCallback(async () => {
+        try {
+            const response = await FileService.getRuntimeJobs(8);
+            if (response?.code === 0) {
+                setJobs(response?.data?.jobs || []);
+            }
+        } catch (error) {
+            setJobs([]);
+        }
+    }, []);
+
+    const refreshAll = useCallback(async () => {
+        await Promise.all([loadPackages(), loadJobs()]);
+    }, [loadJobs, loadPackages]);
 
     const waitForRuntimeJob = async (jobId: string, label: string, attempt = 0): Promise<any> => {
         if (attempt >= 600) {
@@ -161,7 +190,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
         if (job?.status === 'failed') {
             setJobText('');
-            throw new Error(job?.message || '后台生成失败');
+            throw new Error(job?.message || '后台任务失败');
         }
         setJobText(`${label}，状态：${job?.status || 'running'}`);
         await sleep(3000);
@@ -178,16 +207,25 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
         const packageName = buildPackageName(files);
         setUploading(true);
+        setJobText(`正在上传采图包：${packageName}`);
         try {
-            const response = await FileService.analyzeDataPackage(files.length === 1 ? files[0] : files, packageName);
+            const response = await FileService.startAnalyzeDataPackageJob(
+                files.length === 1 ? files[0] : files,
+                packageName,
+            );
             if (response?.code !== 0) {
-                throw new Error(response?.message || '采图包预检失败');
+                throw new Error(response?.message || '提交采图包预检任务失败');
             }
-            await loadPackages();
+            const jobId = response?.data?.job?.id;
+            if (!jobId) {
+                throw new Error('后台任务没有返回 jobId');
+            }
+            const job = await waitForRuntimeJob(jobId, `正在预检采图包 ${packageName}`);
+            await refreshAll();
             Modal.info({
                 title: '采图包预检完成',
                 width: 860,
-                content: <pre className="asset-manager-detail">{formatPackageAnalysis(response.data)}</pre>,
+                content: <pre className="asset-manager-detail">{formatPackageAnalysis(job.result)}</pre>,
             });
         } catch (error) {
             Modal.error({
@@ -196,6 +234,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             });
         } finally {
             setUploading(false);
+            setJobText('');
         }
     };
 
@@ -231,7 +270,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                         throw new Error('后台任务没有返回 jobId');
                     }
                     const job = await waitForRuntimeJob(jobId, `正在生成底图 ${mapName}`);
-                    await loadPackages();
+                    await refreshAll();
                     message.success(`底图 ${job.result?.mapName || mapName} 生成完成`);
                 } catch (error) {
                     Modal.error({
@@ -280,13 +319,48 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         });
     };
 
+    const showJobDetails = async (jobInfo: any) => {
+        try {
+            const response = await FileService.getRuntimeJob(jobInfo.id, true);
+            const job = response?.data?.job || jobInfo;
+            const logs = job.logs || [];
+            Modal.info({
+                title: '后台任务详情',
+                width: 860,
+                content: (
+                    <pre className="asset-manager-detail">
+                        {[
+                            `任务: ${job.id}`,
+                            `类型: ${job.type}`,
+                            `状态: ${job.status}`,
+                            `消息: ${job.message || ''}`,
+                            `创建: ${formatDateTime(job.createdAt)}`,
+                            `完成: ${formatDateTime(job.finishedAt)}`,
+                            '',
+                            '请求:',
+                            JSON.stringify(job.request || {}, null, 2),
+                            '',
+                            '日志:',
+                            ...logs.map((item: any) => `[${item.time}] ${item.level}: ${item.message}`),
+                        ].join('\n')}
+                    </pre>
+                ),
+            });
+        } catch (error) {
+            Modal.error({
+                title: '读取任务失败',
+                content: error instanceof Error ? error.message : '读取任务失败',
+            });
+        }
+    };
+
     useEffect(() => {
         if (open) {
-            loadPackages();
+            refreshAll();
         } else {
             setJobText('');
         }
-    }, [open]);
+    }, [open, refreshAll]);
 
     const columns = [
         {
@@ -380,7 +454,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </div>
                 </div>
                 <Space>
-                    <Button onClick={loadPackages} disabled={loading || uploading}>
+                    <Button onClick={refreshAll} disabled={loading || uploading}>
                         刷新
                     </Button>
                     <Button type="primary" onClick={() => uploadInputRef.current?.click()} loading={uploading}>
@@ -389,6 +463,25 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                 </Space>
             </div>
             {jobText && <div className="asset-manager-job">{jobText}</div>}
+            {jobs.length > 0 && (
+                <div className="asset-manager-jobs">
+                    <div className="asset-manager-jobs-title">最近后台任务</div>
+                    <div className="asset-manager-jobs-list">
+                        {jobs.slice(0, 5).map((job) => (
+                            <button
+                                key={job.id}
+                                type="button"
+                                className="asset-manager-job-item"
+                                onClick={() => showJobDetails(job)}
+                            >
+                                <Tag color={getJobStatusColor(job.status)}>{job.status}</Tag>
+                                <span>{job.type}</span>
+                                <span>{formatDateTime(job.createdAt)}</span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
             <Table
                 rowKey="packageId"
                 columns={columns}
