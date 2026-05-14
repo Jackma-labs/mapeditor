@@ -209,6 +209,21 @@ class FileService {
         return this.requestJson('/runtime/data-packages');
     }
 
+    async renameDataPackage(packageId: string, displayName: string) {
+        return this.requestJson(`/runtime/data-packages/${encodeURIComponent(packageId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+                displayName,
+            }),
+        });
+    }
+
+    async deleteDataPackage(packageId: string) {
+        return this.requestJson(`/runtime/data-packages/${encodeURIComponent(packageId)}`, {
+            method: 'DELETE',
+        });
+    }
+
     async startRefreshDataPackageAnalysisJob(packageId: string) {
         return this.requestJson('/runtime/refresh-data-package-analysis-job', {
             method: 'POST',

@@ -791,6 +791,45 @@ app.get('/runtime/data-packages', async (_req, res) => {
   }
 });
 
+app.patch('/runtime/data-packages/:packageId', async (req, res) => {
+  try {
+    const result = await runtime.updateDataPackage(config, {
+      ...(req.body || {}),
+      packageId: req.params.packageId,
+    });
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    log('Update data package failed:', error);
+    res.status(500).json({
+      code: 15060,
+      message: error.message,
+    });
+  }
+});
+
+app.delete('/runtime/data-packages/:packageId', async (req, res) => {
+  try {
+    const result = await runtime.deleteDataPackage(config, {
+      packageId: req.params.packageId,
+    });
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    log('Delete data package failed:', error);
+    res.status(500).json({
+      code: 15061,
+      message: error.message,
+    });
+  }
+});
+
 app.post('/runtime/refresh-data-package-analysis-job', async (req, res) => {
   try {
     const body = req.body || {};

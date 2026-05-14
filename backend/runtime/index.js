@@ -2639,10 +2639,17 @@ async function analyzeDataPackage(config, params) {
     const combined = {
       packageId,
       path: targetDir,
+      displayName: packageName,
       uploadedFiles: files.map((file) => file.originalName || file.originalname || file.path),
       analyses,
       summary: summarizeCombinedPackageAnalysis(analyses),
     };
+    await writePackageMetadata(targetDir, {
+      packageId,
+      displayName: packageName,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
     await fsp.writeFile(path.join(targetDir, 'analysis.json'), JSON.stringify(combined, null, 2), 'utf8');
     return combined;
   } catch (error) {
@@ -2688,6 +2695,10 @@ function getImportPackageRoot(config) {
   return path.resolve(config.baseMapRoot, '..', 'import_packages');
 }
 
+function getImportPackageTrashRoot(config) {
+  return path.resolve(config.baseMapRoot, '..', 'import_packages_trash');
+}
+
 function validatePackageId(packageId) {
   const normalized = String(packageId || '').trim();
   if (!normalized) {
@@ -2701,6 +2712,34 @@ function validatePackageId(packageId) {
 
 function defaultMapNameFromPackageId(packageId) {
   return sanitizePackageName(String(packageId || '').replace(/^\d{14}-/, '') || packageId);
+}
+
+function normalizePackageDisplayName(displayName) {
+  const normalized = String(displayName || '')
+    .trim()
+    .replace(/[\x00-\x1f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, 96);
+  if (!normalized) {
+    throw new Error('displayName is required');
+  }
+  if (/[\\/:*?"<>|]/.test(normalized)) {
+    throw new Error('displayName must not contain path separators or reserved filename characters');
+  }
+  return normalized;
+}
+
+async function readPackageMetadata(packageDir) {
+  const metadataPath = path.join(packageDir, 'package_metadata.json');
+  if (!(await pathExists(metadataPath))) {
+    return {};
+  }
+  const content = await fsp.readFile(metadataPath, 'utf8');
+  return JSON.parse(content.replace(/^\uFEFF/, ''));
+}
+
+async function writePackageMetadata(packageDir, metadata) {
+  await fsp.writeFile(path.join(packageDir, 'package_metadata.json'), JSON.stringify(metadata, null, 2), 'utf8');
 }
 
 async function readAnalysisFile(packageDir) {
@@ -2727,14 +2766,17 @@ async function listDataPackages(config) {
     const packageDir = path.join(packageRoot, packageId);
     const stat = await fsp.stat(packageDir);
     const analysis = await readAnalysisFile(packageDir).catch(() => null);
+    const metadata = await readPackageMetadata(packageDir).catch(() => ({}));
     const analyses = normalizePackageAnalysesForCurrentRules(analysis?.analyses || []);
     const summary = analyses.length ? summarizeCombinedPackageAnalysis(analyses) : analysis?.summary || null;
+    const displayName = metadata.displayName || analysis?.displayName || defaultMapNameFromPackageId(packageId);
     packages.push({
       packageId,
       path: packageDir,
       createdAt: stat.birthtime.toISOString(),
       modifiedAt: stat.mtime.toISOString(),
-      defaultMapName: defaultMapNameFromPackageId(packageId),
+      displayName,
+      defaultMapName: displayName,
       summary,
       analyses,
       uploadedFiles: analysis?.uploadedFiles || [],
@@ -2743,6 +2785,65 @@ async function listDataPackages(config) {
   }
   packages.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
   return packages;
+}
+
+async function updateDataPackage(config, params) {
+  const packageId = validatePackageId(params.packageId);
+  const packageDir = await resolveDataPackageDir(config, packageId);
+  const existing = await readPackageMetadata(packageDir).catch(() => ({}));
+  const displayName = normalizePackageDisplayName(params.displayName);
+  const now = new Date().toISOString();
+  await writePackageMetadata(packageDir, {
+    ...existing,
+    packageId,
+    displayName,
+    createdAt: existing.createdAt || now,
+    updatedAt: now,
+  });
+  const packages = await listDataPackages(config);
+  return (
+    packages.find((item) => item.packageId === packageId) || {
+      packageId,
+      displayName,
+      defaultMapName: displayName,
+    }
+  );
+}
+
+async function deleteDataPackage(config, params) {
+  const packageId = validatePackageId(params.packageId);
+  const packageRoot = getImportPackageRoot(config);
+  const trashRoot = getImportPackageTrashRoot(config);
+  const packageDir = await resolveDataPackageDir(config, packageId);
+  if (!packageDir.startsWith(`${packageRoot}${path.sep}`)) {
+    throw new Error('packageId resolved outside import package root');
+  }
+  await fsp.mkdir(trashRoot, { recursive: true });
+  const deletedAt = new Date().toISOString();
+  const stamp = deletedAt.replace(/[-:.TZ]/g, '').slice(0, 14);
+  let trashDir = path.resolve(trashRoot, `${stamp}-${packageId}`);
+  if (!trashDir.startsWith(`${trashRoot}${path.sep}`)) {
+    throw new Error('trash path resolved outside import package trash root');
+  }
+  let suffix = 1;
+  while (await pathExists(trashDir)) {
+    suffix += 1;
+    trashDir = path.resolve(trashRoot, `${stamp}-${packageId}-${suffix}`);
+  }
+  const existing = await readPackageMetadata(packageDir).catch(() => ({}));
+  await writePackageMetadata(packageDir, {
+    ...existing,
+    packageId,
+    deletedAt,
+    deletedFrom: packageDir,
+    updatedAt: deletedAt,
+  });
+  await fsp.rename(packageDir, trashDir);
+  return {
+    packageId,
+    deletedAt,
+    trashPath: trashDir,
+  };
 }
 
 async function resolveDataPackageDir(config, packageId) {
@@ -2872,7 +2973,8 @@ async function importDataPackageBaseMap(config, params) {
   if (files.length === 0) {
     throw new Error(`data package has no importable point cloud files: ${packageId}`);
   }
-  const mapName = params.mapName || defaultMapNameFromPackageId(packageId);
+  const metadata = await readPackageMetadata(packageDir).catch(() => ({}));
+  const mapName = params.mapName || sanitizePackageName(metadata.displayName || defaultMapNameFromPackageId(packageId));
   const result = await importPointCloudFilesBaseMap(config, {
     mapName,
     overwrite: params.overwrite === true,
@@ -3842,6 +3944,8 @@ module.exports = {
   analyzeDataPackage,
   refreshDataPackageAnalysis,
   listDataPackages,
+  updateDataPackage,
+  deleteDataPackage,
   importDataPackageBaseMap,
   importMergedDataPackagesBaseMap,
   importBaseMapZip,

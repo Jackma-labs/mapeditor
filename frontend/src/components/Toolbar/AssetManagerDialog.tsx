@@ -1,6 +1,6 @@
 import PubSub from 'pubsub-js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Modal, Space, Table, Tag, message } from 'antd';
+import { Button, Input, Modal, Space, Table, Tag, message } from 'antd';
 import { ModalProps } from 'antd/lib/modal';
 import FileService from 'src/service/index';
 
@@ -439,6 +439,98 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
     };
 
+    const handleRenamePackage = (packageInfo: any) => {
+        let nextName = packageInfo.displayName || packageInfo.defaultMapName || packageInfo.packageId;
+        Modal.confirm({
+            title: '重命名资产',
+            width: 560,
+            okText: '保存',
+            cancelText: '取消',
+            content: (
+                <Input
+                    defaultValue={nextName}
+                    maxLength={96}
+                    autoFocus
+                    placeholder="请输入资产名称"
+                    onChange={(event) => {
+                        nextName = event.target.value;
+                    }}
+                />
+            ),
+            onOk: async () => {
+                const displayName = nextName.trim();
+                if (!displayName) {
+                    message.error('资产名称不能为空');
+                    throw new Error('资产名称不能为空');
+                }
+                setUploading(true);
+                setJobText(`正在重命名资产：${displayName}`);
+                try {
+                    const response = await FileService.renameDataPackage(packageInfo.packageId, displayName);
+                    if (response?.code !== 0) {
+                        throw new Error(response?.message || '重命名资产失败');
+                    }
+                    await refreshAll();
+                    message.success('资产已重命名');
+                } catch (error) {
+                    Modal.error({
+                        title: '重命名资产失败',
+                        content: error instanceof Error ? error.message : '重命名资产失败',
+                    });
+                    throw error;
+                } finally {
+                    setUploading(false);
+                    setJobText('');
+                }
+            },
+        });
+    };
+
+    const handleDeletePackage = (packageInfo: any) => {
+        Modal.confirm({
+            title: '删除采图包资产',
+            width: 720,
+            okText: '删除',
+            cancelText: '取消',
+            okButtonProps: { danger: true },
+            content: (
+                <pre className="asset-manager-detail">
+                    {[
+                        `资产: ${packageInfo.displayName || packageInfo.defaultMapName || packageInfo.packageId}`,
+                        `资产 ID: ${packageInfo.packageId}`,
+                        '',
+                        '删除后采图包会移动到服务器回收目录 import_packages_trash。',
+                        '这个操作不会删除已经生成的点云底图或标注地图。',
+                    ].join('\n')}
+                </pre>
+            ),
+            onOk: async () => {
+                setUploading(true);
+                setJobText(`正在删除资产：${packageInfo.defaultMapName || packageInfo.packageId}`);
+                try {
+                    const response = await FileService.deleteDataPackage(packageInfo.packageId);
+                    if (response?.code !== 0) {
+                        throw new Error(response?.message || '删除资产失败');
+                    }
+                    setSelectedPackageIds((current) =>
+                        current.filter((packageId) => String(packageId) !== packageInfo.packageId),
+                    );
+                    await refreshAll();
+                    message.success('资产已移入回收目录');
+                } catch (error) {
+                    Modal.error({
+                        title: '删除资产失败',
+                        content: error instanceof Error ? error.message : '删除资产失败',
+                    });
+                    throw error;
+                } finally {
+                    setUploading(false);
+                    setJobText('');
+                }
+            },
+        });
+    };
+
     const showDetails = (packageInfo: any) => {
         Modal.info({
             title: '资产详情',
@@ -555,11 +647,14 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '操作',
             key: 'actions',
-            width: 300,
+            width: 420,
             render: (_value: string, record: any) => (
                 <Space size={8}>
                     <Button size="small" onClick={() => showDetails(record)}>
                         详情
+                    </Button>
+                    <Button size="small" onClick={() => handleRenamePackage(record)} disabled={uploading}>
+                        重命名
                     </Button>
                     <Button size="small" onClick={() => handleRefreshAnalysis(record)} disabled={uploading}>
                         重跑预检
@@ -569,6 +664,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </Button>
                     <Button size="small" type="primary" onClick={() => handleOpenBaseMap(record)}>
                         打开
+                    </Button>
+                    <Button size="small" danger onClick={() => handleDeletePackage(record)} disabled={uploading}>
+                        删除
                     </Button>
                 </Space>
             ),
@@ -580,7 +678,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             {...rest}
             open={open}
             title="采图包资产"
-            width={1120}
+            width={1240}
             footer={null}
             onCancel={onCancel}
             className="asset-manager-dialog"
