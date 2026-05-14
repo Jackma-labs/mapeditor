@@ -180,7 +180,6 @@ export default class BaseMap {
         this.position.copy(this.camera.position);
         await this.drawTile(tiles)
             .then(() => {
-                this.renderImagePoseLayer(dir, json);
                 this.renderer();
             })
             .catch((err) => {
@@ -194,47 +193,6 @@ export default class BaseMap {
         // 当切换标注地图的时候，不可以回退和重做了
         useManagerStore.getState().resetCommand();
         this.loading = false;
-    }
-
-    private renderImagePoseLayer(dir: string, json: any) {
-        const items = json?.imageOverlay?.index?.items || [];
-        if (!Array.isArray(items) || items.length === 0 || !json?.center) {
-            return;
-        }
-        const positions = new Float32Array(items.length * 3);
-        const colors = new Float32Array(items.length * 3);
-        items.forEach((item: any, index: number) => {
-            const map = item.map || {};
-            positions[index * 3] = Number(map.x || 0) - Number(json.center.x || 0);
-            positions[index * 3 + 1] = Number(map.y || 0) - Number(json.center.y || 0);
-            positions[index * 3 + 2] = 4;
-            const isLeft = item.side === 'L';
-            colors[index * 3] = isLeft ? 0.2 : 1;
-            colors[index * 3 + 1] = isLeft ? 0.75 : 0.55;
-            colors[index * 3 + 2] = isLeft ? 1 : 0.15;
-        });
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        const material = new THREE.PointsMaterial({
-            size: 8,
-            sizeAttenuation: false,
-            vertexColors: true,
-            transparent: true,
-            opacity: 0.95,
-            depthWrite: false,
-        });
-        const imagePoseLayer = new THREE.Points(geometry, material);
-        imagePoseLayer.name = 'image_pose_layer';
-        imagePoseLayer.userData = {
-            id: 'image_pose_layer',
-            type: 'image_pose_layer',
-            baseMapDir: dir,
-            imagePoses: items,
-        };
-        imagePoseLayer.renderOrder = 5;
-        this.meshs.image_pose_layer = imagePoseLayer;
-        this.addMesh(imagePoseLayer);
     }
 
     private renderPointCloudMap(dir: string, json: any) {
