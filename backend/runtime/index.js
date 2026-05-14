@@ -2757,12 +2757,12 @@ async function resolveDataPackageDir(config, packageId) {
   return packageDir;
 }
 
-async function importDataPackageBaseMap(config, params) {
-  const packageId = validatePackageId(params.packageId);
-  const packageDir = await resolveDataPackageDir(config, packageId);
+async function getDataPackageImportFiles(config, packageId) {
+  const normalizedPackageId = validatePackageId(packageId);
+  const packageDir = await resolveDataPackageDir(config, normalizedPackageId);
   const uploadDir = path.join(packageDir, 'uploads');
   if (!(await pathExists(uploadDir))) {
-    throw new Error(`data package uploads not found: ${packageId}`);
+    throw new Error(`data package uploads not found: ${normalizedPackageId}`);
   }
   const entries = await fsp.readdir(uploadDir, { withFileTypes: true });
   const files = entries
@@ -2772,6 +2772,102 @@ async function importDataPackageBaseMap(config, params) {
       originalName: entry.name.replace(/^\d+-/, ''),
     }))
     .filter((file) => isSupportedPointCloudUploadName(file.originalName) || isImageName(file.originalName));
+  return { packageId: normalizedPackageId, packageDir, files };
+}
+
+function createStitchAnchor(packageInfo) {
+  const summary = packageInfo?.summary || {};
+  const trajectory = summary.trajectory || {};
+  const trajectoryBounds = trajectory.bounds;
+  if (trajectoryBounds && trajectory.preferredCoordinateKind) {
+    const x = (Number(trajectoryBounds.minX) + Number(trajectoryBounds.maxX)) / 2;
+    const y = (Number(trajectoryBounds.minY) + Number(trajectoryBounds.maxY)) / 2;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+    return {
+      source: 'trajectory',
+      coordinateKind: trajectory.preferredCoordinateKind,
+      preferredSource: trajectory.preferredSource || null,
+      x: roundPointValue(x),
+      y: roundPointValue(y),
+    };
+  }
+  const pointClouds = (packageInfo?.analyses || []).flatMap((item) => item.pointClouds || []);
+  const pointCloud = selectPreferredPointCloudAnalyses(pointClouds)[0] || pointClouds[0];
+  if (pointCloud?.bounds) {
+    const x = (Number(pointCloud.bounds.minX) + Number(pointCloud.bounds.maxX)) / 2;
+    const y = (Number(pointCloud.bounds.minY) + Number(pointCloud.bounds.maxY)) / 2;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+    return {
+      source: 'point_cloud',
+      coordinateKind: pointCloud.coordinate?.kind || null,
+      preferredSource: pointCloud.source || null,
+      x: roundPointValue(x),
+      y: roundPointValue(y),
+    };
+  }
+  return null;
+}
+
+async function buildDataPackageStitchPlan(config, packageIds) {
+  const packages = [];
+  for (const packageId of packageIds) {
+    const packageDir = await resolveDataPackageDir(config, packageId);
+    const analysis = await readAnalysisFile(packageDir).catch(() => null);
+    const analyses = normalizePackageAnalysesForCurrentRules(analysis?.analyses || []);
+    const packageInfo = {
+      packageId,
+      path: packageDir,
+      analyses,
+      summary: analyses.length ? summarizeCombinedPackageAnalysis(analyses) : analysis?.summary || null,
+    };
+    const trajectoryAnchor = createStitchAnchor({
+      summary: {
+        trajectory: packageInfo.summary?.trajectory || {},
+      },
+      analyses: [],
+    });
+    const pointCloudAnchor = createStitchAnchor({
+      summary: {},
+      analyses: packageInfo.analyses,
+    });
+    packages.push({
+      packageId,
+      anchor: trajectoryAnchor || pointCloudAnchor,
+      trajectoryAnchor,
+      pointCloudAnchor,
+      pointCloudFiles: packageInfo.summary?.pointCloudFiles || 0,
+      trajectory: packageInfo.summary?.trajectory || null,
+    });
+  }
+  const reference = packages.find((item) => item.anchor)?.anchor || null;
+  return {
+    reference,
+    packages: packages.map((item) => ({
+      ...item,
+      offsetFromReference:
+        reference && item.anchor
+          ? {
+              x: roundPointValue(item.anchor.x - reference.x),
+              y: roundPointValue(item.anchor.y - reference.y),
+            }
+          : null,
+      stitchingReadiness:
+        reference && item.anchor && item.anchor.coordinateKind === reference.coordinateKind
+          ? 'same_anchor_coordinate_kind'
+          : item.anchor
+            ? 'anchor_coordinate_kind_differs'
+            : 'missing_anchor',
+    })),
+  };
+}
+
+async function importDataPackageBaseMap(config, params) {
+  const packageId = validatePackageId(params.packageId);
+  const { packageDir, files } = await getDataPackageImportFiles(config, packageId);
   if (files.length === 0) {
     throw new Error(`data package has no importable point cloud files: ${packageId}`);
   }
@@ -2785,6 +2881,38 @@ async function importDataPackageBaseMap(config, params) {
     ...result,
     packageId,
     packagePath: packageDir,
+  };
+}
+
+async function importMergedDataPackagesBaseMap(config, params) {
+  const requestedPackageIds = Array.isArray(params?.packageIds) ? params.packageIds : [];
+  const packageIds = Array.from(new Set(requestedPackageIds.map(validatePackageId)));
+  if (packageIds.length < 2) {
+    throw new Error('at least two packageIds are required');
+  }
+  const allFiles = [];
+  for (const packageId of packageIds) {
+    const { files } = await getDataPackageImportFiles(config, packageId);
+    allFiles.push(...files.map((file) => ({ ...file, packageId })));
+  }
+  const importableFiles = allFiles.filter(
+    (file) => isSupportedPointCloudUploadName(file.originalName) || isImageName(file.originalName)
+  );
+  if (importableFiles.length === 0) {
+    throw new Error('selected data packages have no importable point cloud files');
+  }
+  const mapName = params.mapName || sanitizePackageName(`merged_${packageIds[0]}`);
+  const stitchPlan = await buildDataPackageStitchPlan(config, packageIds);
+  const result = await importPointCloudFilesBaseMap(config, {
+    mapName,
+    overwrite: params.overwrite === true,
+    files: importableFiles,
+    stitchPlan,
+  });
+  return {
+    ...result,
+    packageIds,
+    stitchPlan,
   };
 }
 
@@ -3179,6 +3307,7 @@ async function importPointCloudFilesBaseMap(config, params) {
       coordinate,
       imageOverlay,
       layers: layerDescriptors,
+      stitchPlan: params.stitchPlan || null,
       processing: {
         mode: 'enhanced_point_cloud_raster',
         tileResolutionMetersPerPixel: getPointCloudTileResolution(Math.max(...POINT_CLOUD_TILE_LEVELS)),
@@ -3199,6 +3328,9 @@ async function importPointCloudFilesBaseMap(config, params) {
       });
     }
     await copyImportSources(files, stagingDir);
+    if (params.stitchPlan) {
+      await fsp.writeFile(path.join(stagingDir, 'stitch_plan.json'), JSON.stringify(params.stitchPlan, null, 2), 'utf8');
+    }
     await fsp.rm(targetDir, { recursive: true, force: true });
     await fsp.rename(stagingDir, targetDir);
     return {
@@ -3209,6 +3341,7 @@ async function importPointCloudFilesBaseMap(config, params) {
       layers: layerDescriptors.map((layer) => layer.id),
       coordinate,
       imageOverlay,
+      stitchPlan: params.stitchPlan || null,
       bounds: parsed.bounds,
       sizeBytes: await getDirectorySize(targetDir),
     };
@@ -3709,6 +3842,7 @@ module.exports = {
   refreshDataPackageAnalysis,
   listDataPackages,
   importDataPackageBaseMap,
+  importMergedDataPackagesBaseMap,
   importBaseMapZip,
   importPointCloudBaseMap,
   importPointCloudFilesBaseMap,

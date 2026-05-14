@@ -240,6 +240,17 @@ class FileService {
         });
     }
 
+    async startMergedDataPackagesBaseMapJob(packageIds: string[], mapName: string, overwrite: boolean = false) {
+        return this.requestJson('/runtime/import-data-packages-merged-base-map-job', {
+            method: 'POST',
+            body: JSON.stringify({
+                packageIds,
+                mapName,
+                overwrite,
+            }),
+        });
+    }
+
     async getRuntimeJob(jobId: string, includeLogs: boolean = false) {
         const query = includeLogs ? '?logs=true&tail=200' : '';
         return this.requestJson(`/runtime/jobs/${encodeURIComponent(jobId)}${query}`);

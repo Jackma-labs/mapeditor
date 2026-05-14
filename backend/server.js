@@ -860,6 +860,34 @@ app.post('/runtime/import-data-package-base-map-job', async (req, res) => {
   }
 });
 
+app.post('/runtime/import-data-packages-merged-base-map-job', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const packageIds = Array.isArray(body.packageIds) ? body.packageIds : [];
+    const job = startRuntimeJob('import-data-packages-merged-base-map', () =>
+      runtime.importMergedDataPackagesBaseMap(config, body),
+      {
+        packageIds,
+        mapName: body.mapName || '',
+        overwrite: body.overwrite === true,
+      }
+    );
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    log('Start merged data package import job failed:', error);
+    res.status(500).json({
+      code: 15059,
+      message: error.message,
+    });
+  }
+});
+
 app.get('/runtime/jobs', (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
   res.json({

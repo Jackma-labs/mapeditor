@@ -26,6 +26,8 @@ const createFallbackName = () => {
     )}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 };
 
+const createMergedMapName = () => `merged_${createFallbackName().replace(/^capture_/, '')}`;
+
 const buildPackageName = (files: File[]) => {
     if (files.length === 0) {
         return createFallbackName();
@@ -173,6 +175,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [jobText, setJobText] = useState('');
+    const [selectedPackageIds, setSelectedPackageIds] = useState<React.Key[]>([]);
 
     const loadPackages = useCallback(async () => {
         setLoading(true);
@@ -352,6 +355,65 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         });
     };
 
+    const handleGenerateMergedBaseMap = () => {
+        const packageIds = selectedPackageIds.map(String);
+        const selectedPackages = packages.filter((item) => packageIds.includes(item.packageId));
+        if (selectedPackages.length < 2) {
+            message.warning('请至少选择两个采图包');
+            return;
+        }
+        const mapName = sanitizeName(createMergedMapName()) || createFallbackName();
+        Modal.confirm({
+            title: '合并生成点云底图',
+            width: 760,
+            okText: '生成',
+            cancelText: '取消',
+            content: (
+                <pre className="asset-manager-detail">
+                    {[
+                        `采图包: ${selectedPackages.length} 个`,
+                        `底图名: ${mapName}`,
+                        '',
+                        ...selectedPackages.map(
+                            (item) =>
+                                `- ${item.defaultMapName || item.packageId}: 点云 ${formatCount(
+                                    item.summary?.pointCloudFiles,
+                                )}, RTK ${formatCount(item.summary?.trajectory?.poseFileCount)}`,
+                        ),
+                        '',
+                        '系统会按资产预检中的 RTK/轨迹锚点生成拼接计划，并把所有点云合成为一张可标注底图。',
+                    ].join('\n')}
+                </pre>
+            ),
+            onOk: async () => {
+                setUploading(true);
+                setJobText(`正在提交多包合并底图任务：${mapName}`);
+                try {
+                    const response = await FileService.startMergedDataPackagesBaseMapJob(packageIds, mapName, true);
+                    if (response?.code !== 0) {
+                        throw new Error(response?.message || '提交多包合并底图任务失败');
+                    }
+                    const jobId = response?.data?.job?.id;
+                    if (!jobId) {
+                        throw new Error('后台任务没有返回 jobId');
+                    }
+                    const job = await waitForRuntimeJob(jobId, `正在合并生成底图 ${mapName}`);
+                    await refreshAll();
+                    message.success(`合并底图 ${job.result?.mapName || mapName} 生成完成`);
+                } catch (error) {
+                    Modal.error({
+                        title: '合并底图生成失败',
+                        content: error instanceof Error ? error.message : '合并底图生成失败',
+                    });
+                    throw error;
+                } finally {
+                    setUploading(false);
+                    setJobText('');
+                }
+            },
+        });
+    };
+
     const handleOpenBaseMap = async (packageInfo: any) => {
         const mapName = sanitizeName(packageInfo.defaultMapName || packageInfo.packageId) || createFallbackName();
         try {
@@ -427,6 +489,11 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             setJobText('');
         }
     }, [open, refreshAll]);
+
+    useEffect(() => {
+        const packageIds = new Set(packages.map((item) => item.packageId));
+        setSelectedPackageIds((current) => current.filter((packageId) => packageIds.has(String(packageId))));
+    }, [packages]);
 
     const columns = [
         {
@@ -529,6 +596,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     <Button onClick={refreshAll} disabled={loading || uploading}>
                         刷新
                     </Button>
+                    <Button onClick={handleGenerateMergedBaseMap} disabled={selectedPackageIds.length < 2 || uploading}>
+                        合并生成底图
+                    </Button>
                     <Button type="primary" onClick={() => uploadInputRef.current?.click()} loading={uploading}>
                         上传/预检采图包
                     </Button>
@@ -556,6 +626,13 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             )}
             <Table
                 rowKey="packageId"
+                rowSelection={{
+                    selectedRowKeys: selectedPackageIds,
+                    onChange: (keys) => setSelectedPackageIds(keys),
+                    getCheckboxProps: (record: any) => ({
+                        disabled: uploading || Number(record.summary?.pointCloudFiles || 0) <= 0,
+                    }),
+                }}
                 columns={columns}
                 dataSource={packages}
                 loading={loading}
