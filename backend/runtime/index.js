@@ -2087,6 +2087,200 @@ function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
   return info;
 }
 
+function classifyTrajectorySource(sourceName) {
+  const normalized = String(sourceName || '').replace(/\\/g, '/').toLowerCase();
+  if (normalized.includes('gnss')) return 'gnss_lonlat';
+  if (normalized.includes('camerapos') || normalized.includes('camera')) return 'camera_pose';
+  if (normalized.includes('pos_enh')) return 'enhanced_pose';
+  if (normalized.includes('xyzqwxyz')) return 'pose_quaternion';
+  if (/(^|[/_-])pos([/_\-.]|$)|test_pos/.test(normalized)) return 'vehicle_pose';
+  return null;
+}
+
+function gpsWeekSecondsToIso(gpsWeek, secondsOfWeek) {
+  if (!Number.isFinite(gpsWeek) || !Number.isFinite(secondsOfWeek)) {
+    return null;
+  }
+  const gpsEpochMs = Date.UTC(1980, 0, 6, 0, 0, 0);
+  const gpsUtcLeapSeconds = 18;
+  const gpsMs = gpsEpochMs + gpsWeek * 7 * 24 * 60 * 60 * 1000 + secondsOfWeek * 1000;
+  return new Date(gpsMs - gpsUtcLeapSeconds * 1000).toISOString();
+}
+
+function parseTrajectoryMetadataBuffer(buffer, sourceName, sizeBytes = null) {
+  const sourceKind = classifyTrajectorySource(sourceName);
+  if (!sourceKind) {
+    return null;
+  }
+  const text = buffer.toString('utf8').replace(/\0/g, ' ');
+  const lines = text.split(/\r?\n/);
+  const samples = [];
+  const bounds = {
+    minX: Infinity,
+    minY: Infinity,
+    minZ: Infinity,
+    maxX: -Infinity,
+    maxY: -Infinity,
+    maxZ: -Infinity,
+  };
+  const gpsWeekRange = { min: Infinity, max: -Infinity };
+  const secondsOfWeekRange = { min: Infinity, max: -Infinity };
+  const fixStatusCounts = {};
+  const lowerName = String(sourceName || '').toLowerCase();
+  let parsedSampleCount = 0;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+    const numericText = line.replace(/^\S+\.(?:jpe?g|png|webp|tiff?)\s+/i, '');
+    const nums = (numericText.match(/[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/g) || [])
+      .map(Number)
+      .filter(Number.isFinite);
+    if (nums.length < 5) {
+      continue;
+    }
+    const offset = lowerName.includes('camerapos') ? 1 : 0;
+    const gpsWeek = nums[offset];
+    const secondsOfWeek = nums[offset + 1];
+    const x = nums[offset + 2];
+    const y = nums[offset + 3];
+    const z = nums[offset + 4];
+    if (
+      !Number.isFinite(gpsWeek) ||
+      !Number.isFinite(secondsOfWeek) ||
+      gpsWeek < 1000 ||
+      gpsWeek > 4000 ||
+      secondsOfWeek < 0 ||
+      secondsOfWeek > 604800 ||
+      !Number.isFinite(x) ||
+      !Number.isFinite(y) ||
+      !Number.isFinite(z)
+    ) {
+      continue;
+    }
+    parsedSampleCount += 1;
+    bounds.minX = Math.min(bounds.minX, x);
+    bounds.minY = Math.min(bounds.minY, y);
+    bounds.minZ = Math.min(bounds.minZ, z);
+    bounds.maxX = Math.max(bounds.maxX, x);
+    bounds.maxY = Math.max(bounds.maxY, y);
+    bounds.maxZ = Math.max(bounds.maxZ, z);
+    gpsWeekRange.min = Math.min(gpsWeekRange.min, gpsWeek);
+    gpsWeekRange.max = Math.max(gpsWeekRange.max, gpsWeek);
+    secondsOfWeekRange.min = Math.min(secondsOfWeekRange.min, secondsOfWeek);
+    secondsOfWeekRange.max = Math.max(secondsOfWeekRange.max, secondsOfWeek);
+    if (sourceKind === 'gnss_lonlat' && nums.length >= offset + 15) {
+      const status = String(nums[nums.length - 1]);
+      fixStatusCounts[status] = (fixStatusCounts[status] || 0) + 1;
+    }
+    if (samples.length < 3) {
+      samples.push({
+        gpsWeek,
+        secondsOfWeek,
+        utcIso: gpsWeekSecondsToIso(gpsWeek, secondsOfWeek),
+        x,
+        y,
+        z,
+      });
+    }
+  }
+  if (parsedSampleCount === 0) {
+    return {
+      source: sourceName,
+      kind: sourceKind,
+      sizeBytes,
+      sampleCount: 0,
+      message: '识别为定位/姿态元数据，但未在文件前段解析到有效轨迹样本。',
+    };
+  }
+  const coordinate = classifyCoordinateSystem(bounds);
+  if (
+    Math.max(Math.abs(bounds.minX), Math.abs(bounds.maxX), Math.abs(bounds.minY), Math.abs(bounds.maxY), Math.abs(bounds.minZ), Math.abs(bounds.maxZ)) >
+      1000000 &&
+    Math.abs(
+      Math.sqrt(
+        ((bounds.minX + bounds.maxX) / 2) ** 2 +
+          ((bounds.minY + bounds.maxY) / 2) ** 2 +
+          ((bounds.minZ + bounds.maxZ) / 2) ** 2,
+      ) - 6371000,
+    ) < 500000
+  ) {
+    coordinate.kind = 'ecef_xyz';
+    coordinate.message = '轨迹坐标更像地心地固 ECEF XYZ，需要转换到地图投影坐标后才能直接用于拼图。';
+  }
+  return {
+    source: sourceName,
+    kind: sourceKind,
+    sizeBytes,
+    parsedBytes: buffer.length,
+    truncated: Boolean(sizeBytes && buffer.length < sizeBytes),
+    lineCount: lines.length,
+    sampleCount: parsedSampleCount,
+    gpsWeekRange,
+    secondsOfWeekRange,
+    utcRange: {
+      start: gpsWeekSecondsToIso(gpsWeekRange.min, secondsOfWeekRange.min),
+      end: gpsWeekSecondsToIso(gpsWeekRange.max, secondsOfWeekRange.max),
+    },
+    bounds,
+    coordinate,
+    firstSamples: samples,
+    fixStatusCounts,
+  };
+}
+
+function summarizeTrajectoryAnalyses(trajectories) {
+  const allTrajectories = trajectories || [];
+  const parsed = allTrajectories.filter((item) => item && item.sampleCount > 0);
+  if (parsed.length === 0) {
+    return {
+      fileCount: allTrajectories.length,
+      poseFileCount: 0,
+      sampleCount: 0,
+      coordinateKinds: [],
+      message: '未解析到可用 RTK/GNSS/姿态轨迹。',
+    };
+  }
+  const priority = {
+    enhanced_pose: 0,
+    gnss_lonlat: 1,
+    vehicle_pose: 2,
+    pose_quaternion: 3,
+    camera_pose: 4,
+  };
+  const preferred = [...parsed].sort((left, right) => {
+    const leftRank = priority[left.kind] ?? 99;
+    const rightRank = priority[right.kind] ?? 99;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return (right.sampleCount || 0) - (left.sampleCount || 0);
+  })[0];
+  const coordinateKinds = Array.from(new Set(parsed.map((item) => item.coordinate?.kind).filter(Boolean)));
+  return {
+    fileCount: allTrajectories.length,
+    poseFileCount: parsed.length,
+    sampleCount: parsed.reduce((total, item) => total + (item.sampleCount || 0), 0),
+    coordinateKinds,
+    preferredSource: preferred.source,
+    preferredKind: preferred.kind,
+    preferredCoordinateKind: preferred.coordinate?.kind || null,
+    bounds: preferred.bounds || null,
+    utcRange: preferred.utcRange || null,
+    sources: parsed.slice(0, 12).map((item) => ({
+      source: item.source,
+      kind: item.kind,
+      sampleCount: item.sampleCount,
+      coordinateKind: item.coordinate?.kind || null,
+      utcRange: item.utcRange || null,
+    })),
+    message:
+      preferred.coordinate?.kind === 'projected_meters_or_large_local' ||
+      preferred.coordinate?.kind === 'lonlat_range_compatible'
+        ? '已解析到可作为多包拼合先验的定位轨迹。'
+        : '已解析到轨迹，但需要坐标转换或控制点后才能作为拼图基准。',
+  };
+}
+
 function summarizePackageAnalysis(analysis) {
   const pointCloudsForCount = selectPreferredPointCloudAnalyses(analysis.pointClouds);
   const pointCount = pointCloudsForCount.reduce((total, item) => total + (item.pointCount || 0), 0);
@@ -2094,6 +2288,7 @@ function summarizePackageAnalysis(analysis) {
   const filenameGpsTimeImages = analysis.images.filter((image) => image.filenameGpsTime).length;
   const crsKnown = analysis.pointClouds.some((item) => item.hasCrsVlr);
   const coordinateKinds = Array.from(new Set(analysis.pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
+  const trajectory = summarizeTrajectoryAnalyses(analysis.trajectories || []);
   const recommendations = [];
   if (!analysis.counts.pointCloudFiles) {
     recommendations.push('没有发现 LAS/PCD 点云文件，不能生成底图。');
@@ -2114,12 +2309,16 @@ function summarizePackageAnalysis(analysis) {
   if (coordinateKinds.includes('projected_meters_or_large_local')) {
     recommendations.push('当前坐标不是经纬度，数值更像米制投影坐标或大范围局部坐标；如需跨批次对齐，需要确认 EPSG/投影或转换参数。');
   }
+  if (trajectory.poseFileCount > 0) {
+    recommendations.push(`已解析 ${trajectory.poseFileCount} 个定位/姿态文件；多包拼图应优先使用 ${trajectory.preferredSource}。`);
+  }
   return {
     pointCount,
     imageCount: analysis.counts.imageFiles,
     usableImagePoseCount: usableImages,
     crsKnown,
     coordinateKinds,
+    trajectory,
     recommendations,
   };
 }
@@ -2135,6 +2334,8 @@ function summarizeCombinedPackageAnalysis(analyses) {
   };
   const pointClouds = analyses.flatMap((item) => item.pointClouds || []);
   const images = analyses.flatMap((item) => item.images || []);
+  const trajectories = analyses.flatMap((item) => item.trajectories || []);
+  const trajectory = summarizeTrajectoryAnalyses(trajectories);
   const filenameGpsTimeImages = images.filter((image) => image.filenameGpsTime).length;
   const coordinateKinds = Array.from(new Set(pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
   const recommendations = [];
@@ -2162,10 +2363,14 @@ function summarizeCombinedPackageAnalysis(analyses) {
   if (coordinateKinds.includes('projected_meters_or_large_local')) {
     addRecommendation('当前坐标不是经纬度，数值更像米制投影坐标或大范围局部坐标；如需跨批次对齐，需要确认 EPSG/投影或转换参数。');
   }
+  if (trajectory.poseFileCount > 0) {
+    addRecommendation(`已解析 ${trajectory.poseFileCount} 个定位/姿态文件；多包拼图应优先使用 ${trajectory.preferredSource}。`);
+  }
   const pointCloudsForCount = selectPreferredPointCloudAnalyses(pointClouds);
   return {
     ...counts,
     pointCount: pointCloudsForCount.reduce((total, item) => total + (item.pointCount || 0), 0),
+    trajectory,
     recommendations,
   };
 }
@@ -2209,6 +2414,7 @@ async function analyzeZipDataPackage(filePath, originalName) {
     pointClouds: [],
     images: [],
     metadataFiles: [],
+    trajectories: [],
   };
   for (const entry of entries) {
     const ext = path.extname(entry.path).toLowerCase();
@@ -2235,6 +2441,13 @@ async function analyzeZipDataPackage(filePath, originalName) {
       analysis.counts.metadataFiles += 1;
       if (analysis.metadataFiles.length < 20) {
         analysis.metadataFiles.push(entry.path);
+      }
+      if (analysis.trajectories.length < 16) {
+        const prefix = await readZipEntryPrefix(entry);
+        const trajectory = parseTrajectoryMetadataBuffer(prefix, entry.path, getZipEntrySize(entry));
+        if (trajectory) {
+          analysis.trajectories.push(trajectory);
+        }
       }
     }
   }
@@ -2264,6 +2477,7 @@ async function analyzeSingleDataFile(filePath, originalName) {
     pointClouds: [],
     images: [],
     metadataFiles: [],
+    trajectories: [],
   };
   if (ext === '.las') {
     analysis.pointClouds.push(parseLasHeaderBuffer(prefix, originalName, stat.size));
@@ -2273,6 +2487,10 @@ async function analyzeSingleDataFile(filePath, originalName) {
     analysis.images.push(parseJpegMetadataBuffer(prefix, originalName, stat.size));
   } else if (isKnownMetadataName(originalName)) {
     analysis.metadataFiles.push(originalName);
+    const trajectory = parseTrajectoryMetadataBuffer(prefix, originalName, stat.size);
+    if (trajectory) {
+      analysis.trajectories.push(trajectory);
+    }
   }
   analysis.summary = summarizePackageAnalysis(analysis);
   return analysis;
@@ -2313,6 +2531,39 @@ async function analyzeDataPackage(config, params) {
     await fsp.rm(targetDir, { recursive: true, force: true });
     throw error;
   }
+}
+
+async function refreshDataPackageAnalysis(config, params) {
+  const packageId = validatePackageId(params.packageId);
+  const packageDir = await resolveDataPackageDir(config, packageId);
+  const uploadDir = path.join(packageDir, 'uploads');
+  if (!(await pathExists(uploadDir))) {
+    throw new Error(`data package uploads not found: ${packageId}`);
+  }
+  const existing = await readAnalysisFile(packageDir).catch(() => null);
+  const entries = await fsp.readdir(uploadDir, { withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => ({
+      path: path.join(uploadDir, entry.name),
+      originalName: entry.name.replace(/^\d+-/, ''),
+    }));
+  if (files.length === 0) {
+    throw new Error(`data package has no uploaded files: ${packageId}`);
+  }
+  const analyses = [];
+  for (const file of files) {
+    analyses.push(await analyzeSingleDataFile(file.path, file.originalName));
+  }
+  const combined = {
+    packageId,
+    path: packageDir,
+    uploadedFiles: existing?.uploadedFiles || files.map((file) => file.originalName),
+    analyses,
+    summary: summarizeCombinedPackageAnalysis(analyses),
+  };
+  await fsp.writeFile(path.join(packageDir, 'analysis.json'), JSON.stringify(combined, null, 2), 'utf8');
+  return combined;
 }
 
 function getImportPackageRoot(config) {
@@ -3183,6 +3434,7 @@ module.exports = {
   preflightEdgeDeploy,
   listReleasedMaps,
   analyzeDataPackage,
+  refreshDataPackageAnalysis,
   listDataPackages,
   importDataPackageBaseMap,
   importBaseMapZip,

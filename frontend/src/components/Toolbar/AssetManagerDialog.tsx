@@ -68,6 +68,13 @@ const formatDateTime = (value: string) => {
     return date.toLocaleString();
 };
 
+const formatBounds = (bounds: any) => {
+    if (!bounds) {
+        return '';
+    }
+    return `X ${bounds.minX} ~ ${bounds.maxX}, Y ${bounds.minY} ~ ${bounds.maxY}`;
+};
+
 const getJobStatusColor = (status: string) => {
     if (status === 'succeeded') {
         return 'green';
@@ -86,6 +93,7 @@ const formatPackageAnalysis = (packageInfo: any) => {
     const analyses = packageInfo?.analyses || [];
     const pointCloud = analyses.flatMap((item: any) => item.pointClouds || [])[0];
     const image = analyses.flatMap((item: any) => item.images || [])[0];
+    const trajectory = summary.trajectory || {};
     const lines = [
         `资产 ID: ${packageInfo?.packageId || ''}`,
         `存储路径: ${packageInfo?.path || ''}`,
@@ -123,6 +131,31 @@ const formatPackageAnalysis = (packageInfo: any) => {
                 `文件名 GPS 时间: week ${image.filenameGpsTime.gpsWeek}, SOW ${image.filenameGpsTime.secondsOfWeek}`,
             );
             lines.push(`折算 UTC: ${image.filenameGpsTime.utcIso || ''}`);
+        }
+    }
+    if (trajectory.poseFileCount > 0) {
+        lines.push('');
+        lines.push(`RTK/轨迹文件: ${formatCount(trajectory.poseFileCount)} 个`);
+        lines.push(`轨迹样本: ${formatCount(trajectory.sampleCount)}`);
+        lines.push(`拼图优先源: ${trajectory.preferredSource || ''}`);
+        lines.push(`轨迹类型: ${trajectory.preferredKind || ''}`);
+        lines.push(`轨迹坐标: ${trajectory.preferredCoordinateKind || ''}`);
+        if (trajectory.utcRange?.start || trajectory.utcRange?.end) {
+            lines.push(`时间范围: ${trajectory.utcRange?.start || ''} ~ ${trajectory.utcRange?.end || ''}`);
+        }
+        if (trajectory.bounds) {
+            lines.push(`轨迹范围: ${formatBounds(trajectory.bounds)}`);
+        }
+        if (trajectory.message) {
+            lines.push(trajectory.message);
+        }
+        if (trajectory.sources?.length) {
+            lines.push('轨迹源:');
+            trajectory.sources.forEach((item: any) => {
+                lines.push(
+                    `- ${item.source}: ${item.kind}, ${formatCount(item.sampleCount)} 样本, ${item.coordinateKind || ''}`,
+                );
+            });
         }
     }
     if (summary.recommendations?.length) {
@@ -231,6 +264,39 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             Modal.error({
                 title: '上传或预检失败',
                 content: error instanceof Error ? error.message : '上传或预检失败',
+            });
+        } finally {
+            setUploading(false);
+            setJobText('');
+        }
+    };
+
+    const handleRefreshAnalysis = async (packageInfo: any) => {
+        setUploading(true);
+        setJobText(`正在重跑预检：${packageInfo.defaultMapName || packageInfo.packageId}`);
+        try {
+            const response = await FileService.startRefreshDataPackageAnalysisJob(packageInfo.packageId);
+            if (response?.code !== 0) {
+                throw new Error(response?.message || '提交重跑预检任务失败');
+            }
+            const jobId = response?.data?.job?.id;
+            if (!jobId) {
+                throw new Error('后台任务没有返回 jobId');
+            }
+            const job = await waitForRuntimeJob(
+                jobId,
+                `正在重跑预检 ${packageInfo.defaultMapName || packageInfo.packageId}`,
+            );
+            await refreshAll();
+            Modal.info({
+                title: '预检已更新',
+                width: 860,
+                content: <pre className="asset-manager-detail">{formatPackageAnalysis(job.result)}</pre>,
+            });
+        } catch (error) {
+            Modal.error({
+                title: '重跑预检失败',
+                content: error instanceof Error ? error.message : '重跑预检失败',
             });
         } finally {
             setUploading(false);
@@ -394,6 +460,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                         <span>{`LAS ${formatCount(summary.lasFiles)}`}</span>
                         <span>{`PCD ${formatCount(summary.pcdFiles)}`}</span>
                         <span>{`Image ${formatCount(summary.imageFiles)}`}</span>
+                        {Number(summary.trajectory?.poseFileCount || 0) > 0 && (
+                            <span>{`RTK ${formatCount(summary.trajectory.poseFileCount)}`}</span>
+                        )}
                     </div>
                 );
             },
@@ -419,11 +488,14 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '操作',
             key: 'actions',
-            width: 220,
+            width: 300,
             render: (_value: string, record: any) => (
                 <Space size={8}>
                     <Button size="small" onClick={() => showDetails(record)}>
                         详情
+                    </Button>
+                    <Button size="small" onClick={() => handleRefreshAnalysis(record)} disabled={uploading}>
+                        重跑预检
                     </Button>
                     <Button size="small" onClick={() => handleGenerateBaseMap(record)} disabled={uploading}>
                         生成底图

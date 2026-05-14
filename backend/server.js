@@ -778,6 +778,31 @@ app.get('/runtime/data-packages', async (_req, res) => {
   }
 });
 
+app.post('/runtime/refresh-data-package-analysis-job', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const job = startRuntimeJob('refresh-data-package-analysis', () =>
+      runtime.refreshDataPackageAnalysis(config, body),
+      {
+        packageId: body.packageId || '',
+      }
+    );
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    log('Start refresh data package analysis job failed:', error);
+    res.status(500).json({
+      code: 15058,
+      message: error.message,
+    });
+  }
+});
+
 app.post('/runtime/import-data-package-base-map', async (req, res) => {
   try {
     const result = await runtime.importDataPackageBaseMap(config, req.body || {});

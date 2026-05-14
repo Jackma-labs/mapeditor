@@ -209,6 +209,15 @@ class FileService {
         return this.requestJson('/runtime/data-packages');
     }
 
+    async startRefreshDataPackageAnalysisJob(packageId: string) {
+        return this.requestJson('/runtime/refresh-data-package-analysis-job', {
+            method: 'POST',
+            body: JSON.stringify({
+                packageId,
+            }),
+        });
+    }
+
     async importDataPackageBaseMap(packageId: string, mapName: string, overwrite: boolean = false) {
         return this.requestJson('/runtime/import-data-package-base-map', {
             method: 'POST',
