@@ -70,6 +70,9 @@ const formatDateTime = (value: string) => {
     return date.toLocaleString();
 };
 
+const getPackageTitle = (packageInfo: any) =>
+    packageInfo?.displayName || packageInfo?.defaultMapName || packageInfo?.packageId || '';
+
 const formatBounds = (bounds: any) => {
     if (!bounds) {
         return '';
@@ -176,6 +179,59 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     const [uploading, setUploading] = useState(false);
     const [jobText, setJobText] = useState('');
     const [selectedPackageIds, setSelectedPackageIds] = useState<React.Key[]>([]);
+    const selectedPackageIdSet = new Set(selectedPackageIds.map(String));
+    const selectedPackages = packages.filter((item) => selectedPackageIdSet.has(item.packageId));
+    const primaryPackage = selectedPackages[0];
+    const assetStats = packages.reduce(
+        (stats, item) => {
+            const summary = item.summary || {};
+            return {
+                totalSizeBytes: stats.totalSizeBytes + Number(item.sizeBytes || 0),
+                pointCloudAssets: stats.pointCloudAssets + (Number(summary.pointCloudFiles || 0) > 0 ? 1 : 0),
+                rtkAssets: stats.rtkAssets + (Number(summary.trajectory?.poseFileCount || 0) > 0 ? 1 : 0),
+            };
+        },
+        { totalSizeBytes: 0, pointCloudAssets: 0, rtkAssets: 0 },
+    );
+    const selectedStats = selectedPackages.reduce(
+        (stats, item) => {
+            const summary = item.summary || {};
+            return {
+                totalSizeBytes: stats.totalSizeBytes + Number(item.sizeBytes || 0),
+                pointCount: stats.pointCount + Number(summary.pointCount || 0),
+                pointCloudFiles: stats.pointCloudFiles + Number(summary.pointCloudFiles || 0),
+                imageFiles: stats.imageFiles + Number(summary.imageFiles || 0),
+                rtkAssets: stats.rtkAssets + (Number(summary.trajectory?.poseFileCount || 0) > 0 ? 1 : 0),
+            };
+        },
+        { totalSizeBytes: 0, pointCount: 0, pointCloudFiles: 0, imageFiles: 0, rtkAssets: 0 },
+    );
+    const assetCountText = `${formatCount(packages.length)} 个资产包`;
+    const assetSizeText = `${formatBytes(assetStats.totalSizeBytes)} 原始数据`;
+    const selectedCountText = `${formatCount(selectedPackages.length)} 个已选择`;
+    const assetAvailabilityText = `可用 ${formatCount(assetStats.pointCloudAssets)} 个，含 RTK ${formatCount(
+        assetStats.rtkAssets,
+    )} 个`;
+    const selectedPointText = `${formatCount(selectedStats.pointCount)} 估算点数`;
+    const selectedSummaryText = `点云文件 ${formatCount(selectedStats.pointCloudFiles)}，估算点数 ${formatCount(
+        selectedStats.pointCount,
+    )}，图片 ${formatCount(selectedStats.imageFiles)}，含 RTK 资产 ${formatCount(
+        selectedStats.rtkAssets,
+    )}，大小 ${formatBytes(selectedStats.totalSizeBytes)}`;
+    const generationModeText = (() => {
+        if (selectedPackages.length > 1) {
+            return '多包拼图';
+        }
+        if (selectedPackages.length === 1) {
+            return '单包底图';
+        }
+        return '等待选择';
+    })();
+    const openStageText = selectedPackages.length === 1 ? '打开当前底图' : '单选后打开';
+    const selectionPanelClassName =
+        selectedPackages.length > 0 ? 'asset-selection-panel' : 'asset-selection-panel is-empty';
+    const emptySelectionText =
+        '单选用于生成并打开一张底图，多选用于按 RTK/轨迹信息合并拼图。缺点云资产只保留管理能力，不进入底图生产。';
 
     const loadPackages = useCallback(async () => {
         setLoading(true);
@@ -357,8 +413,8 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
 
     const handleGenerateMergedBaseMap = () => {
         const packageIds = selectedPackageIds.map(String);
-        const selectedPackages = packages.filter((item) => packageIds.includes(item.packageId));
-        if (selectedPackages.length < 2) {
+        const packagesForMerge = packages.filter((item) => packageIds.includes(item.packageId));
+        if (packagesForMerge.length < 2) {
             message.warning('请至少选择两个采图包');
             return;
         }
@@ -371,10 +427,10 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             content: (
                 <pre className="asset-manager-detail">
                     {[
-                        `采图包: ${selectedPackages.length} 个`,
+                        `采图包: ${packagesForMerge.length} 个`,
                         `底图名: ${mapName}`,
                         '',
-                        ...selectedPackages.map(
+                        ...packagesForMerge.map(
                             (item) =>
                                 `- ${item.defaultMapName || item.packageId}: 点云 ${formatCount(
                                     item.summary?.pointCloudFiles,
@@ -574,6 +630,34 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
     };
 
+    const handleGenerateSelectedBaseMap = () => {
+        if (selectedPackages.length > 1) {
+            handleGenerateMergedBaseMap();
+            return;
+        }
+        if (primaryPackage) {
+            handleGenerateBaseMap(primaryPackage);
+        }
+    };
+
+    const handleOpenSelectedBaseMap = () => {
+        if (primaryPackage) {
+            handleOpenBaseMap(primaryPackage);
+        }
+    };
+
+    const handleRefreshSelectedAnalysis = () => {
+        if (primaryPackage) {
+            handleRefreshAnalysis(primaryPackage);
+        }
+    };
+
+    const handleShowSelectedDetails = () => {
+        if (primaryPackage) {
+            showDetails(primaryPackage);
+        }
+    };
+
     useEffect(() => {
         if (open) {
             refreshAll();
@@ -594,7 +678,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             key: 'asset',
             render: (_value: string, record: any) => (
                 <div className="asset-manager-name-cell">
-                    <div className="asset-manager-name">{record.defaultMapName || record.packageId}</div>
+                    <div className="asset-manager-name">{getPackageTitle(record)}</div>
                     <div className="asset-manager-id">{record.packageId}</div>
                 </div>
             ),
@@ -647,7 +731,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '操作',
             key: 'actions',
-            width: 420,
+            width: 220,
             render: (_value: string, record: any) => (
                 <Space size={8}>
                     <Button size="small" onClick={() => showDetails(record)}>
@@ -655,15 +739,6 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </Button>
                     <Button size="small" onClick={() => handleRenamePackage(record)} disabled={uploading}>
                         重命名
-                    </Button>
-                    <Button size="small" onClick={() => handleRefreshAnalysis(record)} disabled={uploading}>
-                        重跑预检
-                    </Button>
-                    <Button size="small" onClick={() => handleGenerateBaseMap(record)} disabled={uploading}>
-                        生成底图
-                    </Button>
-                    <Button size="small" type="primary" onClick={() => handleOpenBaseMap(record)}>
-                        打开
                     </Button>
                     <Button size="small" danger onClick={() => handleDeletePackage(record)} disabled={uploading}>
                         删除
@@ -677,7 +752,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         <Modal
             {...rest}
             open={open}
-            title="采图包资产"
+            title="采图包工作台"
             width={1240}
             footer={null}
             onCancel={onCancel}
@@ -685,22 +760,110 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         >
             <div className="asset-manager-toolbar">
                 <div>
-                    <div className="asset-manager-title">原始采图包资产管理</div>
+                    <div className="asset-manager-title">从原始采图包到可标注底图</div>
                     <div className="asset-manager-subtitle">
-                        上传 ZIP 或多文件包，预检 LAS/PCD/Image，再生成可标注点云底图。
+                        上传原始采图数据，预检点云与 RTK，选择资产生成或合并底图，然后进入标注。
                     </div>
                 </div>
                 <Space>
                     <Button onClick={refreshAll} disabled={loading || uploading}>
                         刷新
                     </Button>
-                    <Button onClick={handleGenerateMergedBaseMap} disabled={selectedPackageIds.length < 2 || uploading}>
-                        合并生成底图
-                    </Button>
                     <Button type="primary" onClick={() => uploadInputRef.current?.click()} loading={uploading}>
-                        上传/预检采图包
+                        上传采图包
                     </Button>
                 </Space>
+            </div>
+            <div className="asset-workflow">
+                <div className="asset-workflow-card">
+                    <div className="asset-workflow-step">1 数据导入</div>
+                    <div className="asset-workflow-title">{assetCountText}</div>
+                    <div className="asset-workflow-desc">{assetSizeText}</div>
+                    <Button
+                        size="small"
+                        type="primary"
+                        onClick={() => uploadInputRef.current?.click()}
+                        loading={uploading}
+                    >
+                        上传/预检
+                    </Button>
+                </div>
+                <div className="asset-workflow-card">
+                    <div className="asset-workflow-step">2 资产选择</div>
+                    <div className="asset-workflow-title">{selectedCountText}</div>
+                    <div className="asset-workflow-desc">{assetAvailabilityText}</div>
+                    <Button
+                        size="small"
+                        onClick={() => setSelectedPackageIds([])}
+                        disabled={selectedPackages.length === 0}
+                    >
+                        清除选择
+                    </Button>
+                </div>
+                <div className="asset-workflow-card">
+                    <div className="asset-workflow-step">3 底图生成</div>
+                    <div className="asset-workflow-title">{generationModeText}</div>
+                    <div className="asset-workflow-desc">{selectedPointText}</div>
+                    <Button
+                        size="small"
+                        onClick={handleGenerateSelectedBaseMap}
+                        disabled={selectedPackages.length === 0 || uploading}
+                    >
+                        {selectedPackages.length > 1 ? '合并生成' : '生成底图'}
+                    </Button>
+                </div>
+                <div className="asset-workflow-card">
+                    <div className="asset-workflow-step">4 打开标注</div>
+                    <div className="asset-workflow-title">{openStageText}</div>
+                    <div className="asset-workflow-desc">进入地图编辑画布</div>
+                    <Button
+                        size="small"
+                        type="primary"
+                        onClick={handleOpenSelectedBaseMap}
+                        disabled={selectedPackages.length !== 1}
+                    >
+                        打开底图
+                    </Button>
+                </div>
+            </div>
+            <div className={selectionPanelClassName}>
+                {selectedPackages.length === 0 ? (
+                    <div>
+                        <div className="asset-selection-title">先选择一个或多个可用资产</div>
+                        <div className="asset-selection-meta">{emptySelectionText}</div>
+                    </div>
+                ) : (
+                    <>
+                        <div className="asset-selection-main">
+                            <div className="asset-selection-title">
+                                {selectedPackages.length === 1
+                                    ? getPackageTitle(primaryPackage)
+                                    : `已选择 ${selectedPackages.length} 个资产，准备合并拼图`}
+                            </div>
+                            <div className="asset-selection-meta">{selectedSummaryText}</div>
+                        </div>
+                        <Space className="asset-selection-actions">
+                            {selectedPackages.length === 1 && (
+                                <>
+                                    <Button onClick={handleRefreshSelectedAnalysis} disabled={uploading}>
+                                        重跑预检
+                                    </Button>
+                                    <Button onClick={handleShowSelectedDetails}>详情</Button>
+                                </>
+                            )}
+                            <Button onClick={handleGenerateSelectedBaseMap} disabled={uploading}>
+                                {selectedPackages.length > 1 ? '合并生成底图' : '生成底图'}
+                            </Button>
+                            <Button
+                                type="primary"
+                                onClick={handleOpenSelectedBaseMap}
+                                disabled={selectedPackages.length !== 1}
+                            >
+                                打开底图
+                            </Button>
+                        </Space>
+                    </>
+                )}
             </div>
             {jobText && <div className="asset-manager-job">{jobText}</div>}
             {jobs.length > 0 && (

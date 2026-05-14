@@ -486,6 +486,80 @@
         font-size: 12px;
     }
 
+    .asset-workflow {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 12px;
+    }
+
+    .asset-workflow-card {
+        min-height: 118px;
+        padding: 12px;
+        border: 1px solid #383f51;
+        border-radius: 6px;
+        background: #1b202b;
+    }
+
+    .asset-workflow-step {
+        margin-bottom: 8px;
+        color: #7f8da3;
+        font-size: 12px;
+    }
+
+    .asset-workflow-title {
+        margin-bottom: 4px;
+        color: #ffffff;
+        font-size: 15px;
+        font-weight: 500;
+    }
+
+    .asset-workflow-desc {
+        min-height: 34px;
+        margin-bottom: 10px;
+        color: #9eadc5;
+        font-size: 12px;
+        line-height: 17px;
+    }
+
+    .asset-selection-panel {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 12px;
+        padding: 12px;
+        border: 1px solid #41506a;
+        border-radius: 6px;
+        background: #202837;
+    }
+
+    .asset-selection-panel.is-empty {
+        border-color: #343c4d;
+        background: #1b1f28;
+    }
+
+    .asset-selection-main {
+        min-width: 0;
+    }
+
+    .asset-selection-title {
+        margin-bottom: 4px;
+        color: #ffffff;
+        font-size: 14px;
+        font-weight: 500;
+    }
+
+    .asset-selection-meta {
+        color: #9eadc5;
+        font-size: 12px;
+        line-height: 18px;
+    }
+
+    .asset-selection-actions {
+        flex: 0 0 auto;
+    }
+
     .asset-manager-job {
         margin-bottom: 12px;
         padding: 8px 12px;
@@ -548,6 +622,10 @@
 
         .ant-table-tbody > tr.ant-table-row:hover > td {
             background: #202633;
+        }
+
+        .ant-table-tbody > tr.ant-table-row-selected > td {
+            background: #1f3044;
         }
 
         .ant-empty-description,
