@@ -119,6 +119,16 @@ foreach ($packageDir in $packages) {
   $metadataPath = Join-Path $targetPackage "package_metadata.json"
   $manifestPath = Join-Path $targetPackage "source_manifest.json"
   $analysisPath = Join-Path $targetPackage "analysis.json"
+  $previousSignature = $null
+  if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+    try {
+      $existingManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+      $previousSignature = "{0}:{1}:{2}" -f $existingManifest.fileCount, $existingManifest.totalBytes, $existingManifest.newestLastWriteUtc
+    } catch {
+      $previousSignature = $null
+    }
+  }
+  $currentSignature = "{0}:{1}:{2}" -f $snapshot.Count, $snapshot.TotalBytes, $snapshot.NewestLastWriteUtc.ToString("o")
 
   Write-Info ("SYNC {0}: {1} LAS, {2:N2} GB" -f $packageDir.Name, $snapshot.Count, ($snapshot.TotalBytes / 1GB))
 
@@ -202,7 +212,7 @@ foreach ($packageDir in $packages) {
   }
   Save-Json $manifestPath $manifest
 
-  if (Test-Path -LiteralPath $analysisPath -PathType Leaf) {
+  if ($previousSignature -ne $currentSignature -and (Test-Path -LiteralPath $analysisPath -PathType Leaf)) {
     Remove-Item -LiteralPath $analysisPath -Force
   }
 
