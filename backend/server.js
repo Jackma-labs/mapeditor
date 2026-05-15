@@ -1146,6 +1146,42 @@ app.get('/runtime/deploy-config', (_req, res) => {
   });
 });
 
+app.post('/runtime/discover-edge-map-root', async (req, res) => {
+  try {
+    const result = await runtime.discoverEdgeMapRoot(config, req.body || {});
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15064,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/configure-edge-deploy', async (req, res) => {
+  try {
+    const result = await runtime.configureEdgeDeploy(config, req.body || {});
+    const preflight = await runtime.preflightEdgeDeploy(config);
+    res.status(preflight.ready ? 200 : 409).json({
+      code: preflight.ready ? 0 : 15065,
+      message: preflight.ready ? 'Success' : 'Edge deploy config saved, but preflight failed',
+      data: {
+        ...result,
+        preflight,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15065,
+      message: error.message,
+    });
+  }
+});
+
 app.get('/runtime/deployments', async (_req, res) => {
   try {
     res.json({

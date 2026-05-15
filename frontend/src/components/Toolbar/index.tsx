@@ -7,12 +7,12 @@ import { MapElementType, OperationType, PermissionStatus, ThreeElementType } fro
 import { escKeyExitDrawHandle } from 'src/handle/escKeyHandle';
 import { useManagerStore } from 'src/store';
 import FileService from 'src/service/index';
-import { MenuItemType } from 'antd/lib/menu/hooks/useItems';
 import { SetOperationTypeCommand } from 'src/command/OperationTypeCommand';
 import DialogMap from './openFileDialog';
 import DialogOperate from './operateDialog';
 import DialogMessage from './messageDialog';
 import AssetManagerDialog from './AssetManagerDialog';
+import EdgeDeployDialog from './EdgeDeployDialog';
 import arrowsDown from '../../assets/images/ic_arrows_down.svg';
 import RemindModal from '../RemindModal';
 
@@ -27,8 +27,6 @@ import rotateHover from '../../assets/images/ic_spin_hover.svg';
 import rotateDisable from '../../assets/images/ic_spin_not_applicable.svg';
 import rotate from '../../assets/images/ic_spin.svg';
 import rotateActive from '../../assets/images/ic_spin_pitch_on.svg';
-import icMoreDefault from '../../assets/images/ic_more.svg';
-import icMoreActive from '../../assets/images/ic_more_white.svg';
 
 import LeadIcon from '../../assets/images/ic_lead.svg';
 import LeadDisabledIcon from '../../assets/images/ic_lead_disabled.svg';
@@ -48,6 +46,100 @@ interface RenderIconProps {
 
 // eslint-disable-next-line react/function-component-definition
 const RenderIcon: FC<RenderIconProps> = ({ url }) => <img src={url} alt="My SVG" />;
+
+function MapElementIcon({ type }: { type: MapElementType }) {
+    const common = {
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.8,
+        strokeLinecap: 'round' as const,
+        strokeLinejoin: 'round' as const,
+    };
+    switch (type) {
+        case MapElementType.Lane:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path {...common} d="M7 21c2-5 2-13 0-18" />
+                    <path {...common} d="M17 21c-2-5-2-13 0-18" />
+                    <path {...common} d="M12 5v3M12 11v3M12 17v2" />
+                </svg>
+            );
+        case MapElementType.Junction:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path {...common} d="M12 3v18M3 12h18" />
+                    <path {...common} d="M7 7l10 10M17 7L7 17" />
+                </svg>
+            );
+        case MapElementType.Crosswalk:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path {...common} d="M4 6h16M4 18h16" />
+                    <path {...common} d="M7 8v8M11 8v8M15 8v8" />
+                </svg>
+            );
+        case MapElementType.SpeedBump:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path {...common} d="M4 15c2-4 4-4 6 0s4 4 6 0 3-4 4-2" />
+                    <path {...common} d="M4 19h16" />
+                </svg>
+            );
+        case MapElementType.TrafficSignal:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect {...common} x="8" y="3" width="8" height="14" rx="2" />
+                    <path {...common} d="M12 17v4" />
+                    <circle cx="12" cy="7" r="1.3" fill="currentColor" />
+                    <circle cx="12" cy="11" r="1.3" fill="currentColor" />
+                    <circle cx="12" cy="15" r="1.3" fill="currentColor" />
+                </svg>
+            );
+        case MapElementType.ParkingSpace:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect {...common} x="5" y="4" width="14" height="16" rx="1" />
+                    <path {...common} d="M10 16V8h3a2.5 2.5 0 0 1 0 5h-3" />
+                </svg>
+            );
+        case MapElementType.Sign:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path {...common} d="M12 3l8 8-8 8-8-8 8-8Z" />
+                    <path {...common} d="M12 8v5" />
+                    <path {...common} d="M12 16h.01" />
+                </svg>
+            );
+        case MapElementType.RoadBoundary:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path {...common} d="M6 20c3-4 3-12 0-16" />
+                    <path {...common} d="M18 20c-3-4-3-12 0-16" />
+                </svg>
+            );
+        case MapElementType.Area:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path {...common} d="M5 7l7-3 7 5-2 8-9 3-4-6 1-7Z" />
+                </svg>
+            );
+        case MapElementType.BarrierGate:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path {...common} d="M5 19V9M19 19V9M4 9h16" />
+                    <path {...common} d="M7 9l3 4M11 9l3 4M15 9l3 4" />
+                </svg>
+            );
+        case MapElementType.StraightLine:
+        default:
+            return (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path {...common} d="M5 19L19 5" />
+                    <path {...common} d="M15 5h4v4" />
+                </svg>
+            );
+    }
+}
 
 function FileMenuLabel({ title, description }: { title: string; description?: string }) {
     return (
@@ -89,47 +181,8 @@ export default function Index(prop: { messageApi: any }) {
     const [rotateStatus, setRotateStatus] = useState(RotateStatus.Disable);
     const [dialogTitle, setDialogTitle] = useState('');
     const [curHoverTool, setCurHoverTool] = useState<HoverTool>(null);
-    const [visibleMapElemets, setVisibleMapElemets] = useState([]);
-    const [moreToolItems, setMoreToolItems] = useState<MenuProps['items']>([]);
-    const [moreToolItemSeleted, setMoreToolItemSeleted] = useState<string[]>([]);
     const [showSaveDataRemind, changeShowSaveDataRemind] = useState(false);
 
-    // 页面中不足以显示所以元素按钮时，显示更多按钮的数据处理
-    const mapElementsVisibleHandle = () => {
-        const { operationType, currentDrawData } = useManagerStore.getState().mapState;
-        // 判断竖线距离右侧的距离
-        const lineDom = document.getElementsByClassName('line')?.[0];
-        if (lineDom) {
-            const domRect = lineDom.getBoundingClientRect();
-            if (domRect) {
-                const { left } = domRect;
-                const restWidth = document.body.clientWidth - left - 128;
-                const maxMapIndex = Math.min(Math.max(Math.floor(restWidth / 96), 0), mapElements.length);
-                const curVisibleMapElements = [];
-                const curMoreMapElements: MenuItemType[] = [];
-                for (let i = 0; i < maxMapIndex && i < mapElements.length; i += 1) {
-                    curVisibleMapElements[i] = { ...mapElements[i] };
-                }
-                if (maxMapIndex < mapElements.length) {
-                    setMoreToolItemSeleted([]);
-                    for (let i = maxMapIndex; i < mapElements.length; i += 1) {
-                        if (
-                            operationType === OperationType.Drawing &&
-                            currentDrawData.drawElementType === mapElements[i].mapElementType
-                        ) {
-                            setMoreToolItemSeleted(() => [`${mapElements[i].mapElementType}`]);
-                        }
-                        curMoreMapElements[i] = {
-                            label: mapElements[i].name,
-                            key: mapElements[i].mapElementType,
-                        };
-                    }
-                }
-                setVisibleMapElemets(curVisibleMapElements);
-                setMoreToolItems(curMoreMapElements);
-            }
-        }
-    };
     const startDrawMapElement = (type: MapElementType) => {
         PubSub.publish('closeRemind');
         PubSub.publish('emptyPickObjects');
@@ -166,10 +219,11 @@ export default function Index(prop: { messageApi: any }) {
         operate: false,
         message: false,
         assets: false,
+        edge: false,
     });
 
     const handleCloseDialog = () => {
-        setVisibleVal({ map: false, operate: false, message: false, assets: false });
+        setVisibleVal({ map: false, operate: false, message: false, assets: false, edge: false });
     };
 
     const items: MenuProps['items'] = [
@@ -221,6 +275,10 @@ export default function Index(prop: { messageApi: any }) {
             type: 'group',
             label: '3 部署运维',
             children: [
+                {
+                    label: <FileMenuLabel title="边缘设备" description="添加 IP、自动发现 Apollo 地图目录并部署" />,
+                    key: 'edge-device',
+                },
                 {
                     label: <FileMenuLabel title="部署预检" description="检查本地服务器到边缘设备的部署条件" />,
                     key: 'preflight-deploy',
@@ -461,6 +519,9 @@ export default function Index(prop: { messageApi: any }) {
             case 'asset-manager':
                 setVisibleVal({ ...visibleVal, assets: true });
                 break;
+            case 'edge-device':
+                setVisibleVal({ ...visibleVal, edge: true });
+                break;
             case 'runtime-status':
                 showRuntimeStatus();
                 break;
@@ -509,14 +570,6 @@ export default function Index(prop: { messageApi: any }) {
         onClick: handleMenuClick,
     };
     useEffect(() => {
-        const resizeObserver = new ResizeObserver(() => {
-            mapElementsVisibleHandle();
-        });
-        resizeObserver.observe(document.getElementById('webgl'));
-    }, []);
-
-    useEffect(() => {
-        mapElementsVisibleHandle();
         if (!viewstate.currentPickElement || viewstate.currentPickElement.length === 0) {
             setRotateStatus(RotateStatus.Disable);
             return;
@@ -586,6 +639,7 @@ export default function Index(prop: { messageApi: any }) {
                     <DialogMessage title="重复" open={visibleVal.message} onCancel={handleCloseDialog} />
                 )}
                 {visibleVal.assets && <AssetManagerDialog open={visibleVal.assets} onCancel={handleCloseDialog} />}
+                {visibleVal.edge && <EdgeDeployDialog open={visibleVal.edge} onCancel={handleCloseDialog} />}
             </ConfigProvider>
             <Tooltip
                 title="还没有编辑内容!"
@@ -692,33 +746,28 @@ export default function Index(prop: { messageApi: any }) {
                 </div>
             </Tooltip>
 
-            {visibleMapElemets.map((item) => (
-                <div
-                    key={item.mapElementType}
-                    className={`tool-item ${
-                        viewstate.currentDrawData.drawElementType === item.mapElementType ? 'active' : ''
-                    }`}
-                    onClick={() => startDrawMapElement(item.mapElementType)}
-                >
-                    {item.name}
-                </div>
-            ))}
-            {moreToolItems.length !== 0 && (
-                <Dropdown
-                    overlayClassName="file-select"
-                    menu={{
-                        items: moreToolItems,
-                        selectedKeys: moreToolItemSeleted,
-                        onClick: (item) => startDrawMapElement(Number(item.key) as MapElementType),
-                    }}
-                    trigger={['click']}
-                >
-                    <div className={`more ${moreToolItemSeleted?.length === 0 ? '' : 'active'}`}>
-                        {moreToolItemSeleted?.length === 0 && <img src={icMoreDefault} alt="" />}
-                        {moreToolItemSeleted?.length !== 0 && <img src={icMoreActive} alt="" />}
-                    </div>
-                </Dropdown>
-            )}
+            <div className="draw-tool-sidebar">
+                {mapElements.map((item) => {
+                    const active =
+                        viewstate.operationType === OperationType.Drawing &&
+                        viewstate.currentDrawData.drawElementType === item.mapElementType;
+                    return (
+                        <Tooltip title={item.name} placement="right" key={item.mapElementType}>
+                            <button
+                                type="button"
+                                className={`draw-tool-button ${active ? 'active' : ''}`}
+                                onClick={() => startDrawMapElement(item.mapElementType)}
+                                aria-label={item.name}
+                            >
+                                <span className="draw-tool-icon">
+                                    <MapElementIcon type={item.mapElementType} />
+                                </span>
+                                <span className="draw-tool-label">{item.name}</span>
+                            </button>
+                        </Tooltip>
+                    );
+                })}
+            </div>
             {showSaveDataRemind && (
                 <RemindModal
                     titledata="确定退出当前界面吗？"

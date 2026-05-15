@@ -100,6 +100,79 @@
     }
 }
 
+.draw-tool-sidebar {
+    position: fixed;
+    left: 14px;
+    top: 92px;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 78px;
+    max-height: calc(100vh - 116px);
+    padding: 8px;
+    overflow-y: auto;
+    background: rgba(26, 29, 36, 0.96);
+    border: 1px solid #343c4d;
+    border-radius: 8px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+}
+
+.draw-tool-button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    width: 60px;
+    min-height: 54px;
+    padding: 6px 4px;
+    color: #a6b5cc;
+    background: #343c4d;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    line-height: 1;
+
+    &:hover {
+        color: #ffffff;
+        border-color: #4f5c74;
+        background: #3c4558;
+    }
+
+    &.active {
+        color: #ffffff;
+        border-color: #4aa3ff;
+        background: #3288fa;
+    }
+}
+
+.draw-tool-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+
+    svg {
+        display: block;
+        width: 22px;
+        height: 22px;
+    }
+}
+
+.draw-tool-label {
+    display: block;
+    max-width: 52px;
+    color: inherit;
+    font-size: 11px;
+    line-height: 14px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .file-select.ant-dropdown {
     padding: 0;
     .ant-dropdown-menu {
@@ -754,4 +827,63 @@
             margin: 0 0 4px;
         }
     }
+}
+
+.edge-deploy-dialog {
+    .ant-modal-content,
+    .ant-modal-header {
+        background: #282b36;
+    }
+
+    .ant-modal-title {
+        color: #ffffff;
+    }
+
+    .ant-modal-body {
+        color: #a6b5cc;
+    }
+
+    .ant-form-item-label > label {
+        color: #c9d6eb;
+    }
+
+    .ant-input,
+    .ant-input-number {
+        background: #343c4d;
+        border-color: #465066;
+        color: #ffffff;
+    }
+
+    .ant-input-number-input {
+        color: #ffffff;
+    }
+
+    .edge-deploy-checks {
+        margin-top: 12px;
+        padding: 12px;
+        background: #1b1f28;
+        border: 1px solid #383b45;
+        border-radius: 6px;
+    }
+
+    .edge-deploy-checks-title {
+        margin-bottom: 8px;
+        color: #ffffff;
+        font-size: 14px;
+        font-weight: 500;
+    }
+
+    .edge-deploy-check-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 28px;
+        color: #a6b5cc;
+    }
+}
+
+.edge-deploy-detail {
+    max-height: 280px;
+    overflow: auto;
+    white-space: pre-wrap;
 }

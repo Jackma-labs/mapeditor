@@ -319,6 +319,20 @@ class FileService {
         });
     }
 
+    async discoverEdgeMapRoot(config: any) {
+        return this.requestJson('/runtime/discover-edge-map-root', {
+            method: 'POST',
+            body: JSON.stringify(config),
+        });
+    }
+
+    async configureEdgeDeploy(config: any) {
+        return this.requestJson('/runtime/configure-edge-deploy', {
+            method: 'POST',
+            body: JSON.stringify(config),
+        });
+    }
+
     async getDeployments() {
         return this.requestJson('/runtime/deployments');
     }

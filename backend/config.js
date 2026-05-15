@@ -4,6 +4,7 @@ const path = require('path');
 const appRoot = path.resolve(__dirname, '..');
 
 const defaults = {
+  appRoot,
   port: Number(process.env.MAP_BACKEND_PORT || process.env.PORT || 58000),
   uploadFileSizeBytes: Number(process.env.MAP_UPLOAD_FILE_SIZE_BYTES || 30 * 1024 * 1024 * 1024),
   baseMapRoot: path.join(appRoot, 'data/base_map'),

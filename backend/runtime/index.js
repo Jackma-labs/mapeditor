@@ -105,6 +105,141 @@ function buildEdgeTarget(config) {
   return `${config.edgeDeploy.user}@${config.edgeDeploy.host}`;
 }
 
+function createConfigWithEdgeDeploy(config, edgeDeploy) {
+  return {
+    ...config,
+    edgeDeploy: {
+      ...config.edgeDeploy,
+      ...edgeDeploy,
+    },
+  };
+}
+
+function normalizeEdgeDeployParams(config, params = {}) {
+  const host = String(params.host ?? config.edgeDeploy.host ?? '').trim();
+  const user = String(params.user ?? config.edgeDeploy.user ?? '').trim();
+  const port = Number(params.port ?? config.edgeDeploy.port ?? 22) || 22;
+  const targetMapRoot = String(params.targetMapRoot ?? config.edgeDeploy.targetMapRoot ?? '').trim();
+  const postDeployCommand = String(params.postDeployCommand ?? config.edgeDeploy.postDeployCommand ?? '').trim();
+  const mode = params.mode || (host && user ? 'ssh' : 'disabled');
+  return {
+    mode,
+    host,
+    user,
+    port,
+    targetMapRoot,
+    postDeployCommand,
+  };
+}
+
+function uniqueList(items) {
+  return Array.from(new Set(items.filter(Boolean)));
+}
+
+function envQuote(value) {
+  const text = String(value ?? '');
+  if (/^[A-Za-z0-9_./:@-]*$/.test(text)) {
+    return text;
+  }
+  return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+async function updateEnvServer(config, values) {
+  if (!config.appRoot) {
+    return null;
+  }
+  const envPath = path.join(config.appRoot, '.env.server');
+  const existing = (await fsp.readFile(envPath, 'utf8').catch(() => '')).split(/\r?\n/);
+  const keys = new Set(Object.keys(values));
+  const lines = [];
+  for (const line of existing) {
+    const match = line.match(/^([A-Z0-9_]+)=/);
+    if (match && keys.has(match[1])) {
+      continue;
+    }
+    if (line.length > 0) {
+      lines.push(line);
+    }
+  }
+  for (const [key, value] of Object.entries(values)) {
+    lines.push(`${key}=${envQuote(value)}`);
+  }
+  await fsp.writeFile(envPath, `${lines.join('\n')}\n`, 'utf8');
+  return envPath;
+}
+
+async function discoverEdgeMapRoot(config, params = {}) {
+  const edgeDeploy = normalizeEdgeDeployParams(config, params);
+  if (!edgeDeploy.host || !edgeDeploy.user) {
+    throw new Error('edge host and user are required');
+  }
+  const deployConfig = createConfigWithEdgeDeploy(config, edgeDeploy);
+  const candidates = uniqueList([
+    edgeDeploy.targetMapRoot,
+    '/apollo/modules/map/data',
+    '/apollo/data/map',
+    '/home/apollo/modules/map/data',
+    '/opt/apollo/modules/map/data',
+  ]);
+  const candidateText = candidates.map((item) => quoteShell(item)).join(' ');
+  const remoteCommand = [
+    'set -e',
+    `for d in ${candidateText}; do if [ -d "$d" ]; then printf '%s\\n' "$d"; exit 0; fi; done`,
+    'for root in /apollo "$HOME/apollo" /opt/apollo; do if [ -d "$root" ] && mkdir -p "$root/modules/map/data" 2>/dev/null; then printf \'%s\\n\' "$root/modules/map/data"; exit 0; fi; done',
+    'exit 2',
+  ].join('; ');
+  const result = await runCommand('ssh', [...buildSshBaseArgs(deployConfig), remoteCommand], {
+    timeoutMs: 15000,
+  });
+  const targetMapRoot = result.stdout.trim().split(/\r?\n/).filter(Boolean)[0] || '';
+  if (!targetMapRoot) {
+    throw new Error('Apollo map root was not found on edge device');
+  }
+  return {
+    targetMapRoot,
+    candidates,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
+}
+
+async function configureEdgeDeploy(config, params = {}) {
+  const next = normalizeEdgeDeployParams(config, params);
+  let discovery = null;
+  let discoveryError = null;
+  if (next.mode !== 'disabled' && params.autoDiscover !== false) {
+    try {
+      discovery = await discoverEdgeMapRoot(config, next);
+      next.targetMapRoot = discovery.targetMapRoot;
+    } catch (error) {
+      discoveryError = error.message;
+      if (!next.targetMapRoot) {
+        throw error;
+      }
+    }
+  }
+  config.edgeDeploy.mode = next.mode;
+  config.edgeDeploy.host = next.host;
+  config.edgeDeploy.user = next.user;
+  config.edgeDeploy.port = next.port;
+  config.edgeDeploy.targetMapRoot = next.targetMapRoot || '/apollo/modules/map/data';
+  config.edgeDeploy.postDeployCommand = next.postDeployCommand;
+  const envPath = await updateEnvServer(config, {
+    MAP_EDGE_DEPLOY_MODE: config.edgeDeploy.mode,
+    MAP_EDGE_HOST: config.edgeDeploy.host,
+    MAP_EDGE_USER: config.edgeDeploy.user,
+    MAP_EDGE_PORT: config.edgeDeploy.port,
+    MAP_EDGE_TARGET_MAP_ROOT: config.edgeDeploy.targetMapRoot,
+    MAP_EDGE_POST_DEPLOY_COMMAND: config.edgeDeploy.postDeployCommand,
+  });
+  return {
+    deployConfig: getDeployConfig(config),
+    discovery,
+    discoveryError,
+    envPath,
+  };
+}
+
 function buildSshBaseArgs(config) {
   const args = [
     '-o',
@@ -3811,6 +3946,7 @@ function getDeployConfig(config) {
     port: edge.port || 22,
     target: buildEdgeTarget(config),
     targetMapRoot: edge.targetMapRoot,
+    postDeployCommand: edge.postDeployCommand || '',
     postDeployCommandConfigured: Boolean(edge.postDeployCommand),
   };
 }
@@ -4197,6 +4333,8 @@ module.exports = {
   getStatus,
   getRuntimeDoctor,
   getDeployConfig,
+  discoverEdgeMapRoot,
+  configureEdgeDeploy,
   preflightEdgeDeploy,
   listReleasedMaps,
   listDeployments,
