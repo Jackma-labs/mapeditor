@@ -3338,6 +3338,10 @@ async function buildDataPackageStitchPlan(config, packageIds) {
 
 async function importDataPackageBaseMap(config, params) {
   const packageId = validatePackageId(params.packageId);
+  const progress = typeof params.progress === 'function' ? params.progress : null;
+  if (progress) {
+    await progress(`Preparing data package ${packageId}`);
+  }
   const { packageDir, files } = await getDataPackageImportFiles(config, packageId);
   if (files.length === 0) {
     throw new Error(`data package has no importable point cloud files: ${packageId}`);
@@ -3349,6 +3353,7 @@ async function importDataPackageBaseMap(config, params) {
     mapName,
     overwrite: params.overwrite === true,
     files,
+    progress,
     sourceAsset: {
       type: 'data_package',
       packageId,
@@ -3364,13 +3369,20 @@ async function importDataPackageBaseMap(config, params) {
 }
 
 async function importMergedDataPackagesBaseMap(config, params) {
+  const progress = typeof params?.progress === 'function' ? params.progress : null;
   const requestedPackageIds = Array.isArray(params?.packageIds) ? params.packageIds : [];
   const packageIds = Array.from(new Set(requestedPackageIds.map(validatePackageId)));
   if (packageIds.length < 2) {
     throw new Error('at least two packageIds are required');
   }
+  if (progress) {
+    await progress(`Preparing ${packageIds.length} data packages for merged base map`);
+  }
   const allFiles = [];
   for (const packageId of packageIds) {
+    if (progress) {
+      await progress(`Collecting import files: ${packageId}`);
+    }
     const { files } = await getDataPackageImportFiles(config, packageId);
     allFiles.push(...files.map((file) => ({ ...file, packageId })));
   }
@@ -3381,6 +3393,9 @@ async function importMergedDataPackagesBaseMap(config, params) {
     throw new Error('selected data packages have no importable point cloud files');
   }
   const mapName = params.mapName || sanitizePackageName(`merged_${packageIds[0]}`);
+  if (progress) {
+    await progress(`Building stitch plan for ${packageIds.length} data packages`);
+  }
   const stitchPlan = await buildDataPackageStitchPlan(config, packageIds);
   if (!stitchPlan.ready && params.allowMixedCoordinateGroups !== true) {
     throw new Error(
@@ -3391,6 +3406,7 @@ async function importMergedDataPackagesBaseMap(config, params) {
     mapName,
     overwrite: params.overwrite === true,
     files: importableFiles,
+    progress,
     stitchPlan,
     sourceAsset: {
       type: 'merged_data_packages',
@@ -3701,6 +3717,7 @@ async function importPointCloudFilesBaseMap(config, params) {
   const mapName = validateMapName(params.mapName);
   const files = Array.isArray(params.files) ? params.files : [];
   const overwrite = params.overwrite === true;
+  const progress = typeof params.progress === 'function' ? params.progress : null;
   if (files.length === 0) {
     throw new Error('file is required');
   }
@@ -3709,6 +3726,9 @@ async function importPointCloudFilesBaseMap(config, params) {
   const imageFiles = files.filter((file) => isImageName(file.originalName || file.originalname || file.path));
   if (cloudFiles.length === 0) {
     throw new Error('点云底图请上传 .pcd/.ply/.xyz/.txt/.csv/.las 文件，或包含这些文件的 .zip');
+  }
+  if (progress) {
+    await progress(`Starting base-map generation: ${mapName}; point-cloud files=${cloudFiles.length}`);
   }
 
   const targetDir = path.join(config.baseMapRoot, mapName);
@@ -3726,11 +3746,17 @@ async function importPointCloudFilesBaseMap(config, params) {
     let imageFileCount = imageFiles.length;
     for (const file of cloudFiles) {
       const originalName = file.originalName || file.originalname || path.basename(file.path);
+      if (progress) {
+        await progress(`Scanning statistics ${sourceFiles.length + 1}/${cloudFiles.length}: ${originalName}`);
+      }
       const parsed = await scanPointCloudFile(file.path, originalName, statsCollector.addPoint);
       sourceFiles.push(...(parsed.selectedSourceFiles || parsed.sourceFiles || [originalName]));
       imageFileCount += parsed.imageFileCount || 0;
     }
     const stats = statsCollector.finalize();
+    if (progress) {
+      await progress(`Statistics ready: ${stats.totalPointCount} points; rendering raster layers`);
+    }
     const coordinate = classifyCoordinateSystem(stats.bounds);
     const imageIndex = await buildImageOverlayIndex(files, stagingDir);
     const imageOverlay = getImageOverlayMetadataFromIndex(imageFileCount, imageIndex);
@@ -3775,8 +3801,12 @@ async function importPointCloudFilesBaseMap(config, params) {
       }
     };
 
-    for (const file of cloudFiles) {
+    for (let fileIndex = 0; fileIndex < cloudFiles.length; fileIndex += 1) {
+      const file = cloudFiles[fileIndex];
       const originalName = file.originalName || file.originalname || path.basename(file.path);
+      if (progress) {
+        await progress(`Rendering raster ${fileIndex + 1}/${cloudFiles.length}: ${originalName}`);
+      }
       await scanPointCloudFile(file.path, originalName, renderEnhancedPoint);
     }
 
@@ -3807,10 +3837,16 @@ async function importPointCloudFilesBaseMap(config, params) {
         outputs: layerDescriptors.map((layer) => layer.id),
       },
     };
+    if (progress) {
+      await progress('Writing tile layer: enhanced');
+    }
     const parsed = await layers.enhanced.writeTiles(path.join(stagingDir, 'map_images'), metadata);
     for (const layer of layerDescriptors) {
       if (layer.id === 'enhanced') {
         continue;
+      }
+      if (progress) {
+        await progress(`Writing tile layer: ${layer.id}`);
       }
       await layers[layer.id].writeTiles(path.join(stagingDir, layer.path), {
         ...metadata,
@@ -3818,9 +3854,15 @@ async function importPointCloudFilesBaseMap(config, params) {
         allowEmpty: true,
       });
     }
+    if (progress) {
+      await progress('Copying source files into base map package');
+    }
     await copyImportSources(files, stagingDir);
     if (params.stitchPlan) {
       await fsp.writeFile(path.join(stagingDir, 'stitch_plan.json'), JSON.stringify(params.stitchPlan, null, 2), 'utf8');
+    }
+    if (progress) {
+      await progress(`Activating base map: ${mapName}`);
     }
     await fsp.rm(targetDir, { recursive: true, force: true });
     await fsp.rename(stagingDir, targetDir);

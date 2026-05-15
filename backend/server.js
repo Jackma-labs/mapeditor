@@ -117,6 +117,11 @@ async function appendRuntimeJobLog(job, message, level = 'info') {
   await persistRuntimeJob(job);
 }
 
+async function updateRuntimeJobProgress(job, message, level = 'info') {
+  job.message = message;
+  await appendRuntimeJobLog(job, message, level);
+}
+
 function loadRuntimeJobs() {
   const files = fs.readdirSync(runtimeJobRoot).filter((file) => file.endsWith('.json'));
   for (const file of files) {
@@ -1008,8 +1013,11 @@ app.post('/runtime/import-data-package-base-map', async (req, res) => {
 app.post('/runtime/import-data-package-base-map-job', async (req, res) => {
   try {
     const body = req.body || {};
-    const job = startRuntimeJob('import-data-package-base-map', () =>
-      runtime.importDataPackageBaseMap(config, body),
+    const job = startRuntimeJob('import-data-package-base-map', (runtimeJob) =>
+      runtime.importDataPackageBaseMap(config, {
+        ...body,
+        progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+      }),
       {
         packageId: body.packageId || '',
         mapName: body.mapName || '',
@@ -1036,8 +1044,11 @@ app.post('/runtime/import-data-packages-merged-base-map-job', async (req, res) =
   try {
     const body = req.body || {};
     const packageIds = Array.isArray(body.packageIds) ? body.packageIds : [];
-    const job = startRuntimeJob('import-data-packages-merged-base-map', () =>
-      runtime.importMergedDataPackagesBaseMap(config, body),
+    const job = startRuntimeJob('import-data-packages-merged-base-map', (runtimeJob) =>
+      runtime.importMergedDataPackagesBaseMap(config, {
+        ...body,
+        progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+      }),
       {
         packageIds,
         mapName: body.mapName || '',
