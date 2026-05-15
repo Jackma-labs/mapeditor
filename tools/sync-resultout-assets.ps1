@@ -3,10 +3,19 @@ param(
   [string]$SourceRoot,
   [string]$DestinationRoot = "\\192.168.110.2\mapeditor-capture",
   [int]$MinAgeMinutes = 10,
+  [string]$LogFile = "",
   [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
+
+if (![string]::IsNullOrWhiteSpace($LogFile)) {
+  $logDir = Split-Path -Parent $LogFile
+  if (![string]::IsNullOrWhiteSpace($logDir)) {
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+  }
+  Start-Transcript -Path $LogFile -Append | Out-Null
+}
 
 function Write-Info($Message) {
   $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -202,6 +211,9 @@ foreach ($packageDir in $packages) {
 }
 
 Write-Info "DONE synced=$synced skipped=$skipped failed=$failed"
+if (![string]::IsNullOrWhiteSpace($LogFile)) {
+  Stop-Transcript | Out-Null
+}
 if ($failed -gt 0) {
   exit 1
 }
