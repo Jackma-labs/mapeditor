@@ -403,6 +403,8 @@ async function getStatus(config) {
       baseMapRoot: config.baseMapRoot,
       editorMapRoot: config.editorMapRoot,
       releaseRoot: config.releaseRoot,
+      importPackageRoot: config.importPackageRoot,
+      captureSourceRoot: config.captureSourceRoot || '',
       frontendBuildRoot: config.frontendBuildRoot,
       frontendAvailable,
       tileMapConfig: config.tileMapConfig,
@@ -2866,6 +2868,243 @@ function getImportPackageTrashRoot(config) {
   );
 }
 
+function getCaptureSourceRoot(config) {
+  return config.captureSourceRoot ? path.resolve(config.captureSourceRoot) : '';
+}
+
+function getCaptureResultDirNames(config) {
+  const names = Array.isArray(config.captureResultDirNames) ? config.captureResultDirNames : [];
+  return names.length > 0 ? names : ['ResultOut', 'Resultout', 'resultout', 'Result', 'result'];
+}
+
+async function findCaptureResultDir(packageDir, names) {
+  const entries = await fsp.readdir(packageDir, { withFileTypes: true }).catch(() => []);
+  const dirNames = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  for (const name of names) {
+    const exact = dirNames.find((entryName) => entryName === name);
+    if (exact) {
+      return path.join(packageDir, exact);
+    }
+  }
+  for (const name of names) {
+    const lowerName = name.toLowerCase();
+    const matched = dirNames.find((entryName) => entryName.toLowerCase() === lowerName);
+    if (matched) {
+      return path.join(packageDir, matched);
+    }
+  }
+  return null;
+}
+
+async function listLasFilesRecursive(rootDir) {
+  const results = [];
+  const walk = async (dir) => {
+    const entries = await fsp.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+      } else if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.las') {
+        const stat = await fsp.stat(entryPath);
+        results.push({
+          path: entryPath,
+          name: entry.name,
+          size: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+        });
+      }
+    }
+  };
+  await walk(rootDir);
+  results.sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+  return results;
+}
+
+function assertPathInside(parent, child, label) {
+  const parentPath = path.resolve(parent);
+  const childPath = path.resolve(child);
+  if (childPath !== parentPath && !childPath.startsWith(`${parentPath}${path.sep}`)) {
+    throw new Error(`${label} resolved outside configured root`);
+  }
+  return childPath;
+}
+
+async function scanCaptureSourcePackages(config) {
+  const sourceRoot = getCaptureSourceRoot(config);
+  if (!sourceRoot) {
+    throw new Error('MAP_CAPTURE_SOURCE_ROOT is not configured');
+  }
+  if (!(await pathExists(sourceRoot))) {
+    throw new Error(`capture source root not found: ${sourceRoot}`);
+  }
+  const resultDirNames = getCaptureResultDirNames(config);
+  const packageRoot = getImportPackageRoot(config);
+  await fsp.mkdir(packageRoot, { recursive: true });
+  const entries = await fsp.readdir(sourceRoot, { withFileTypes: true });
+  const packages = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const sourcePackage = entry.name;
+    const sourcePath = path.join(sourceRoot, sourcePackage);
+    const resultDir = await findCaptureResultDir(sourcePath, resultDirNames);
+    if (!resultDir) {
+      continue;
+    }
+    const files = await listLasFilesRecursive(resultDir).catch(() => []);
+    if (files.length === 0) {
+      continue;
+    }
+    const stat = await fsp.stat(sourcePath);
+    const packageId = `sync-${sanitizePackageName(sourcePackage)}`;
+    packages.push({
+      sourcePackage,
+      sourcePath,
+      resultDir,
+      packageId,
+      displayName: sanitizePackageName(sourcePackage),
+      fileCount: files.length,
+      totalBytes: files.reduce((sum, item) => sum + Number(item.size || 0), 0),
+      modifiedAt: stat.mtime.toISOString(),
+      imported: await pathExists(path.join(packageRoot, packageId, 'analysis.json')),
+    });
+  }
+  packages.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
+  return {
+    sourceRoot,
+    resultDirNames,
+    packages,
+  };
+}
+
+async function importCaptureSourcePackage(config, params = {}) {
+  const progress = typeof params.progress === 'function' ? params.progress : async () => {};
+  const sourcePackage = String(params.sourcePackage || '').trim();
+  if (!sourcePackage) {
+    throw new Error('sourcePackage is required');
+  }
+  if (sourcePackage.includes('/') || sourcePackage.includes('\\')) {
+    throw new Error('sourcePackage must be a direct child of capture source root');
+  }
+  const sourceRoot = getCaptureSourceRoot(config);
+  if (!sourceRoot) {
+    throw new Error('MAP_CAPTURE_SOURCE_ROOT is not configured');
+  }
+  const sourcePath = assertPathInside(sourceRoot, path.join(sourceRoot, sourcePackage), 'sourcePackage');
+  const resultDir = await findCaptureResultDir(sourcePath, getCaptureResultDirNames(config));
+  if (!resultDir) {
+    throw new Error(`ResultOut directory not found under ${sourcePath}`);
+  }
+  const files = await listLasFilesRecursive(resultDir);
+  if (files.length === 0) {
+    throw new Error(`no LAS files found under ${resultDir}`);
+  }
+  const packageRoot = getImportPackageRoot(config);
+  await fsp.mkdir(packageRoot, { recursive: true });
+  const packageId = `sync-${sanitizePackageName(sourcePackage)}`;
+  const displayName = sanitizePackageName(sourcePackage);
+  const targetDir = path.join(packageRoot, packageId);
+  if (await pathExists(targetDir)) {
+    if (params.overwrite !== true) {
+      return {
+        skipped: true,
+        reason: 'already_imported',
+        packageId,
+        displayName,
+        path: targetDir,
+      };
+    }
+    await progress(`Removing existing imported asset: ${packageId}`);
+    await fsp.rm(targetDir, { recursive: true, force: true });
+  }
+  const uploadDir = path.join(targetDir, 'uploads');
+  await fsp.mkdir(uploadDir, { recursive: true });
+  const analyses = [];
+  const manifestFiles = [];
+  try {
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const safeName = `${index}-${path.basename(file.name) || 'source.las'}`;
+      const targetPath = path.join(uploadDir, safeName);
+      await progress(`Copying LAS ${index + 1}/${files.length}: ${file.name}`);
+      await fsp.copyFile(file.path, targetPath);
+      analyses.push(await analyzeSingleDataFile(targetPath, file.name));
+      manifestFiles.push({
+        source: file.path,
+        name: file.name,
+        size: file.size,
+        modifiedAt: file.modifiedAt,
+      });
+    }
+    const sourceManifest = {
+      sourceRoot,
+      sourcePackage,
+      sourcePath,
+      resultDir,
+      importedAt: new Date().toISOString(),
+      fileCount: manifestFiles.length,
+      totalBytes: manifestFiles.reduce((sum, item) => sum + Number(item.size || 0), 0),
+      files: manifestFiles,
+    };
+    const combined = {
+      packageId,
+      path: targetDir,
+      displayName,
+      uploadedFiles: manifestFiles.map((file) => file.name),
+      analyses,
+      summary: summarizeCombinedPackageAnalysis(analyses),
+    };
+    await writePackageMetadata(targetDir, {
+      packageId,
+      displayName,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    await fsp.writeFile(path.join(targetDir, 'source_manifest.json'), JSON.stringify(sourceManifest, null, 2), 'utf8');
+    await fsp.writeFile(path.join(targetDir, 'analysis.json'), JSON.stringify(combined, null, 2), 'utf8');
+    await progress(`Capture source imported: ${displayName}`);
+    return {
+      ...combined,
+      sourceManifest,
+    };
+  } catch (error) {
+    await fsp.rm(targetDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function syncCaptureSourcePackages(config, params = {}) {
+  const progress = typeof params.progress === 'function' ? params.progress : async () => {};
+  const scan = await scanCaptureSourcePackages(config);
+  const overwrite = params.overwrite === true;
+  const onlyNew = params.onlyNew !== false;
+  const limit = Math.max(1, Math.min(Number(params.limit) || 50, 200));
+  const targets = scan.packages
+    .filter((item) => overwrite || !onlyNew || !item.imported)
+    .slice(0, limit);
+  const results = [];
+  await progress(`Capture source scan: ${scan.packages.length} package(s), ${targets.length} to sync`);
+  for (let index = 0; index < targets.length; index += 1) {
+    const item = targets[index];
+    await progress(`Syncing capture package ${index + 1}/${targets.length}: ${item.sourcePackage}`);
+    results.push(
+      await importCaptureSourcePackage(config, {
+        sourcePackage: item.sourcePackage,
+        overwrite,
+        progress,
+      })
+    );
+  }
+  return {
+    sourceRoot: scan.sourceRoot,
+    scannedCount: scan.packages.length,
+    importedCount: results.filter((item) => !item.skipped).length,
+    skippedCount: results.filter((item) => item.skipped).length,
+    results,
+  };
+}
+
 function validatePackageId(packageId) {
   const normalized = String(packageId || '').trim();
   if (!normalized) {
@@ -4398,6 +4637,9 @@ module.exports = {
   listDataPackages,
   updateDataPackage,
   deleteDataPackage,
+  scanCaptureSourcePackages,
+  importCaptureSourcePackage,
+  syncCaptureSourcePackages,
   buildDataPackageStitchPlan,
   importDataPackageBaseMap,
   importMergedDataPackagesBaseMap,

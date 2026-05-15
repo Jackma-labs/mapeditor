@@ -465,6 +465,48 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
     };
 
+    const handleSyncCaptureSources = async () => {
+        setUploading(true);
+        setJobText('正在扫描固定采图目录');
+        try {
+            const response = await FileService.startSyncCaptureSourcePackagesJob(true, false, 50);
+            if (response?.code !== 0) {
+                throw new Error(response?.message || '提交采图目录同步任务失败');
+            }
+            const jobId = response?.data?.job?.id;
+            if (!jobId) {
+                throw new Error('后台任务没有返回 jobId');
+            }
+            const job = await waitForRuntimeJob(jobId, '正在同步固定采图目录');
+            await refreshAll();
+            Modal.info({
+                title: '采图目录同步完成',
+                width: 760,
+                content: (
+                    <pre className="asset-manager-detail">
+                        {[
+                            `来源: ${job.result?.sourceRoot || ''}`,
+                            `扫描采图包: ${formatCount(job.result?.scannedCount)}`,
+                            `新增导入: ${formatCount(job.result?.importedCount)}`,
+                            `跳过: ${formatCount(job.result?.skippedCount)}`,
+                        ].join('\n')}
+                    </pre>
+                ),
+            });
+        } catch (error) {
+            Modal.error({
+                title: '采图目录同步失败',
+                content:
+                    error instanceof Error
+                        ? error.message
+                        : '采图目录同步失败。请确认服务端已配置 MAP_CAPTURE_SOURCE_ROOT。',
+            });
+        } finally {
+            setUploading(false);
+            setJobText('');
+        }
+    };
+
     const handleGenerateBaseMap = (packageInfo: any) => {
         const mapName = sanitizeName(packageInfo.defaultMapName || packageInfo.packageId) || createFallbackName();
         Modal.confirm({
@@ -945,6 +987,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </Button>
                     <Button onClick={handleRefreshAllAnalysis} disabled={loading || uploading || packages.length === 0}>
                         自检待预检
+                    </Button>
+                    <Button onClick={handleSyncCaptureSources} disabled={loading || uploading}>
+                        同步采图目录
                     </Button>
                     <Button type="primary" onClick={() => uploadInputRef.current?.click()} loading={uploading}>
                         上传采图包

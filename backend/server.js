@@ -888,6 +888,78 @@ app.get('/runtime/data-packages', async (_req, res) => {
   }
 });
 
+app.get('/runtime/capture-source-packages', async (_req, res) => {
+  try {
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: await runtime.scanCaptureSourcePackages(config),
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15067,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/sync-capture-source-package-job', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const job = startRuntimeJob('sync-capture-source-package', (runtimeJob) =>
+      runtime.importCaptureSourcePackage(config, {
+        ...body,
+        progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+      }),
+      {
+        sourcePackage: body.sourcePackage || '',
+        overwrite: body.overwrite === true,
+      }
+    );
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15068,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/sync-capture-source-packages-job', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const job = startRuntimeJob('sync-capture-source-packages', (runtimeJob) =>
+      runtime.syncCaptureSourcePackages(config, {
+        ...body,
+        progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+      }),
+      {
+        onlyNew: body.onlyNew !== false,
+        overwrite: body.overwrite === true,
+        limit: Number(body.limit) || 50,
+      }
+    );
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15069,
+      message: error.message,
+    });
+  }
+});
+
 app.patch('/runtime/data-packages/:packageId', async (req, res) => {
   try {
     const result = await runtime.updateDataPackage(config, {

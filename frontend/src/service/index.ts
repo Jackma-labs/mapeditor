@@ -209,6 +209,21 @@ class FileService {
         return this.requestJson('/runtime/data-packages');
     }
 
+    async getCaptureSourcePackages() {
+        return this.requestJson('/runtime/capture-source-packages');
+    }
+
+    async startSyncCaptureSourcePackagesJob(onlyNew: boolean = true, overwrite: boolean = false, limit: number = 50) {
+        return this.requestJson('/runtime/sync-capture-source-packages-job', {
+            method: 'POST',
+            body: JSON.stringify({
+                onlyNew,
+                overwrite,
+                limit,
+            }),
+        });
+    }
+
     async renameDataPackage(packageId: string, displayName: string) {
         return this.requestJson(`/runtime/data-packages/${encodeURIComponent(packageId)}`, {
             method: 'PATCH',

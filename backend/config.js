@@ -12,6 +12,11 @@ const defaults = {
   releaseRoot: path.join(appRoot, 'data/released_map'),
   importPackageRoot: path.join(appRoot, 'data/import_packages'),
   importPackageTrashRoot: path.join(appRoot, 'data/import_packages_trash'),
+  captureSourceRoot: process.env.MAP_CAPTURE_SOURCE_ROOT || '',
+  captureResultDirNames: (process.env.MAP_CAPTURE_RESULT_DIR_NAMES || 'ResultOut,Resultout,resultout,Result,result')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean),
   converterBinary: path.join(
     appRoot,
     'runtime/bin/editor_map_converter'
@@ -82,6 +87,14 @@ if (process.env.MAP_IMPORT_PACKAGE_ROOT) {
 }
 if (process.env.MAP_IMPORT_PACKAGE_TRASH_ROOT) {
   merged.importPackageTrashRoot = process.env.MAP_IMPORT_PACKAGE_TRASH_ROOT;
+}
+if (process.env.MAP_CAPTURE_SOURCE_ROOT) {
+  merged.captureSourceRoot = process.env.MAP_CAPTURE_SOURCE_ROOT;
+}
+if (process.env.MAP_CAPTURE_RESULT_DIR_NAMES) {
+  merged.captureResultDirNames = process.env.MAP_CAPTURE_RESULT_DIR_NAMES.split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 if (process.env.MAP_CONVERTER_BINARY) {
   merged.converterBinary = process.env.MAP_CONVERTER_BINARY;
@@ -156,6 +169,7 @@ merged.editorMapRoot = ensureAbsolute(merged.editorMapRoot);
 merged.releaseRoot = ensureAbsolute(merged.releaseRoot);
 merged.importPackageRoot = ensureAbsolute(merged.importPackageRoot);
 merged.importPackageTrashRoot = ensureAbsolute(merged.importPackageTrashRoot);
+merged.captureSourceRoot = ensureAbsolute(merged.captureSourceRoot);
 merged.converterBinary = ensureAbsolute(merged.converterBinary);
 merged.frontendBuildRoot = ensureAbsolute(merged.frontendBuildRoot);
 merged.tileMapCreatorBinary = ensureAbsolute(merged.tileMapCreatorBinary);
