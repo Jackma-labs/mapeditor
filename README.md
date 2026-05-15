@@ -25,7 +25,7 @@ deploy/server/     local-server deployment scripts
 The frontend and backend are decoupled from `/apollo/modules/private_tools` and
 can run as a normal Node project.
 
-Full base-map generation and map release require Apollo helper binaries:
+The original Apollo helper binaries are still preferred when available:
 
 - `tile_map_images_creator`
 - `editor_map_converter`
@@ -34,6 +34,12 @@ The current public artifacts only provide aarch64 binaries. The final Apollo
 HDMap image contains Bazel runfiles with symlinks to private source paths, but
 not the source content itself. The public `wheelos/apollo-lite` repository also
 does not include `modules/private_tools`.
+
+When `runtime/bin/editor_map_converter` is missing, the backend now falls back
+to a JS compatibility converter that preserves the original `ReleaseMapFile`
+flow and emits `editor_map.json`, `base_map.txt/bin`, `sim_map.txt/bin`,
+`routing_map.txt/bin`, and `manifest.json`. If the native converter is later
+installed, it is used automatically.
 
 ## Recommended deployment shape
 
@@ -279,5 +285,7 @@ export MAP_CONVERTER_BINARY=/absolute/path/editor_map_converter
 export MAP_TILE_MAP_CREATOR_BINARY=/absolute/path/tile_map_images_creator
 ```
 
-Without these binaries, editing/opening/saving editor-map JSON still works, but
-base-map generation and map release return a missing-binary error.
+Without `editor_map_converter`, publishing uses the JS compatibility converter.
+Without `tile_map_images_creator`, production bag-to-tile conversion is still
+unavailable, but the built-in LAS/PCD raster pipeline can generate annotation
+base maps.

@@ -6,6 +6,7 @@ const { Writable } = require('stream');
 const { pipeline } = require('stream/promises');
 const unzipper = require('unzipper');
 const { PNG } = require('pngjs');
+const { convertEditorMapToApolloPackage } = require('./editorMapConverter');
 const { runCommand } = require('./process');
 
 const DEFAULT_POINT_CLOUD_RENDER_POINTS = 1000000;
@@ -246,6 +247,7 @@ async function checkDockerRuntime(config) {
 
 async function getStatus(config) {
   const localConverterAvailable = await pathExists(config.converterBinary);
+  const localConverterFallbackAvailable = true;
   const localTileCreatorAvailable = await pathExists(config.tileMapCreatorBinary);
   const frontendAvailable = await pathExists(config.frontendBuildRoot);
   const tileMapConfigAvailable = await pathExists(config.tileMapConfig);
@@ -257,6 +259,7 @@ async function getStatus(config) {
     local: {
       converterBinary: config.converterBinary,
       converterAvailable: localConverterAvailable,
+      converterFallbackAvailable: localConverterFallbackAvailable,
       tileMapCreatorBinary: config.tileMapCreatorBinary,
       tileMapCreatorAvailable: localTileCreatorAvailable,
     },
@@ -3751,13 +3754,14 @@ async function getRuntimeDoctor(config) {
   );
 
   if (config.runtimeMode === 'local') {
+    const converterReady = status.local.converterAvailable || status.local.converterFallbackAvailable;
     addCheck(
       'editor-map-converter',
-      status.local.converterAvailable,
+      converterReady,
       'error',
       status.local.converterAvailable
         ? 'Native editor_map_converter is available'
-        : `Native editor_map_converter is missing at ${status.local.converterBinary}`
+        : `Native editor_map_converter is missing at ${status.local.converterBinary}; JS compatible converter will be used`
     );
     addCheck(
       'tile-map-images-creator',
@@ -3900,7 +3904,12 @@ async function preflightEdgeDeploy(config) {
 
 async function runLocalConverter(config, mapName, jsonPath, releaseDir, baseMapDir) {
   if (!(await pathExists(config.converterBinary))) {
-    throw new Error(`converter binary not found at ${config.converterBinary}`);
+    return convertEditorMapToApolloPackage({
+      mapName,
+      jsonPath,
+      releaseDir,
+      baseMapDir,
+    });
   }
   const args = [`--input_json=${jsonPath}`, `--output_dir=${releaseDir}`];
   if (baseMapDir && (await pathExists(baseMapDir))) {

@@ -96,8 +96,8 @@ sudo loginctl enable-linger dell
 
 ## Runtime boundary
 
-The web system can run independently today. Full one-click map release still
-requires x86_64 native Apollo helper binaries in `runtime/bin`:
+The web system can run independently today. Native Apollo helper binaries are
+still preferred in `runtime/bin`:
 
 - `runtime/bin/editor_map_converter`
 - `runtime/bin/tile_map_images_creator`
@@ -106,3 +106,8 @@ The available Apollo HDMap image contains aarch64 binaries and Bazel runfiles.
 The C++ source files for `modules/private_tools` are not present in the final
 image or the public `wheelos/apollo-lite` repository, so these binaries cannot
 be rebuilt for x86_64 from the current public artifacts alone.
+
+If `runtime/bin/editor_map_converter` is absent, the backend uses its JS
+compatibility converter and keeps the original frontend `ReleaseMapFile`
+protocol unchanged. Installing the native binary later automatically restores
+the original converter path.
