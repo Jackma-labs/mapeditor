@@ -2642,7 +2642,7 @@ async function analyzeDataPackage(config, params) {
   if (files.length === 0) {
     throw new Error('file is required');
   }
-  const packageRoot = path.join(config.baseMapRoot, '..', 'import_packages');
+  const packageRoot = getImportPackageRoot(config);
   await fsp.mkdir(packageRoot, { recursive: true });
   const packageName = sanitizePackageName(params.packageName || files[0].originalName || files[0].originalname);
   const packageId = `${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${packageName}`;
@@ -2715,11 +2715,16 @@ async function refreshDataPackageAnalysis(config, params) {
 }
 
 function getImportPackageRoot(config) {
-  return path.resolve(config.baseMapRoot, '..', 'import_packages');
+  return path.resolve(
+    config.importPackageRoot || path.resolve(config.baseMapRoot, '..', 'import_packages')
+  );
 }
 
 function getImportPackageTrashRoot(config) {
-  return path.resolve(config.baseMapRoot, '..', 'import_packages_trash');
+  return path.resolve(
+    config.importPackageTrashRoot ||
+      path.resolve(config.baseMapRoot, '..', 'import_packages_trash')
+  );
 }
 
 function validatePackageId(packageId) {

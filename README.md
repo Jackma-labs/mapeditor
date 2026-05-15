@@ -135,6 +135,8 @@ Environment overrides:
 - `MAP_BASE_MAP_ROOT`
 - `MAP_EDITOR_MAP_ROOT`
 - `MAP_RELEASE_ROOT`
+- `MAP_IMPORT_PACKAGE_ROOT`
+- `MAP_IMPORT_PACKAGE_TRASH_ROOT`
 - `MAP_CONVERTER_BINARY`
 - `MAP_TILE_MAP_CREATOR_BINARY`
 - `MAP_TILE_MAP_CONFIG`
@@ -197,6 +199,20 @@ Image files are extracted into `source_images/` and recorded in the map
 metadata, but they are not projected unless matching camera intrinsics,
 extrinsics, timestamps, and vehicle/lidar poses are available. The resulting
 map is available from the base-map open dialog as a drawable base layer.
+
+ResultOut asset sync:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/sync-resultout-assets.ps1 `
+  -SourceRoot "\\LanDingDisk\地图数据\采图数据\结算数据" `
+  -DestinationRoot "\\192.168.110.2\mapeditor-capture"
+```
+
+The sync script scans each source package for a `ResultOut` directory, copies
+only `.las` files into a backend-compatible data-package layout, and writes
+`package_metadata.json` plus `source_manifest.json` for audit. On the Dell
+server, set `MAP_IMPORT_PACKAGE_ROOT=/data/mapeditor/capture_inbox` so synced
+packages appear in the asset manager without browser uploads.
 
 Apollo map package import:
 
