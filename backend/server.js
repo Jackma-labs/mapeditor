@@ -50,6 +50,10 @@ function getBaseMapLayerDir(layer = 'enhanced') {
   return BASE_MAP_LAYER_DIRS[layer] || null;
 }
 const runtimeJobs = new Map();
+const HEAVY_RUNTIME_JOB_TYPES = new Set([
+  'import-data-package-base-map',
+  'import-data-packages-merged-base-map',
+]);
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
@@ -151,6 +155,29 @@ function listRuntimeJobs() {
   return Array.from(runtimeJobs.values())
     .map((job) => serializeRuntimeJob(job))
     .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
+}
+
+function isActiveRuntimeJob(job) {
+  return job?.status === 'queued' || job?.status === 'running';
+}
+
+function findActiveHeavyRuntimeJob() {
+  for (const job of runtimeJobs.values()) {
+    if (isActiveRuntimeJob(job) && HEAVY_RUNTIME_JOB_TYPES.has(job.type)) {
+      return job;
+    }
+  }
+  return null;
+}
+
+function sendRuntimeJobBusy(res, activeJob) {
+  res.status(409).json({
+    code: 15066,
+    message: `A base-map generation job is already running: ${activeJob.id}`,
+    data: {
+      job: serializeRuntimeJob(activeJob),
+    },
+  });
 }
 
 async function removeRuntimeJobFiles(jobId) {
@@ -1013,6 +1040,11 @@ app.post('/runtime/import-data-package-base-map', async (req, res) => {
 app.post('/runtime/import-data-package-base-map-job', async (req, res) => {
   try {
     const body = req.body || {};
+    const activeJob = findActiveHeavyRuntimeJob();
+    if (activeJob) {
+      sendRuntimeJobBusy(res, activeJob);
+      return;
+    }
     const job = startRuntimeJob('import-data-package-base-map', (runtimeJob) =>
       runtime.importDataPackageBaseMap(config, {
         ...body,
@@ -1044,6 +1076,11 @@ app.post('/runtime/import-data-packages-merged-base-map-job', async (req, res) =
   try {
     const body = req.body || {};
     const packageIds = Array.isArray(body.packageIds) ? body.packageIds : [];
+    const activeJob = findActiveHeavyRuntimeJob();
+    if (activeJob) {
+      sendRuntimeJobBusy(res, activeJob);
+      return;
+    }
     const job = startRuntimeJob('import-data-packages-merged-base-map', (runtimeJob) =>
       runtime.importMergedDataPackagesBaseMap(config, {
         ...body,

@@ -701,6 +701,31 @@
         border-radius: 6px;
         background: #1f2633;
         color: #d9e7ff;
+
+        &.is-active {
+            border-color: #5c81c8;
+            background: #202a3c;
+        }
+    }
+
+    .asset-manager-job-main {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+    }
+
+    .asset-manager-job-meta,
+    .asset-manager-job-message {
+        color: #7f8da3;
+        font-size: 12px;
+    }
+
+    .asset-manager-job-message {
+        max-width: 360px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .asset-manager-jobs {

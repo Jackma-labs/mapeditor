@@ -90,7 +90,22 @@ const getJobStatusColor = (status: string) => {
     if (status === 'running') {
         return 'blue';
     }
+    if (status === 'queued') {
+        return 'gold';
+    }
     return 'default';
+};
+
+const BASE_MAP_JOB_TYPES = new Set(['import-data-package-base-map', 'import-data-packages-merged-base-map']);
+
+const isActiveJob = (job: any) => job?.status === 'queued' || job?.status === 'running';
+
+const isBaseMapJob = (job: any) => BASE_MAP_JOB_TYPES.has(job?.type);
+
+const getLatestJobMessage = (job: any) => {
+    const logs = Array.isArray(job?.logs) ? job.logs : [];
+    const latestLog = logs.length > 0 ? logs[logs.length - 1] : null;
+    return latestLog?.message || job?.message || '';
 };
 
 const workflowStatusColor: Record<string, string> = {
@@ -230,6 +245,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     const selectedPackageIdSet = new Set(selectedPackageIds.map(String));
     const selectedPackages = packages.filter((item) => selectedPackageIdSet.has(item.packageId));
     const primaryPackage = selectedPackages[0];
+    const activeBaseMapJob = jobs.find((job) => isBaseMapJob(job) && isActiveJob(job));
+    const baseMapBusy = Boolean(activeBaseMapJob);
+    const activeBaseMapJobMessage = activeBaseMapJob ? getLatestJobMessage(activeBaseMapJob) : '';
     const assetStats = packages.reduce(
         (stats, item) => {
             const summary = item.summary || {};
@@ -306,7 +324,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
 
     const loadJobs = useCallback(async () => {
         try {
-            const response = await FileService.getRuntimeJobs(8);
+            const response = await FileService.getRuntimeJobs(12);
             if (response?.code === 0) {
                 setJobs(response?.data?.jobs || []);
             }
@@ -324,11 +342,15 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             setJobText('');
             throw new Error('后台任务等待超时');
         }
-        const response = await FileService.getRuntimeJob(jobId);
+        const response = await FileService.getRuntimeJob(jobId, true);
         if (response?.code !== 0) {
             throw new Error(response?.message || '读取后台任务失败');
         }
         const job = response?.data?.job;
+        if (!job) {
+            throw new Error('Runtime job response is empty');
+        }
+        setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)].slice(0, 12));
         if (job?.status === 'succeeded') {
             setJobText('');
             return job;
@@ -337,7 +359,8 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             setJobText('');
             throw new Error(job?.message || '后台任务失败');
         }
-        setJobText(`${label}，状态：${job?.status || 'running'}`);
+        const latestMessage = getLatestJobMessage(job);
+        setJobText(`${label}${latestMessage ? `：${latestMessage}` : `，状态：${job?.status || 'running'}`}`);
         await sleep(3000);
         return waitForRuntimeJob(jobId, label, attempt + 1);
     };
@@ -746,6 +769,13 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     };
 
     const handleGenerateSelectedBaseMap = () => {
+        if (baseMapBusy) {
+            message.warning('已有底图生成任务正在运行，请先查看当前任务进度');
+            if (activeBaseMapJob) {
+                showJobDetails(activeBaseMapJob);
+            }
+            return;
+        }
         if (selectedPackages.some((item) => item.workflowStatus?.canGenerateBaseMap === false)) {
             message.warning('所选资产还未通过自检，先执行预检');
             return;
@@ -784,6 +814,16 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             setJobText('');
         }
     }, [open, refreshAll]);
+
+    useEffect(() => {
+        if (!open) {
+            return undefined;
+        }
+        const timer = window.setInterval(() => {
+            loadJobs();
+        }, 5000);
+        return () => window.clearInterval(timer);
+    }, [loadJobs, open]);
 
     useEffect(() => {
         const packageIds = new Set(packages.map((item) => item.packageId));
@@ -944,7 +984,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     <Button
                         size="small"
                         onClick={handleGenerateSelectedBaseMap}
-                        disabled={selectedPackages.length === 0 || uploading}
+                        disabled={selectedPackages.length === 0 || uploading || baseMapBusy}
                     >
                         {selectedPackages.length > 1 ? '合并生成' : '生成底图'}
                     </Button>
@@ -988,7 +1028,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                                     <Button onClick={handleShowSelectedDetails}>详情</Button>
                                 </>
                             )}
-                            <Button onClick={handleGenerateSelectedBaseMap} disabled={uploading}>
+                            <Button onClick={handleGenerateSelectedBaseMap} disabled={uploading || baseMapBusy}>
                                 {selectedPackages.length > 1 ? '合并生成底图' : '生成底图'}
                             </Button>
                             <Button
@@ -1002,7 +1042,30 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </>
                 )}
             </div>
-            {jobText && <div className="asset-manager-job">{jobText}</div>}
+            {(jobText || activeBaseMapJob) && (
+                <div className={`asset-manager-job${activeBaseMapJob ? ' is-active' : ''}`}>
+                    <div className="asset-manager-job-main">
+                        <span>
+                            {jobText ||
+                                `底图任务：${activeBaseMapJobMessage || activeBaseMapJob?.message || activeBaseMapJob?.status}`}
+                        </span>
+                        {activeBaseMapJob && (
+                            <Button size="small" onClick={() => showJobDetails(activeBaseMapJob)}>
+                                查看日志
+                            </Button>
+                        )}
+                    </div>
+                    {activeBaseMapJob && (
+                        <div className="asset-manager-job-meta">
+                            {[
+                                activeBaseMapJob.type,
+                                activeBaseMapJob.status,
+                                formatDateTime(activeBaseMapJob.createdAt),
+                            ].join(' / ')}
+                        </div>
+                    )}
+                </div>
+            )}
             {jobs.length > 0 && (
                 <div className="asset-manager-jobs">
                     <div className="asset-manager-jobs-title">最近后台任务</div>
@@ -1016,6 +1079,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                             >
                                 <Tag color={getJobStatusColor(job.status)}>{job.status}</Tag>
                                 <span>{job.type}</span>
+                                <span className="asset-manager-job-message">{getLatestJobMessage(job)}</span>
                                 <span>{formatDateTime(job.createdAt)}</span>
                             </button>
                         ))}
