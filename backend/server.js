@@ -1287,9 +1287,15 @@ app.post('/runtime/create-base-map', async (req, res) => {
 app.post('/runtime/deploy-map-job', async (req, res) => {
   try {
     const body = req.body || {};
-    const job = startRuntimeJob('deploy-map', () => runtime.deployReleasedMap(config, body), {
-      mapName: body.mapName || '',
-    });
+    const job = startRuntimeJob('deploy-map', (runtimeJob) =>
+      runtime.deployReleasedMap(config, {
+        ...body,
+        progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+      }),
+      {
+        mapName: body.mapName || '',
+      }
+    );
     res.status(202).json({
       code: 0,
       message: 'Accepted',
@@ -1307,7 +1313,12 @@ app.post('/runtime/deploy-map-job', async (req, res) => {
 
 app.post('/runtime/deploy-latest-job', async (_req, res) => {
   try {
-    const job = startRuntimeJob('deploy-latest', () => runtime.deployLatestReleasedMap(config), {});
+    const job = startRuntimeJob('deploy-latest', (runtimeJob) =>
+      runtime.deployLatestReleasedMap(config, {
+        progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+      }),
+      {}
+    );
     res.status(202).json({
       code: 0,
       message: 'Accepted',

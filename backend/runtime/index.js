@@ -4159,8 +4159,9 @@ async function createBaseMap(config, params = {}) {
   });
 }
 
-async function deployReleasedMap(config, params) {
+async function deployReleasedMap(config, params = {}) {
   const { mapName } = params;
+  const progress = typeof params.progress === 'function' ? params.progress : async () => {};
   const deploymentId = params.deploymentId || createDeploymentId('deploy');
   const startedAt = new Date().toISOString();
   const baseRecord = {
@@ -4176,6 +4177,7 @@ async function deployReleasedMap(config, params) {
     throw new Error('mapName is required');
   }
   try {
+    await progress(`Preparing edge deployment for ${mapName}`);
     if (config.edgeDeploy.mode === 'disabled') {
       throw new Error('edge deploy is disabled');
     }
@@ -4189,6 +4191,7 @@ async function deployReleasedMap(config, params) {
     if (!config.edgeDeploy.host || !config.edgeDeploy.user) {
       throw new Error('edgeDeploy.host and edgeDeploy.user are required');
     }
+    await progress(`Running edge preflight: ${config.edgeDeploy.user}@${config.edgeDeploy.host}`);
     const preflight = await preflightEdgeDeploy(config);
     if (!preflight.ready) {
       const failedChecks = preflight.checks
@@ -4206,19 +4209,23 @@ async function deployReleasedMap(config, params) {
     const uploadParent = `${remoteRoot}/.mapeditor_uploads/${deploymentId}`;
     const backupDir = `${backupRoot}/${mapName}-${deploymentId}`;
     const remoteUploadedDir = `${uploadParent}/${path.basename(sourceDir)}`;
+    await progress(`Checking existing map on edge: ${remoteMapDir}`);
     const hadBackupResult = await runCommand('ssh', [
       ...sshBaseArgs,
       `[ -d ${quoteShell(remoteMapDir)} ] && echo yes || echo no`,
     ]);
     const hadBackup = hadBackupResult.stdout.trim() === 'yes';
+    await progress(`Preparing remote deployment directories under ${remoteRoot}`);
     await runCommand('ssh', [
       ...sshBaseArgs,
       `mkdir -p ${quoteShell(uploadParent)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`,
     ]);
     const copyTarget = `${edgeTarget}:${uploadParent}/`;
+    await progress(`Copying released map to edge: ${mapName}`);
     const copyResult = await runCommand('scp', [...buildScpBaseArgs(config), '-r', sourceDir, copyTarget], {
       timeoutMs: 10 * 60 * 1000,
     });
+    await progress(`Activating map on edge: ${remoteMapDir}`);
     const activateCommand = [
       `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(backupDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
         backupDir
@@ -4232,8 +4239,10 @@ async function deployReleasedMap(config, params) {
     });
     let postDeployResult = null;
     if (config.edgeDeploy.postDeployCommand) {
+      await progress('Running post-deploy command on edge');
       postDeployResult = await runCommand('ssh', [...sshBaseArgs, config.edgeDeploy.postDeployCommand]);
     }
+    await progress('Recording deployment result');
     const record = await appendDeploymentRecord(config, {
       ...baseRecord,
       status: 'succeeded',
@@ -4258,6 +4267,7 @@ async function deployReleasedMap(config, params) {
           }
         : null,
     });
+    await progress(`Deployment succeeded: ${mapName}`);
     return { deployment: record, preflight, copyResult, activateResult, postDeployResult };
   } catch (error) {
     await appendDeploymentRecord(config, {
@@ -4269,13 +4279,16 @@ async function deployReleasedMap(config, params) {
   }
 }
 
-async function deployLatestReleasedMap(config) {
+async function deployLatestReleasedMap(config, params = {}) {
+  const progress = typeof params.progress === 'function' ? params.progress : async () => {};
+  await progress('Selecting latest released map');
   const maps = await listReleasedMaps(config);
   if (maps.length === 0) {
     throw new Error(`no released maps found at ${config.releaseRoot}`);
   }
   const latest = maps[0];
-  const result = await deployReleasedMap(config, { mapName: latest.mapName });
+  await progress(`Latest released map selected: ${latest.mapName}`);
+  const result = await deployReleasedMap(config, { mapName: latest.mapName, progress });
   return {
     mapName: latest.mapName,
     releasedMap: latest,

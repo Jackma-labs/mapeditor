@@ -12,15 +12,28 @@ const sleep = (ms: number) =>
         setTimeout(resolve, ms);
     });
 
-const waitForRuntimeJob = async (jobId: string, label: string, attempt = 0): Promise<any> => {
+const getLatestJobMessage = (job: any) => {
+    const logs = Array.isArray(job?.logs) ? job.logs : [];
+    const latestLog = logs.length > 0 ? logs[logs.length - 1] : null;
+    return latestLog?.message || job?.message || '';
+};
+
+const waitForRuntimeJob = async (
+    jobId: string,
+    label: string,
+    onProgress?: (text: string) => void,
+    attempt = 0,
+): Promise<any> => {
     if (attempt >= 600) {
         throw new Error(`${label}等待超时`);
     }
-    const response = await FileService.getRuntimeJob(jobId);
+    const response = await FileService.getRuntimeJob(jobId, true);
     if (response?.code !== 0) {
         throw new Error(response?.message || '读取后台任务失败');
     }
     const job = response?.data?.job;
+    const latestMessage = getLatestJobMessage(job);
+    onProgress?.(`${label}${latestMessage ? `：${latestMessage}` : `，状态：${job?.status || 'running'}`}`);
     if (job?.status === 'succeeded') {
         return job;
     }
@@ -28,7 +41,7 @@ const waitForRuntimeJob = async (jobId: string, label: string, attempt = 0): Pro
         throw new Error(job?.message || `${label}失败`);
     }
     await sleep(3000);
-    return waitForRuntimeJob(jobId, label, attempt + 1);
+    return waitForRuntimeJob(jobId, label, onProgress, attempt + 1);
 };
 
 const checkColor = (status: string) => {
@@ -45,6 +58,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const [form] = Form.useForm();
     const [loading, setLoading] = useState(false);
     const [preflight, setPreflight] = useState<any>(null);
+    const [jobText, setJobText] = useState('');
 
     const loadConfig = useCallback(async () => {
         setLoading(true);
@@ -74,6 +88,8 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     useEffect(() => {
         if (open) {
             loadConfig();
+        } else {
+            setJobText('');
         }
     }, [loadConfig, open]);
 
@@ -138,6 +154,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
 
     const deployLatest = async () => {
         setLoading(true);
+        setJobText('正在提交部署任务');
         try {
             const response = await FileService.startDeployLatestReleasedMapJob();
             if (response?.code !== 0) {
@@ -147,7 +164,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             if (!jobId) {
                 throw new Error('后台任务没有返回 jobId');
             }
-            const job = await waitForRuntimeJob(jobId, '部署最新地图');
+            const job = await waitForRuntimeJob(jobId, '部署最新地图', setJobText);
             Modal.success({
                 title: '部署完成',
                 content: `地图 ${job.result?.mapName || job.result?.deployment?.mapName || ''} 已部署到边缘设备。`,
@@ -159,6 +176,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             });
         } finally {
             setLoading(false);
+            setJobText('');
         }
     };
 
@@ -203,6 +221,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                     <Input placeholder="可选，例如重启 Dreamview 或刷新地图服务" />
                 </Form.Item>
             </Form>
+            {jobText && <div className="edge-deploy-job">{jobText}</div>}
             {preflight && (
                 <div className="edge-deploy-checks">
                     <div className="edge-deploy-checks-title">
