@@ -24,6 +24,29 @@ const CURB_EDGE_Z_DELTA = 0.12;
 const INTENSITY_SAMPLE_LIMIT = 200000;
 const TRAJECTORY_METADATA_READ_BYTES = 8 * 1024 * 1024;
 
+function normalizeZipOpenError(error, label) {
+  const message = String(error?.message || error || '');
+  if (
+    /FILE_ENDED/i.test(message) ||
+    /End-of-central-directory/i.test(message) ||
+    /invalid zip/i.test(message) ||
+    /central directory/i.test(message)
+  ) {
+    return new Error(
+      `${label} 不是完整有效的 ZIP 文件。请确认压缩包已完整生成、上传没有中断、不是分卷 ZIP，然后重新上传。原始错误：${message}`
+    );
+  }
+  return error;
+}
+
+async function openZipArchive(zipPath, label = 'ZIP 文件') {
+  try {
+    return await unzipper.Open.file(zipPath);
+  } catch (error) {
+    throw normalizeZipOpenError(error, label);
+  }
+}
+
 async function pathExists(targetPath) {
   try {
     await fsp.access(targetPath, fs.constants.F_OK);
@@ -298,7 +321,7 @@ async function importBaseMapZip(config, params) {
     throw new Error('uploaded zip file not found');
   }
 
-  const archive = await unzipper.Open.file(zipPath);
+  const archive = await openZipArchive(zipPath, `底图 ZIP ${path.basename(zipPath)}`);
   const entries = archive.files.filter((entry) => entry.type === 'File');
   const normalizedPaths = entries.map((entry) => entry.path.replace(/\\/g, '/'));
   const tilePath = findArchivePath(normalizedPaths, 'map_images/tiles.json');
@@ -363,7 +386,7 @@ async function importMapPackageZip(config, params) {
     throw new Error('uploaded zip file not found');
   }
 
-  const archive = await unzipper.Open.file(zipPath);
+  const archive = await openZipArchive(zipPath, `Apollo 地图包 ZIP ${path.basename(zipPath)}`);
   const entries = archive.files.filter((entry) => entry.type === 'File');
   const normalizedPaths = entries.map((entry) => entry.path.replace(/\\/g, '/'));
   const editorMapPathInArchive = findArchivePath(normalizedPaths, 'editor_map.json');
@@ -885,7 +908,7 @@ function selectPreferredPointCloudAnalyses(pointClouds) {
 }
 
 async function parsePointCloudZip(filePath) {
-  const archive = await unzipper.Open.file(filePath);
+  const archive = await openZipArchive(filePath, `点云 ZIP ${path.basename(filePath)}`);
   const entries = archive.files.filter((entry) => entry.type === 'File');
   const cloudEntries = entries.filter((entry) => isSupportedPointCloudName(entry.path));
   const imageEntries = entries.filter((entry) => isImageName(entry.path));
@@ -1670,7 +1693,7 @@ function interpolateEnhancedPose(poses, time) {
 }
 
 async function buildZipImagePoseIndex(zipPath) {
-  const archive = await unzipper.Open.file(zipPath);
+  const archive = await openZipArchive(zipPath, `图片姿态 ZIP ${path.basename(zipPath)}`);
   const entries = archive.files.filter((entry) => entry.type === 'File');
   const imageEntries = entries.filter((entry) => isImageName(entry.path));
   const cameraPoseEntry = entries.find((entry) => /CameraPos_C2E\.txt$/i.test(entry.path));
@@ -1813,7 +1836,7 @@ function getImageOverlayMetadataFromIndex(imageFileCount, imageIndex) {
 }
 
 async function extractImagesFromZip(zipPath, targetDir) {
-  const archive = await unzipper.Open.file(zipPath);
+  const archive = await openZipArchive(zipPath, `图片 ZIP ${path.basename(zipPath)}`);
   const imageEntries = archive.files.filter((entry) => entry.type === 'File' && isImageName(entry.path));
   for (let index = 0; index < imageEntries.length; index += 1) {
     const entry = imageEntries[index];
@@ -2512,7 +2535,7 @@ function normalizePackageAnalysesForCurrentRules(analyses) {
 }
 
 async function analyzeZipDataPackage(filePath, originalName) {
-  const archive = await unzipper.Open.file(filePath);
+  const archive = await openZipArchive(filePath, `采图包 ZIP ${originalName || path.basename(filePath)}`);
   const entries = archive.files.filter((entry) => entry.type === 'File');
   const analysis = {
     source: originalName,
@@ -3222,7 +3245,7 @@ async function scanLasPointCloud(filePath, onPoint) {
 }
 
 async function scanPointCloudZip(filePath, onPoint) {
-  const archive = await unzipper.Open.file(filePath);
+  const archive = await openZipArchive(filePath, `点云 ZIP ${path.basename(filePath)}`);
   const entries = archive.files.filter((entry) => entry.type === 'File');
   const cloudEntries = entries.filter((entry) => isSupportedPointCloudName(entry.path));
   const imageEntries = entries.filter((entry) => isImageName(entry.path));

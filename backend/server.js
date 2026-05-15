@@ -163,6 +163,67 @@ function sanitizeUploadFileName(name, index) {
   return `${index}-${base || 'upload'}`;
 }
 
+function formatBytes(value) {
+  const numberValue = Number(value || 0);
+  if (!Number.isFinite(numberValue) || numberValue <= 0) {
+    return '0 B';
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const power = Math.min(Math.floor(Math.log(numberValue) / Math.log(1024)), units.length - 1);
+  return `${(numberValue / 1024 ** power).toFixed(power === 0 ? 0 : 1)} ${units[power]}`;
+}
+
+async function assertZipHasEndOfCentralDirectory(filePath, displayName) {
+  const stat = await fsp.stat(filePath);
+  const minZipSize = 22;
+  if (stat.size < minZipSize) {
+    throw new Error(`ZIP 文件不完整：${displayName} 只有 ${formatBytes(stat.size)}，请重新打包后上传。`);
+  }
+  const maxCommentBytes = 65535;
+  const readSize = Math.min(stat.size, minZipSize + maxCommentBytes);
+  const handle = await fsp.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(readSize);
+    await handle.read(buffer, 0, readSize, stat.size - readSize);
+    for (let index = buffer.length - minZipSize; index >= 0; index -= 1) {
+      if (
+        buffer[index] === 0x50 &&
+        buffer[index + 1] === 0x4b &&
+        buffer[index + 2] === 0x05 &&
+        buffer[index + 3] === 0x06
+      ) {
+        return;
+      }
+    }
+  } finally {
+    await handle.close();
+  }
+  throw new Error(
+    `ZIP 文件尾部不完整或不是标准 ZIP：${displayName}。服务器收到 ${formatBytes(
+      stat.size
+    )}，但没有找到中央目录结束标记。请确认上传没有中断、不是分卷 ZIP，并重新打包上传。`
+  );
+}
+
+async function validateUploadedFiles(uploadedFiles) {
+  for (const file of uploadedFiles) {
+    if (!file?.path) {
+      continue;
+    }
+    const stat = await fsp.stat(file.path);
+    if (file.size && stat.size !== file.size) {
+      throw new Error(
+        `上传文件大小不一致：${file.originalname || file.filename}，浏览器报告 ${formatBytes(
+          file.size
+        )}，服务器收到 ${formatBytes(stat.size)}。请重新上传。`
+      );
+    }
+    if (path.extname(file.originalname || file.filename || '').toLowerCase() === '.zip') {
+      await assertZipHasEndOfCentralDirectory(file.path, file.originalname || file.filename || file.path);
+    }
+  }
+}
+
 async function moveUploadedFilesToJobDir(jobId, uploadedFiles) {
   const jobTmpDir = path.join(importTmpRoot, `job-${jobId}`);
   await fsp.mkdir(jobTmpDir, { recursive: true });
@@ -619,6 +680,7 @@ app.post('/runtime/import-base-map', upload.single('file'), async (req, res) => 
     if (!req.file) {
       throw new Error('file is required');
     }
+    await validateUploadedFiles([req.file]);
     const result = await runtime.importBaseMapZip(config, {
       zipPath: req.file.path,
       mapName: req.body.mapName,
@@ -648,6 +710,7 @@ app.post('/runtime/import-point-cloud-base-map', upload.any(), async (req, res) 
     if (uploadedFiles.length === 0) {
       throw new Error('file is required');
     }
+    await validateUploadedFiles(uploadedFiles);
     const result =
       uploadedFiles.length === 1
         ? await runtime.importPointCloudBaseMap(config, {
@@ -691,6 +754,7 @@ app.post('/runtime/analyze-data-package', upload.any(), async (req, res) => {
     if (uploadedFiles.length === 0) {
       throw new Error('file is required');
     }
+    await validateUploadedFiles(uploadedFiles);
     const result = await runtime.analyzeDataPackage(config, {
       files: uploadedFiles.map((file) => ({
         path: file.path,
@@ -726,6 +790,7 @@ app.post('/runtime/analyze-data-package-job', upload.any(), async (req, res) => 
     if (uploadedFiles.length === 0) {
       throw new Error('file is required');
     }
+    await validateUploadedFiles(uploadedFiles);
     const stagingId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     staged = await moveUploadedFilesToJobDir(stagingId, uploadedFiles);
     const request = {
@@ -981,6 +1046,7 @@ app.post('/runtime/import-map-package', upload.single('file'), async (req, res) 
     if (!req.file) {
       throw new Error('file is required');
     }
+    await validateUploadedFiles([req.file]);
     const result = await runtime.importMapPackageZip(config, {
       zipPath: req.file.path,
       mapName: req.body.mapName,
