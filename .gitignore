@@ -5,7 +5,11 @@ frontend/build/
 data/bag/*
 data/base_map/*
 data/editor_map/*
+data/import_packages/*
+data/import_packages_trash/*
+data/import_tmp/*
 data/released_map/*
+data/runtime_jobs/*
 runtime/bin/*
 *.log
 .env.server
@@ -13,5 +17,9 @@ runtime/bin/*
 !data/bag/.gitkeep
 !data/base_map/.gitkeep
 !data/editor_map/.gitkeep
+!data/import_packages/.gitkeep
+!data/import_packages_trash/.gitkeep
+!data/import_tmp/.gitkeep
 !data/released_map/.gitkeep
+!data/runtime_jobs/.gitkeep
 !runtime/bin/.gitkeep
