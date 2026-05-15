@@ -233,6 +233,24 @@ class FileService {
         });
     }
 
+    async startRefreshAllDataPackageAnalysisJob(onlyMissing: boolean = true) {
+        return this.requestJson('/runtime/refresh-all-data-package-analysis-job', {
+            method: 'POST',
+            body: JSON.stringify({
+                onlyMissing,
+            }),
+        });
+    }
+
+    async getDataPackageStitchPlan(packageIds: string[]) {
+        return this.requestJson('/runtime/data-package-stitch-plan', {
+            method: 'POST',
+            body: JSON.stringify({
+                packageIds,
+            }),
+        });
+    }
+
     async importDataPackageBaseMap(packageId: string, mapName: string, overwrite: boolean = false) {
         return this.requestJson('/runtime/import-data-package-base-map', {
             method: 'POST',

@@ -1116,6 +1116,7 @@ function createRasterTileAccumulator(options = {}) {
       coordinate: metadata.coordinate || null,
       imageOverlay: metadata.imageOverlay || null,
       stitchPlan: metadata.stitchPlan || null,
+      sourceAsset: metadata.sourceAsset || null,
       processing: metadata.processing || null,
       layers: metadata.layers || null,
       tiles: {},
@@ -2770,6 +2771,15 @@ async function writePackageMetadata(packageDir, metadata) {
   await fsp.writeFile(path.join(packageDir, 'package_metadata.json'), JSON.stringify(metadata, null, 2), 'utf8');
 }
 
+async function readPackageSourceManifest(packageDir) {
+  const manifestPath = path.join(packageDir, 'source_manifest.json');
+  if (!(await pathExists(manifestPath))) {
+    return null;
+  }
+  const content = await fsp.readFile(manifestPath, 'utf8');
+  return JSON.parse(content.replace(/^\uFEFF/, ''));
+}
+
 async function readAnalysisFile(packageDir) {
   const analysisPath = path.join(packageDir, 'analysis.json');
   if (!(await pathExists(analysisPath))) {
@@ -2777,6 +2787,163 @@ async function readAnalysisFile(packageDir) {
   }
   const content = await fsp.readFile(analysisPath, 'utf8');
   return JSON.parse(content.replace(/^\uFEFF/, ''));
+}
+
+function combineBounds(items) {
+  const boundsList = (items || []).map((item) => item.bounds).filter(Boolean);
+  if (boundsList.length === 0) {
+    return null;
+  }
+  const result = {
+    minX: Infinity,
+    minY: Infinity,
+    minZ: Infinity,
+    maxX: -Infinity,
+    maxY: -Infinity,
+    maxZ: -Infinity,
+  };
+  for (const bounds of boundsList) {
+    result.minX = Math.min(result.minX, Number(bounds.minX));
+    result.minY = Math.min(result.minY, Number(bounds.minY));
+    result.minZ = Math.min(result.minZ, Number(bounds.minZ || 0));
+    result.maxX = Math.max(result.maxX, Number(bounds.maxX));
+    result.maxY = Math.max(result.maxY, Number(bounds.maxY));
+    result.maxZ = Math.max(result.maxZ, Number(bounds.maxZ || 0));
+  }
+  if (!Object.values(result).every(Number.isFinite)) {
+    return null;
+  }
+  return {
+    minX: roundPointValue(result.minX),
+    minY: roundPointValue(result.minY),
+    minZ: roundPointValue(result.minZ),
+    maxX: roundPointValue(result.maxX),
+    maxY: roundPointValue(result.maxY),
+    maxZ: roundPointValue(result.maxZ),
+  };
+}
+
+function buildCoordinateGroup(kind, bounds) {
+  if (!kind || !bounds) {
+    return null;
+  }
+  const centerX = (Number(bounds.minX) + Number(bounds.maxX)) / 2;
+  const centerY = (Number(bounds.minY) + Number(bounds.maxY)) / 2;
+  if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) {
+    return null;
+  }
+  const bucketSize = kind === 'lonlat_range_compatible' ? 0.05 : 10000;
+  return `${kind}:x${Math.round(centerX / bucketSize)}:y${Math.round(centerY / bucketSize)}`;
+}
+
+function buildPackageQuality(summary, analyses) {
+  const pointClouds = (analyses || []).flatMap((analysis) => analysis.pointClouds || []);
+  const preferredPointClouds = selectPreferredPointCloudAnalyses(pointClouds);
+  const bounds = combineBounds(preferredPointClouds);
+  const pointCount = Number(summary?.pointCount || 0);
+  const width = bounds ? Math.max(0, Number(bounds.maxX) - Number(bounds.minX)) : 0;
+  const height = bounds ? Math.max(0, Number(bounds.maxY) - Number(bounds.minY)) : 0;
+  const areaSquareMeters = width > 0 && height > 0 ? width * height : 0;
+  const pointDensity = areaSquareMeters > 0 ? pointCount / areaSquareMeters : 0;
+  const coordinateKinds = Array.from(new Set(pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
+  const representativeCoordinateKind =
+    summary?.trajectory?.preferredCoordinateKind || coordinateKinds[0] || null;
+  const coordinateGroup = buildCoordinateGroup(representativeCoordinateKind, bounds);
+  const hasMixedCoordinateKinds = coordinateKinds.length > 1;
+  let rating = 'unknown';
+  if (pointCount > 0 && areaSquareMeters > 0) {
+    if (pointDensity >= 120) {
+      rating = 'excellent';
+    } else if (pointDensity >= 40) {
+      rating = 'good';
+    } else if (pointDensity >= 10) {
+      rating = 'usable';
+    } else {
+      rating = 'sparse';
+    }
+  }
+  return {
+    rating,
+    pointDensity: Number.isFinite(pointDensity) ? Number(pointDensity.toFixed(2)) : 0,
+    areaSquareMeters: Number.isFinite(areaSquareMeters) ? Number(areaSquareMeters.toFixed(2)) : 0,
+    bounds,
+    coordinateKinds,
+    representativeCoordinateKind,
+    coordinateGroup,
+    hasMixedCoordinateKinds,
+  };
+}
+
+async function baseMapExistsForPackage(config, displayName) {
+  const mapName = sanitizePackageName(displayName || '');
+  if (!mapName) {
+    return false;
+  }
+  return pathExists(path.join(config.baseMapRoot, mapName, 'map_images', 'tiles.json'));
+}
+
+function buildPackageWorkflowStatus({ summary, analyses, quality, sourceManifest, baseMapExists }) {
+  const pointCloudFiles = Number(summary?.pointCloudFiles || 0);
+  const hasAnalysis = Array.isArray(analyses) && analyses.length > 0;
+  const errors = [];
+  const warnings = [];
+  if (!sourceManifest) {
+    warnings.push('missing_source_manifest');
+  }
+  if (!hasAnalysis) {
+    return {
+      code: 'pending_precheck',
+      label: '待预检',
+      canGenerateBaseMap: false,
+      canMerge: false,
+      errors: ['analysis_missing'],
+      warnings,
+      recommendedAction: 'run_precheck',
+    };
+  }
+  if (pointCloudFiles <= 0) {
+    errors.push('point_cloud_missing');
+  }
+  if (quality?.hasMixedCoordinateKinds) {
+    errors.push('coordinate_mixed');
+  }
+  if (!quality?.coordinateGroup) {
+    warnings.push('coordinate_group_unknown');
+  }
+  if (quality?.rating === 'sparse') {
+    warnings.push('point_density_sparse');
+  }
+  if (errors.length > 0) {
+    return {
+      code: errors.includes('point_cloud_missing') ? 'missing_point_cloud' : 'precheck_failed',
+      label: errors.includes('point_cloud_missing') ? '缺点云' : '需处理',
+      canGenerateBaseMap: false,
+      canMerge: false,
+      errors,
+      warnings,
+      recommendedAction: 'inspect_package',
+    };
+  }
+  if (baseMapExists) {
+    return {
+      code: 'base_map_ready',
+      label: '底图已生成',
+      canGenerateBaseMap: true,
+      canMerge: true,
+      errors,
+      warnings,
+      recommendedAction: 'open_or_merge',
+    };
+  }
+  return {
+    code: 'ready_for_basemap',
+    label: '可生成底图',
+    canGenerateBaseMap: true,
+    canMerge: true,
+    errors,
+    warnings,
+    recommendedAction: 'generate_base_map',
+  };
 }
 
 async function listDataPackages(config) {
@@ -2795,9 +2962,19 @@ async function listDataPackages(config) {
     const stat = await fsp.stat(packageDir);
     const analysis = await readAnalysisFile(packageDir).catch(() => null);
     const metadata = await readPackageMetadata(packageDir).catch(() => ({}));
+    const sourceManifest = await readPackageSourceManifest(packageDir).catch(() => null);
     const analyses = normalizePackageAnalysesForCurrentRules(analysis?.analyses || []);
     const summary = analyses.length ? summarizeCombinedPackageAnalysis(analyses) : analysis?.summary || null;
     const displayName = metadata.displayName || analysis?.displayName || defaultMapNameFromPackageId(packageId);
+    const quality = buildPackageQuality(summary, analyses);
+    const baseMapExists = await baseMapExistsForPackage(config, displayName);
+    const workflowStatus = buildPackageWorkflowStatus({
+      summary,
+      analyses,
+      quality,
+      sourceManifest,
+      baseMapExists,
+    });
     packages.push({
       packageId,
       path: packageDir,
@@ -2805,8 +2982,13 @@ async function listDataPackages(config) {
       modifiedAt: stat.mtime.toISOString(),
       displayName,
       defaultMapName: displayName,
+      sourceManifest,
       summary,
       analyses,
+      quality,
+      coordinateGroup: quality.coordinateGroup,
+      workflowStatus,
+      baseMapExists,
       uploadedFiles: analysis?.uploadedFiles || [],
       sizeBytes: await getDirectorySize(packageDir),
     });
@@ -2947,12 +3129,16 @@ async function buildDataPackageStitchPlan(config, packageIds) {
   for (const packageId of packageIds) {
     const packageDir = await resolveDataPackageDir(config, packageId);
     const analysis = await readAnalysisFile(packageDir).catch(() => null);
+    const metadata = await readPackageMetadata(packageDir).catch(() => ({}));
     const analyses = normalizePackageAnalysesForCurrentRules(analysis?.analyses || []);
+    const summary = analyses.length ? summarizeCombinedPackageAnalysis(analyses) : analysis?.summary || null;
+    const quality = buildPackageQuality(summary, analyses);
     const packageInfo = {
       packageId,
       path: packageDir,
       analyses,
-      summary: analyses.length ? summarizeCombinedPackageAnalysis(analyses) : analysis?.summary || null,
+      summary,
+      quality,
     };
     const trajectoryAnchor = createStitchAnchor({
       summary: {
@@ -2966,16 +3152,31 @@ async function buildDataPackageStitchPlan(config, packageIds) {
     });
     packages.push({
       packageId,
+      displayName: metadata.displayName || defaultMapNameFromPackageId(packageId),
       anchor: trajectoryAnchor || pointCloudAnchor,
       trajectoryAnchor,
       pointCloudAnchor,
+      quality,
+      coordinateGroup: quality.coordinateGroup,
       pointCloudFiles: packageInfo.summary?.pointCloudFiles || 0,
       trajectory: packageInfo.summary?.trajectory || null,
     });
   }
   const reference = packages.find((item) => item.anchor)?.anchor || null;
+  const coordinateGroups = Array.from(new Set(packages.map((item) => item.coordinateGroup).filter(Boolean)));
+  const missingCoordinateGroups = packages.filter((item) => !item.coordinateGroup).map((item) => item.packageId);
+  const mismatchedCoordinateGroups = coordinateGroups.length > 1;
+  const ready = Boolean(reference) && missingCoordinateGroups.length === 0 && !mismatchedCoordinateGroups;
   return {
+    ready,
     reference,
+    coordinateGroups,
+    missingCoordinateGroups,
+    errors: [
+      ...(reference ? [] : ['missing_reference_anchor']),
+      ...(missingCoordinateGroups.length ? ['missing_coordinate_group'] : []),
+      ...(mismatchedCoordinateGroups ? ['coordinate_group_mismatch'] : []),
+    ],
     packages: packages.map((item) => ({
       ...item,
       offsetFromReference:
@@ -2986,11 +3187,13 @@ async function buildDataPackageStitchPlan(config, packageIds) {
             }
           : null,
       stitchingReadiness:
-        reference && item.anchor && item.anchor.coordinateKind === reference.coordinateKind
+        ready && item.anchor && item.coordinateGroup === coordinateGroups[0]
           ? 'same_anchor_coordinate_kind'
-          : item.anchor
-            ? 'anchor_coordinate_kind_differs'
-            : 'missing_anchor',
+          : !item.anchor
+            ? 'missing_anchor'
+            : !item.coordinateGroup
+              ? 'missing_coordinate_group'
+              : 'anchor_coordinate_kind_differs',
     })),
   };
 }
@@ -3002,11 +3205,18 @@ async function importDataPackageBaseMap(config, params) {
     throw new Error(`data package has no importable point cloud files: ${packageId}`);
   }
   const metadata = await readPackageMetadata(packageDir).catch(() => ({}));
+  const sourceManifest = await readPackageSourceManifest(packageDir).catch(() => null);
   const mapName = params.mapName || sanitizePackageName(metadata.displayName || defaultMapNameFromPackageId(packageId));
   const result = await importPointCloudFilesBaseMap(config, {
     mapName,
     overwrite: params.overwrite === true,
     files,
+    sourceAsset: {
+      type: 'data_package',
+      packageId,
+      displayName: metadata.displayName || defaultMapNameFromPackageId(packageId),
+      sourceManifest,
+    },
   });
   return {
     ...result,
@@ -3034,11 +3244,21 @@ async function importMergedDataPackagesBaseMap(config, params) {
   }
   const mapName = params.mapName || sanitizePackageName(`merged_${packageIds[0]}`);
   const stitchPlan = await buildDataPackageStitchPlan(config, packageIds);
+  if (!stitchPlan.ready && params.allowMixedCoordinateGroups !== true) {
+    throw new Error(
+      `selected packages cannot be merged safely: ${stitchPlan.errors.join(', ') || 'unknown stitch-plan error'}`
+    );
+  }
   const result = await importPointCloudFilesBaseMap(config, {
     mapName,
     overwrite: params.overwrite === true,
     files: importableFiles,
     stitchPlan,
+    sourceAsset: {
+      type: 'merged_data_packages',
+      packageIds,
+      stitchPlan,
+    },
   });
   return {
     ...result,
@@ -3439,8 +3659,10 @@ async function importPointCloudFilesBaseMap(config, params) {
       imageOverlay,
       layers: layerDescriptors,
       stitchPlan: params.stitchPlan || null,
+      sourceAsset: params.sourceAsset || null,
       processing: {
-        mode: 'enhanced_point_cloud_raster',
+        mode: 'resultout_las_annotation_raster',
+        purpose: 'apollo_hdmap_annotation',
         tileResolutionMetersPerPixel: getPointCloudTileResolution(Math.max(...POINT_CLOUD_TILE_LEVELS)),
         groundGrid: stats.groundGrid,
         intensity: stats.intensity,
@@ -3974,6 +4196,7 @@ module.exports = {
   listDataPackages,
   updateDataPackage,
   deleteDataPackage,
+  buildDataPackageStitchPlan,
   importDataPackageBaseMap,
   importMergedDataPackagesBaseMap,
   importBaseMapZip,

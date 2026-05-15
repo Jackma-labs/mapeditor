@@ -93,6 +93,37 @@ const getJobStatusColor = (status: string) => {
     return 'default';
 };
 
+const workflowStatusColor: Record<string, string> = {
+    pending_precheck: 'default',
+    ready_for_basemap: 'blue',
+    base_map_ready: 'green',
+    missing_point_cloud: 'orange',
+    precheck_failed: 'red',
+};
+
+const qualityColor: Record<string, string> = {
+    excellent: 'green',
+    good: 'blue',
+    usable: 'gold',
+    sparse: 'orange',
+    unknown: 'default',
+};
+
+const getWorkflowStatusLabel = (packageInfo: any) =>
+    packageInfo?.workflowStatus?.label || (packageInfo?.summary ? '已预检' : '待预检');
+
+const getWorkflowStatusColor = (packageInfo: any) =>
+    workflowStatusColor[packageInfo?.workflowStatus?.code] || (packageInfo?.summary ? 'blue' : 'default');
+
+const formatQualityText = (quality: any) => {
+    if (!quality) {
+        return '未知';
+    }
+    const density = Number(quality.pointDensity || 0);
+    const area = Number(quality.areaSquareMeters || 0);
+    return `${quality.rating || 'unknown'} / ${density.toFixed(1)} pts/m² / ${(area / 10000).toFixed(2)} ha`;
+};
+
 const formatPackageAnalysis = (packageInfo: any) => {
     const summary = packageInfo?.summary || {};
     const analyses = packageInfo?.analyses || [];
@@ -111,6 +142,23 @@ const formatPackageAnalysis = (packageInfo: any) => {
         `估算点数: ${formatCount(summary.pointCount)}`,
         `资产大小: ${formatBytes(packageInfo?.sizeBytes)}`,
     ];
+    if (packageInfo?.workflowStatus) {
+        lines.push(`资产状态: ${packageInfo.workflowStatus.label || packageInfo.workflowStatus.code}`);
+    }
+    if (packageInfo?.sourceManifest) {
+        lines.push(
+            `同步来源: ${packageInfo.sourceManifest.sourcePackage || packageInfo.sourceManifest.sourceRoot || ''}`,
+        );
+        lines.push(
+            `ResultOut: ${formatCount(packageInfo.sourceManifest.fileCount)} 个 LAS / ${formatBytes(
+                packageInfo.sourceManifest.totalBytes,
+            )}`,
+        );
+    }
+    if (packageInfo?.quality) {
+        lines.push(`质量评级: ${formatQualityText(packageInfo.quality)}`);
+        lines.push(`坐标组: ${packageInfo.coordinateGroup || packageInfo.quality.coordinateGroup || '未知'}`);
+    }
     if (pointCloud) {
         lines.push('');
         lines.push(`点云样例: ${pointCloud.source || ''}`);
@@ -185,13 +233,18 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     const assetStats = packages.reduce(
         (stats, item) => {
             const summary = item.summary || {};
+            const statusCode = item.workflowStatus?.code;
             return {
                 totalSizeBytes: stats.totalSizeBytes + Number(item.sizeBytes || 0),
-                pointCloudAssets: stats.pointCloudAssets + (Number(summary.pointCloudFiles || 0) > 0 ? 1 : 0),
+                pointCloudAssets:
+                    stats.pointCloudAssets +
+                    (item.workflowStatus?.canGenerateBaseMap || Number(summary.pointCloudFiles || 0) > 0 ? 1 : 0),
                 rtkAssets: stats.rtkAssets + (Number(summary.trajectory?.poseFileCount || 0) > 0 ? 1 : 0),
+                pendingAssets: stats.pendingAssets + (statusCode === 'pending_precheck' ? 1 : 0),
+                generatedAssets: stats.generatedAssets + (statusCode === 'base_map_ready' ? 1 : 0),
             };
         },
-        { totalSizeBytes: 0, pointCloudAssets: 0, rtkAssets: 0 },
+        { totalSizeBytes: 0, pointCloudAssets: 0, rtkAssets: 0, pendingAssets: 0, generatedAssets: 0 },
     );
     const selectedStats = selectedPackages.reduce(
         (stats, item) => {
@@ -209,9 +262,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     const assetCountText = `${formatCount(packages.length)} 个资产包`;
     const assetSizeText = `${formatBytes(assetStats.totalSizeBytes)} 原始数据`;
     const selectedCountText = `${formatCount(selectedPackages.length)} 个已选择`;
-    const assetAvailabilityText = `可用 ${formatCount(assetStats.pointCloudAssets)} 个，含 RTK ${formatCount(
-        assetStats.rtkAssets,
-    )} 个`;
+    const assetAvailabilityText = `可生成 ${formatCount(assetStats.pointCloudAssets)} 个，已生成 ${formatCount(
+        assetStats.generatedAssets,
+    )} 个，待预检 ${formatCount(assetStats.pendingAssets)} 个，含 RTK ${formatCount(assetStats.rtkAssets)} 个`;
     const selectedPointText = `${formatCount(selectedStats.pointCount)} 估算点数`;
     const selectedSummaryText = `点云文件 ${formatCount(selectedStats.pointCloudFiles)}，估算点数 ${formatCount(
         selectedStats.pointCount,
@@ -363,6 +416,32 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
     };
 
+    const handleRefreshAllAnalysis = async () => {
+        setUploading(true);
+        setJobText('正在自检待预检采图包');
+        try {
+            const response = await FileService.startRefreshAllDataPackageAnalysisJob(true);
+            if (response?.code !== 0) {
+                throw new Error(response?.message || '提交批量自检任务失败');
+            }
+            const jobId = response?.data?.job?.id;
+            if (!jobId) {
+                throw new Error('后台任务没有返回 jobId');
+            }
+            const job = await waitForRuntimeJob(jobId, '正在批量自检采图包');
+            await refreshAll();
+            message.success(`批量自检完成：${formatCount(job.result?.refreshedCount)} 个`);
+        } catch (error) {
+            Modal.error({
+                title: '批量自检失败',
+                content: error instanceof Error ? error.message : '批量自检失败',
+            });
+        } finally {
+            setUploading(false);
+            setJobText('');
+        }
+    };
+
     const handleGenerateBaseMap = (packageInfo: any) => {
         const mapName = sanitizeName(packageInfo.defaultMapName || packageInfo.packageId) || createFallbackName();
         Modal.confirm({
@@ -411,11 +490,42 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         });
     };
 
-    const handleGenerateMergedBaseMap = () => {
+    const handleGenerateMergedBaseMap = async () => {
         const packageIds = selectedPackageIds.map(String);
         const packagesForMerge = packages.filter((item) => packageIds.includes(item.packageId));
         if (packagesForMerge.length < 2) {
             message.warning('请至少选择两个采图包');
+            return;
+        }
+        let stitchPlan: any = null;
+        try {
+            const planResponse = await FileService.getDataPackageStitchPlan(packageIds);
+            stitchPlan = planResponse?.data;
+            if (planResponse?.code !== 0 || !stitchPlan?.ready) {
+                Modal.error({
+                    title: '拼图预检未通过',
+                    content: (
+                        <pre className="asset-manager-detail">
+                            {[
+                                `错误: ${(stitchPlan?.errors || []).join(', ') || planResponse?.message || 'unknown'}`,
+                                '',
+                                ...(stitchPlan?.packages || []).map(
+                                    (item: any) =>
+                                        `- ${item.displayName || item.packageId}: ${item.stitchingReadiness}, 坐标组 ${
+                                            item.coordinateGroup || '未知'
+                                        }`,
+                                ),
+                            ].join('\n')}
+                        </pre>
+                    ),
+                });
+                return;
+            }
+        } catch (error) {
+            Modal.error({
+                title: '拼图预检失败',
+                content: error instanceof Error ? error.message : '拼图预检失败',
+            });
             return;
         }
         const mapName = sanitizeName(createMergedMapName()) || createFallbackName();
@@ -434,10 +544,15 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                             (item) =>
                                 `- ${item.defaultMapName || item.packageId}: 点云 ${formatCount(
                                     item.summary?.pointCloudFiles,
-                                )}, RTK ${formatCount(item.summary?.trajectory?.poseFileCount)}`,
+                                )}, 坐标组 ${item.coordinateGroup || '未知'}, RTK ${formatCount(
+                                    item.summary?.trajectory?.poseFileCount,
+                                )}`,
                         ),
                         '',
-                        '系统会按资产预检中的 RTK/轨迹锚点生成拼接计划，并把所有点云合成为一张可标注底图。',
+                        `拼图预检: ${stitchPlan?.ready ? '通过' : '未通过'} / 坐标组 ${
+                            stitchPlan?.coordinateGroups?.join(', ') || '未知'
+                        }`,
+                        '系统只允许同坐标组资产自动拼图，避免不同投影或局部坐标误拼。',
                     ].join('\n')}
                 </pre>
             ),
@@ -631,6 +746,10 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     };
 
     const handleGenerateSelectedBaseMap = () => {
+        if (selectedPackages.some((item) => item.workflowStatus?.canGenerateBaseMap === false)) {
+            message.warning('所选资产还未通过自检，先执行预检');
+            return;
+        }
         if (selectedPackages.length > 1) {
             handleGenerateMergedBaseMap();
             return;
@@ -686,11 +805,26 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '状态',
             key: 'status',
-            width: 96,
-            render: (_value: string, record: any) => {
-                const hasPointCloud = Number(record.summary?.pointCloudFiles || 0) > 0;
-                return <Tag color={hasPointCloud ? 'green' : 'orange'}>{hasPointCloud ? '已预检' : '缺点云'}</Tag>;
-            },
+            width: 118,
+            render: (_value: string, record: any) => (
+                <Tag color={getWorkflowStatusColor(record)}>{getWorkflowStatusLabel(record)}</Tag>
+            ),
+        },
+        {
+            title: '坐标/质量',
+            key: 'quality',
+            width: 210,
+            render: (_value: string, record: any) => (
+                <div className="asset-manager-quality">
+                    <div>
+                        <Tag color={qualityColor[record.quality?.rating] || 'default'}>
+                            {record.quality?.rating || 'unknown'}
+                        </Tag>
+                        <span>{record.quality?.representativeCoordinateKind || 'unknown'}</span>
+                    </div>
+                    <div>{record.coordinateGroup || '坐标组未知'}</div>
+                </div>
+            ),
         },
         {
             title: '内容',
@@ -768,6 +902,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                 <Space>
                     <Button onClick={refreshAll} disabled={loading || uploading}>
                         刷新
+                    </Button>
+                    <Button onClick={handleRefreshAllAnalysis} disabled={loading || uploading || packages.length === 0}>
+                        自检待预检
                     </Button>
                     <Button type="primary" onClick={() => uploadInputRef.current?.click()} loading={uploading}>
                         上传采图包
@@ -891,7 +1028,10 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     selectedRowKeys: selectedPackageIds,
                     onChange: (keys) => setSelectedPackageIds(keys),
                     getCheckboxProps: (record: any) => ({
-                        disabled: uploading || Number(record.summary?.pointCloudFiles || 0) <= 0,
+                        disabled:
+                            uploading ||
+                            record.workflowStatus?.canGenerateBaseMap === false ||
+                            Number(record.summary?.pointCloudFiles || 0) <= 0,
                     }),
                 }}
                 columns={columns}

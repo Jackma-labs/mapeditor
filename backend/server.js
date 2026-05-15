@@ -920,6 +920,74 @@ app.post('/runtime/refresh-data-package-analysis-job', async (req, res) => {
   }
 });
 
+app.post('/runtime/refresh-all-data-package-analysis-job', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const onlyMissing = body.onlyMissing !== false;
+    const job = startRuntimeJob(
+      'refresh-all-data-package-analysis',
+      async (runtimeJob) => {
+        const packages = await runtime.listDataPackages(config);
+        const targets = onlyMissing
+          ? packages.filter((item) => item.workflowStatus?.code === 'pending_precheck')
+          : packages;
+        const results = [];
+        await appendRuntimeJobLog(runtimeJob, `Refreshing ${targets.length} package(s)`);
+        for (const item of targets) {
+          await appendRuntimeJobLog(runtimeJob, `Prechecking ${item.packageId}`);
+          const result = await runtime.refreshDataPackageAnalysis(config, {
+            packageId: item.packageId,
+          });
+          results.push({
+            packageId: item.packageId,
+            summary: result.summary,
+          });
+        }
+        return {
+          refreshedCount: results.length,
+          skippedCount: packages.length - targets.length,
+          results,
+        };
+      },
+      {
+        onlyMissing,
+      }
+    );
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    log('Start refresh all data packages analysis job failed:', error);
+    res.status(500).json({
+      code: 15062,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/data-package-stitch-plan', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const packageIds = Array.isArray(body.packageIds) ? body.packageIds : [];
+    const result = await runtime.buildDataPackageStitchPlan(config, packageIds);
+    res.status(result.ready ? 200 : 409).json({
+      code: result.ready ? 0 : 15063,
+      message: result.ready ? 'Success' : 'Selected packages cannot be merged safely',
+      data: result,
+    });
+  } catch (error) {
+    log('Build data package stitch plan failed:', error);
+    res.status(500).json({
+      code: 15063,
+      message: error.message,
+    });
+  }
+});
+
 app.post('/runtime/import-data-package-base-map', async (req, res) => {
   try {
     const result = await runtime.importDataPackageBaseMap(config, req.body || {});
