@@ -52,9 +52,16 @@ cat /tmp/mapeditor-fstab > /etc/fstab
 rm -f /tmp/mapeditor-fstab
 
 touch "${APP_ENV_FILE}"
-grep -v '^MAP_CAPTURE_SOURCE_ROOT=' "${APP_ENV_FILE}" | grep -v '^MAP_CAPTURE_AUTO_SYNC=' > /tmp/mapeditor-env
+grep -v '^MAP_CAPTURE_SOURCE_ROOT=' "${APP_ENV_FILE}" \
+  | grep -v '^MAP_CAPTURE_AUTO_SYNC=' \
+  | grep -v '^MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES=' \
+  | grep -v '^MAP_CAPTURE_AUTO_GENERATE_BASE_MAPS=' \
+  | grep -v '^MAP_CAPTURE_AUTO_MERGE=' > /tmp/mapeditor-env
 printf 'MAP_CAPTURE_SOURCE_ROOT=%s\n' "${MOUNT_POINT}/${CAPTURE_SUBDIR}" >> /tmp/mapeditor-env
 printf 'MAP_CAPTURE_AUTO_SYNC=true\n' >> /tmp/mapeditor-env
+printf 'MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES=10\n' >> /tmp/mapeditor-env
+printf 'MAP_CAPTURE_AUTO_GENERATE_BASE_MAPS=true\n' >> /tmp/mapeditor-env
+printf 'MAP_CAPTURE_AUTO_MERGE=true\n' >> /tmp/mapeditor-env
 cat /tmp/mapeditor-env > "${APP_ENV_FILE}"
 rm -f /tmp/mapeditor-env
 chown "${APP_UID}:${APP_GID}" "${APP_ENV_FILE}"

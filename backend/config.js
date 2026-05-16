@@ -19,7 +19,7 @@ const defaults = {
     .filter(Boolean),
   captureAutoSync: {
     enabled: process.env.MAP_CAPTURE_AUTO_SYNC === 'true',
-    intervalMinutes: Number(process.env.MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES || 30),
+    intervalMinutes: Number(process.env.MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES || 10),
     limit: Number(process.env.MAP_CAPTURE_AUTO_SYNC_LIMIT || 50),
     autoGenerateBaseMaps: process.env.MAP_CAPTURE_AUTO_GENERATE_BASE_MAPS !== 'false',
     maxBaseMapJobs: Number(process.env.MAP_CAPTURE_AUTO_MAX_BASE_MAP_JOBS || 20),
