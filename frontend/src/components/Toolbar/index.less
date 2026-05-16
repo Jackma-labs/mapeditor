@@ -620,6 +620,52 @@
         font-size: 12px;
     }
 
+    .asset-production-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 12px;
+        padding: 12px 14px;
+        border: 1px solid #3e536f;
+        border-radius: 6px;
+        background: #1c2431;
+    }
+
+    .asset-production-main,
+    .asset-production-merge {
+        min-width: 0;
+    }
+
+    .asset-production-eyebrow {
+        margin-bottom: 4px;
+        color: #7f8da3;
+        font-size: 12px;
+    }
+
+    .asset-production-title {
+        margin-bottom: 4px;
+        color: #ffffff;
+        font-size: 15px;
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .asset-production-meta {
+        color: #9eadc5;
+        font-size: 12px;
+        line-height: 18px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .asset-production-actions {
+        justify-content: flex-end;
+    }
+
     .asset-workflow {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -630,9 +676,9 @@
     .asset-workflow-card {
         min-height: 118px;
         padding: 12px;
-        border: 1px solid #383f51;
+        border: 1px solid #343c4d;
         border-radius: 6px;
-        background: #1b202b;
+        background: #191e27;
     }
 
     .asset-workflow-step {
@@ -753,6 +799,7 @@
         align-items: center;
         gap: 6px;
         min-height: 28px;
+        max-width: 100%;
         padding: 2px 8px;
         border: 1px solid #343c4d;
         border-radius: 6px;
@@ -762,6 +809,10 @@
     }
 
     .asset-manager-table {
+        overflow: hidden;
+        border: 1px solid #2e3440;
+        border-radius: 6px;
+
         .ant-table {
             background: #181a1f;
             color: #a6b5cc;
@@ -779,12 +830,20 @@
             border-bottom: 1px solid #2e3440;
         }
 
+        .ant-table-tbody > tr > td:first-child {
+            border-left: 3px solid transparent;
+        }
+
         .ant-table-tbody > tr.ant-table-row:hover > td {
             background: #202633;
         }
 
         .ant-table-tbody > tr.ant-table-row-selected > td {
             background: #1f3044;
+        }
+
+        .ant-table-tbody > tr.ant-table-row-selected > td:first-child {
+            border-left-color: #5c81c8;
         }
 
         .ant-empty-description,

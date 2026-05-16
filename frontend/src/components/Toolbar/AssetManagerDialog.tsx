@@ -28,6 +28,8 @@ const createFallbackName = () => {
 
 const createMergedMapName = () => `merged_${createFallbackName().replace(/^capture_/, '')}`;
 
+const AUTO_MERGED_BASE_MAP_NAME = 'capture_inbox_merged';
+
 const buildPackageName = (files: File[]) => {
     if (files.length === 0) {
         return createFallbackName();
@@ -96,11 +98,28 @@ const getJobStatusColor = (status: string) => {
     return 'default';
 };
 
-const BASE_MAP_JOB_TYPES = new Set(['import-data-package-base-map', 'import-data-packages-merged-base-map']);
+const BASE_MAP_JOB_TYPES = new Set([
+    'prebuild-data-package-base-maps',
+    'import-data-package-base-map',
+    'import-data-packages-merged-base-map',
+]);
 
 const isActiveJob = (job: any) => job?.status === 'queued' || job?.status === 'running';
 
 const isBaseMapJob = (job: any) => BASE_MAP_JOB_TYPES.has(job?.type);
+
+const getJobTypeLabel = (type: string) => {
+    if (type === 'prebuild-data-package-base-maps') {
+        return '自动生产';
+    }
+    if (type === 'import-data-package-base-map') {
+        return '单包底图';
+    }
+    if (type === 'import-data-packages-merged-base-map') {
+        return '合并拼图';
+    }
+    return type || '任务';
+};
 
 const getLatestJobMessage = (job: any) => {
     const logs = Array.isArray(job?.logs) ? job.logs : [];
@@ -241,11 +260,13 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [jobText, setJobText] = useState('');
+    const [mergedBaseMapReady, setMergedBaseMapReady] = useState(false);
     const [selectedPackageIds, setSelectedPackageIds] = useState<React.Key[]>([]);
     const selectedPackageIdSet = new Set(selectedPackageIds.map(String));
     const selectedPackages = packages.filter((item) => selectedPackageIdSet.has(item.packageId));
     const primaryPackage = selectedPackages[0];
     const activeBaseMapJob = jobs.find((job) => isBaseMapJob(job) && isActiveJob(job));
+    const activeMergeJob = jobs.find((job) => job.type === 'import-data-packages-merged-base-map' && isActiveJob(job));
     const baseMapBusy = Boolean(activeBaseMapJob);
     const activeBaseMapJobMessage = activeBaseMapJob ? getLatestJobMessage(activeBaseMapJob) : '';
     const assetStats = packages.reduce(
@@ -289,6 +310,17 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     )}，图片 ${formatCount(selectedStats.imageFiles)}，含 RTK 资产 ${formatCount(
         selectedStats.rtkAssets,
     )}，大小 ${formatBytes(selectedStats.totalSizeBytes)}`;
+    const productionStateText = activeBaseMapJob ? `${getJobTypeLabel(activeBaseMapJob.type)}运行中` : '自动生产空闲';
+    const mergeStateText = (() => {
+        if (activeMergeJob) {
+            return `正在生成 ${activeMergeJob.request?.mapName || '合并底图'}`;
+        }
+        if (mergedBaseMapReady) {
+            return `${AUTO_MERGED_BASE_MAP_NAME} 已可用`;
+        }
+        return '等待至少两个同坐标组资产';
+    })();
+    const mergeEntryText = `稳定入口：${AUTO_MERGED_BASE_MAP_NAME}`;
     const generationModeText = (() => {
         if (selectedPackages.length > 1) {
             return '多包拼图';
@@ -333,9 +365,14 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
     }, []);
 
+    const loadMergedBaseMap = useCallback(async () => {
+        const response = await FileService.getBaseMapInfo(AUTO_MERGED_BASE_MAP_NAME);
+        setMergedBaseMapReady(Boolean(response?.tiles));
+    }, []);
+
     const refreshAll = useCallback(async () => {
-        await Promise.all([loadPackages(), loadJobs()]);
-    }, [loadJobs, loadPackages]);
+        await Promise.all([loadPackages(), loadJobs(), loadMergedBaseMap()]);
+    }, [loadJobs, loadMergedBaseMap, loadPackages]);
 
     const waitForRuntimeJob = async (jobId: string, label: string, attempt = 0): Promise<any> => {
         if (attempt >= 600) {
@@ -687,6 +724,26 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
     };
 
+    const handleOpenMergedBaseMap = async () => {
+        try {
+            const response = await FileService.getBaseMapInfo(AUTO_MERGED_BASE_MAP_NAME);
+            if (!response?.tiles) {
+                throw new Error(`合并底图 ${AUTO_MERGED_BASE_MAP_NAME} 还没有生成完成`);
+            }
+            PubSub.publish('renderMap', {
+                dir: AUTO_MERGED_BASE_MAP_NAME,
+                json: response,
+            });
+            message.success(`已打开合并底图 ${AUTO_MERGED_BASE_MAP_NAME}`);
+            onCancel?.();
+        } catch (error) {
+            Modal.error({
+                title: '打开合并底图失败',
+                content: error instanceof Error ? error.message : '打开合并底图失败',
+            });
+        }
+    };
+
     const handleRenamePackage = (packageInfo: any) => {
         let nextName = packageInfo.displayName || packageInfo.defaultMapName || packageInfo.packageId;
         Modal.confirm({
@@ -988,9 +1045,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         >
             <div className="asset-manager-toolbar">
                 <div>
-                    <div className="asset-manager-title">从原始采图包到可标注底图</div>
+                    <div className="asset-manager-title">采图资产与底图生产</div>
                     <div className="asset-manager-subtitle">
-                        上传原始采图数据，预检点云与 RTK，选择资产生成或合并底图，然后进入标注。
+                        原始采图包入库后，系统会自动预检、生成瓦片，并维护一张可直接标注的合并底图。
                     </div>
                 </div>
                 <Space>
@@ -1008,9 +1065,29 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </Button>
                 </Space>
             </div>
+            <div className="asset-production-panel">
+                <div className="asset-production-main">
+                    <div className="asset-production-eyebrow">当前生产状态</div>
+                    <div className="asset-production-title">{productionStateText}</div>
+                    <div className="asset-production-meta">
+                        {activeBaseMapJobMessage || '新增 ResultOut 同步到入站库后，后台会自动补齐瓦片。'}
+                    </div>
+                </div>
+                <div className="asset-production-merge">
+                    <div className="asset-production-eyebrow">合并底图</div>
+                    <div className="asset-production-title">{mergeStateText}</div>
+                    <div className="asset-production-meta">{mergeEntryText}</div>
+                </div>
+                <Space className="asset-production-actions">
+                    <Button onClick={handleOpenMergedBaseMap} disabled={!mergedBaseMapReady || Boolean(activeMergeJob)}>
+                        打开合并底图
+                    </Button>
+                    {activeMergeJob && <Button onClick={() => showJobDetails(activeMergeJob)}>查看合并日志</Button>}
+                </Space>
+            </div>
             <div className="asset-workflow">
                 <div className="asset-workflow-card">
-                    <div className="asset-workflow-step">1 数据导入</div>
+                    <div className="asset-workflow-step">资产库</div>
                     <div className="asset-workflow-title">{assetCountText}</div>
                     <div className="asset-workflow-desc">{assetSizeText}</div>
                     <Button
@@ -1023,7 +1100,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </Button>
                 </div>
                 <div className="asset-workflow-card">
-                    <div className="asset-workflow-step">2 资产选择</div>
+                    <div className="asset-workflow-step">生产准备</div>
                     <div className="asset-workflow-title">{selectedCountText}</div>
                     <div className="asset-workflow-desc">{assetAvailabilityText}</div>
                     <Button
@@ -1035,7 +1112,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </Button>
                 </div>
                 <div className="asset-workflow-card">
-                    <div className="asset-workflow-step">3 底图生成</div>
+                    <div className="asset-workflow-step">手动生成</div>
                     <div className="asset-workflow-title">{generationModeText}</div>
                     <div className="asset-workflow-desc">{selectedPointText}</div>
                     <Button
@@ -1047,7 +1124,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </Button>
                 </div>
                 <div className="asset-workflow-card">
-                    <div className="asset-workflow-step">4 打开标注</div>
+                    <div className="asset-workflow-step">标注入口</div>
                     <div className="asset-workflow-title">{openStageText}</div>
                     <div className="asset-workflow-desc">进入地图编辑画布</div>
                     <Button
@@ -1135,7 +1212,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                                 onClick={() => showJobDetails(job)}
                             >
                                 <Tag color={getJobStatusColor(job.status)}>{job.status}</Tag>
-                                <span>{job.type}</span>
+                                <span>{getJobTypeLabel(job.type)}</span>
                                 <span className="asset-manager-job-message">{getLatestJobMessage(job)}</span>
                                 <span>{formatDateTime(job.createdAt)}</span>
                             </button>
