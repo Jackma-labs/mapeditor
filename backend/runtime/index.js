@@ -405,6 +405,7 @@ async function getStatus(config) {
       releaseRoot: config.releaseRoot,
       importPackageRoot: config.importPackageRoot,
       captureSourceRoot: config.captureSourceRoot || '',
+      captureAutoSync: config.captureAutoSync || null,
       frontendBuildRoot: config.frontendBuildRoot,
       frontendAvailable,
       tileMapConfig: config.tileMapConfig,

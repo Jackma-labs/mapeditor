@@ -17,6 +17,15 @@ const defaults = {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean),
+  captureAutoSync: {
+    enabled: process.env.MAP_CAPTURE_AUTO_SYNC === 'true',
+    intervalMinutes: Number(process.env.MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES || 30),
+    limit: Number(process.env.MAP_CAPTURE_AUTO_SYNC_LIMIT || 50),
+    autoGenerateBaseMaps: process.env.MAP_CAPTURE_AUTO_GENERATE_BASE_MAPS !== 'false',
+    maxBaseMapJobs: Number(process.env.MAP_CAPTURE_AUTO_MAX_BASE_MAP_JOBS || 20),
+    autoMerge: process.env.MAP_CAPTURE_AUTO_MERGE !== 'false',
+    mergedMapName: process.env.MAP_CAPTURE_AUTO_MERGED_MAP_NAME || 'capture_source_merged',
+  },
   converterBinary: path.join(
     appRoot,
     'runtime/bin/editor_map_converter'
@@ -95,6 +104,27 @@ if (process.env.MAP_CAPTURE_RESULT_DIR_NAMES) {
   merged.captureResultDirNames = process.env.MAP_CAPTURE_RESULT_DIR_NAMES.split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+if (process.env.MAP_CAPTURE_AUTO_SYNC) {
+  merged.captureAutoSync.enabled = process.env.MAP_CAPTURE_AUTO_SYNC === 'true';
+}
+if (process.env.MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES) {
+  merged.captureAutoSync.intervalMinutes = Number(process.env.MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES);
+}
+if (process.env.MAP_CAPTURE_AUTO_SYNC_LIMIT) {
+  merged.captureAutoSync.limit = Number(process.env.MAP_CAPTURE_AUTO_SYNC_LIMIT);
+}
+if (process.env.MAP_CAPTURE_AUTO_GENERATE_BASE_MAPS) {
+  merged.captureAutoSync.autoGenerateBaseMaps = process.env.MAP_CAPTURE_AUTO_GENERATE_BASE_MAPS !== 'false';
+}
+if (process.env.MAP_CAPTURE_AUTO_MAX_BASE_MAP_JOBS) {
+  merged.captureAutoSync.maxBaseMapJobs = Number(process.env.MAP_CAPTURE_AUTO_MAX_BASE_MAP_JOBS);
+}
+if (process.env.MAP_CAPTURE_AUTO_MERGE) {
+  merged.captureAutoSync.autoMerge = process.env.MAP_CAPTURE_AUTO_MERGE !== 'false';
+}
+if (process.env.MAP_CAPTURE_AUTO_MERGED_MAP_NAME) {
+  merged.captureAutoSync.mergedMapName = process.env.MAP_CAPTURE_AUTO_MERGED_MAP_NAME;
 }
 if (process.env.MAP_CONVERTER_BINARY) {
   merged.converterBinary = process.env.MAP_CONVERTER_BINARY;

@@ -182,6 +182,57 @@ function sendRuntimeJobBusy(res, activeJob) {
   });
 }
 
+function buildCaptureAutoSyncRequest(trigger = 'auto') {
+  const options = config.captureAutoSync || {};
+  return {
+    trigger,
+    onlyNew: true,
+    overwrite: false,
+    limit: Number(options.limit) || 50,
+    autoGenerateBaseMaps: options.autoGenerateBaseMaps !== false,
+    maxBaseMapJobs: Number(options.maxBaseMapJobs) || 20,
+    autoMerge: options.autoMerge !== false,
+    mergedMapName: options.mergedMapName || 'capture_source_merged',
+    overwriteBaseMaps: false,
+    overwriteMergedMap: true,
+  };
+}
+
+function startCaptureAutoSyncJob(trigger = 'auto') {
+  if (!config.captureAutoSync?.enabled) {
+    return null;
+  }
+  if (!config.captureSourceRoot || !fs.existsSync(config.captureSourceRoot)) {
+    log('Capture auto sync skipped: source root is not configured or not mounted');
+    return null;
+  }
+  const activeJob = findActiveHeavyRuntimeJob();
+  if (activeJob) {
+    log(`Capture auto sync skipped: active heavy job ${activeJob.id}`);
+    return null;
+  }
+  const request = buildCaptureAutoSyncRequest(trigger);
+  const job = startRuntimeJob('sync-capture-source-packages', (runtimeJob) =>
+    runtime.syncCaptureSourcePackages(config, {
+      ...request,
+      progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+    }),
+    request
+  );
+  log(`Capture auto sync started: ${job.id}`);
+  return job;
+}
+
+function startCaptureAutoSyncScheduler() {
+  if (!config.captureAutoSync?.enabled) {
+    return;
+  }
+  const intervalMs = Math.max(5, Number(config.captureAutoSync.intervalMinutes) || 30) * 60 * 1000;
+  setTimeout(() => startCaptureAutoSyncJob('startup'), 15000);
+  setInterval(() => startCaptureAutoSyncJob('interval'), intervalMs);
+  log(`Capture auto sync scheduler enabled; interval=${Math.round(intervalMs / 60000)}m`);
+}
+
 async function removeRuntimeJobFiles(jobId) {
   await Promise.all([
     fsp.rm(buildRuntimeJobPath(jobId), { force: true }),
@@ -1617,6 +1668,7 @@ server.listen(config.port, async () => {
     ensureDir(config.editorMapRoot),
     ensureDir(config.releaseRoot),
   ]);
+  startCaptureAutoSyncScheduler();
   log(`Simple map backend listening on ${config.port}`);
   log('Base map root:', config.baseMapRoot);
   log('Editor map root:', config.editorMapRoot);
