@@ -469,7 +469,17 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         setUploading(true);
         setJobText('正在扫描固定采图目录');
         try {
-            const response = await FileService.startSyncCaptureSourcePackagesJob(true, false, 50);
+            const response = await FileService.startSyncCaptureSourcePackagesJob({
+                onlyNew: true,
+                overwrite: false,
+                limit: 50,
+                autoGenerateBaseMaps: true,
+                maxBaseMapJobs: 20,
+                autoMerge: true,
+                mergedMapName: 'capture_source_merged',
+                overwriteBaseMaps: false,
+                overwriteMergedMap: true,
+            });
             if (response?.code !== 0) {
                 throw new Error(response?.message || '提交采图目录同步任务失败');
             }
@@ -489,6 +499,8 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                             `扫描采图包: ${formatCount(job.result?.scannedCount)}`,
                             `新增导入: ${formatCount(job.result?.importedCount)}`,
                             `跳过: ${formatCount(job.result?.skippedCount)}`,
+                            `预生成底图: ${formatCount(job.result?.generatedBaseMapCount)}`,
+                            `自动拼图: ${job.result?.mergedMap?.mapName || '未生成'}`,
                         ].join('\n')}
                     </pre>
                 ),

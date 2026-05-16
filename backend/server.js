@@ -53,6 +53,8 @@ const runtimeJobs = new Map();
 const HEAVY_RUNTIME_JOB_TYPES = new Set([
   'import-data-package-base-map',
   'import-data-packages-merged-base-map',
+  'sync-capture-source-package',
+  'sync-capture-source-packages',
 ]);
 
 function log(...args) {
@@ -906,6 +908,11 @@ app.get('/runtime/capture-source-packages', async (_req, res) => {
 app.post('/runtime/sync-capture-source-package-job', async (req, res) => {
   try {
     const body = req.body || {};
+    const activeJob = findActiveHeavyRuntimeJob();
+    if (activeJob) {
+      sendRuntimeJobBusy(res, activeJob);
+      return;
+    }
     const job = startRuntimeJob('sync-capture-source-package', (runtimeJob) =>
       runtime.importCaptureSourcePackage(config, {
         ...body,
@@ -934,6 +941,11 @@ app.post('/runtime/sync-capture-source-package-job', async (req, res) => {
 app.post('/runtime/sync-capture-source-packages-job', async (req, res) => {
   try {
     const body = req.body || {};
+    const activeJob = findActiveHeavyRuntimeJob();
+    if (activeJob) {
+      sendRuntimeJobBusy(res, activeJob);
+      return;
+    }
     const job = startRuntimeJob('sync-capture-source-packages', (runtimeJob) =>
       runtime.syncCaptureSourcePackages(config, {
         ...body,

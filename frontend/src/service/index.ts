@@ -213,13 +213,19 @@ class FileService {
         return this.requestJson('/runtime/capture-source-packages');
     }
 
-    async startSyncCaptureSourcePackagesJob(onlyNew: boolean = true, overwrite: boolean = false, limit: number = 50) {
+    async startSyncCaptureSourcePackagesJob(options: any = {}) {
         return this.requestJson('/runtime/sync-capture-source-packages-job', {
             method: 'POST',
             body: JSON.stringify({
-                onlyNew,
-                overwrite,
-                limit,
+                onlyNew: options.onlyNew !== false,
+                overwrite: options.overwrite === true,
+                limit: options.limit || 50,
+                autoGenerateBaseMaps: options.autoGenerateBaseMaps === true,
+                maxBaseMapJobs: options.maxBaseMapJobs || 20,
+                autoMerge: options.autoMerge === true,
+                mergedMapName: options.mergedMapName || 'capture_source_merged',
+                overwriteBaseMaps: options.overwriteBaseMaps === true,
+                overwriteMergedMap: options.overwriteMergedMap !== false,
             }),
         });
     }

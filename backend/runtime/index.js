@@ -3080,6 +3080,10 @@ async function syncCaptureSourcePackages(config, params = {}) {
   const overwrite = params.overwrite === true;
   const onlyNew = params.onlyNew !== false;
   const limit = Math.max(1, Math.min(Number(params.limit) || 50, 200));
+  const autoGenerateBaseMaps = params.autoGenerateBaseMaps === true;
+  const autoMerge = params.autoMerge === true;
+  const maxBaseMapJobs = Math.max(1, Math.min(Number(params.maxBaseMapJobs) || 20, 100));
+  const mergedMapName = sanitizePackageName(params.mergedMapName || 'capture_source_merged');
   const targets = scan.packages
     .filter((item) => overwrite || !onlyNew || !item.imported)
     .slice(0, limit);
@@ -3096,11 +3100,68 @@ async function syncCaptureSourcePackages(config, params = {}) {
       })
     );
   }
+  const generatedBaseMaps = [];
+  if (autoGenerateBaseMaps) {
+    const packages = await listDataPackages(config);
+    const baseMapTargets = packages
+      .filter((item) => item.sourceManifest?.sourceRoot === scan.sourceRoot)
+      .filter((item) => item.workflowStatus?.canGenerateBaseMap)
+      .filter((item) => params.overwriteBaseMaps === true || !item.baseMapExists)
+      .slice(0, maxBaseMapJobs);
+    await progress(`Base-map prebuild queue: ${baseMapTargets.length} package(s)`);
+    for (let index = 0; index < baseMapTargets.length; index += 1) {
+      const item = baseMapTargets[index];
+      const mapName = sanitizePackageName(item.defaultMapName || item.displayName || item.packageId);
+      await progress(`Generating base map ${index + 1}/${baseMapTargets.length}: ${mapName}`);
+      generatedBaseMaps.push(
+        await importDataPackageBaseMap(config, {
+          packageId: item.packageId,
+          mapName,
+          overwrite: params.overwriteBaseMaps === true,
+          progress,
+        })
+      );
+    }
+  }
+  let mergedMap = null;
+  if (autoMerge) {
+    const packages = await listDataPackages(config);
+    const groups = new Map();
+    for (const item of packages) {
+      if (item.sourceManifest?.sourceRoot !== scan.sourceRoot || !item.workflowStatus?.canMerge || !item.coordinateGroup) {
+        continue;
+      }
+      if (!groups.has(item.coordinateGroup)) {
+        groups.set(item.coordinateGroup, []);
+      }
+      groups.get(item.coordinateGroup).push(item);
+    }
+    const mergeGroups = Array.from(groups.values()).sort((left, right) => {
+      const rightPoints = right.reduce((sum, item) => sum + Number(item.summary?.pointCount || 0), 0);
+      const leftPoints = left.reduce((sum, item) => sum + Number(item.summary?.pointCount || 0), 0);
+      return right.length - left.length || rightPoints - leftPoints;
+    });
+    const mergeTargets = mergeGroups[0] || [];
+    if (mergeTargets.length >= 2) {
+      await progress(`Generating stitched base map: ${mergedMapName}; packages=${mergeTargets.length}`);
+      mergedMap = await importMergedDataPackagesBaseMap(config, {
+        packageIds: mergeTargets.map((item) => item.packageId),
+        mapName: mergedMapName,
+        overwrite: params.overwriteMergedMap !== false,
+        progress,
+      });
+    } else {
+      await progress('Skipping stitched base map: fewer than 2 compatible packages');
+    }
+  }
   return {
     sourceRoot: scan.sourceRoot,
     scannedCount: scan.packages.length,
     importedCount: results.filter((item) => !item.skipped).length,
     skippedCount: results.filter((item) => item.skipped).length,
+    generatedBaseMapCount: generatedBaseMaps.length,
+    generatedBaseMaps,
+    mergedMap,
     results,
   };
 }
