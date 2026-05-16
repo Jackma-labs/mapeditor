@@ -26,6 +26,14 @@ const defaults = {
     autoMerge: process.env.MAP_CAPTURE_AUTO_MERGE !== 'false',
     mergedMapName: process.env.MAP_CAPTURE_AUTO_MERGED_MAP_NAME || 'capture_source_merged',
   },
+  inboxAutoPrebuild: {
+    enabled: process.env.MAP_INBOX_AUTO_PREBUILD === 'true',
+    intervalMinutes: Number(process.env.MAP_INBOX_AUTO_PREBUILD_INTERVAL_MINUTES || 10),
+    maxAnalysisJobs: Number(process.env.MAP_INBOX_AUTO_MAX_ANALYSIS_JOBS || 20),
+    maxBaseMapJobs: Number(process.env.MAP_INBOX_AUTO_MAX_BASE_MAP_JOBS || 20),
+    autoMerge: process.env.MAP_INBOX_AUTO_MERGE !== 'false',
+    mergedMapName: process.env.MAP_INBOX_AUTO_MERGED_MAP_NAME || 'capture_inbox_merged',
+  },
   converterBinary: path.join(
     appRoot,
     'runtime/bin/editor_map_converter'
@@ -125,6 +133,24 @@ if (process.env.MAP_CAPTURE_AUTO_MERGE) {
 }
 if (process.env.MAP_CAPTURE_AUTO_MERGED_MAP_NAME) {
   merged.captureAutoSync.mergedMapName = process.env.MAP_CAPTURE_AUTO_MERGED_MAP_NAME;
+}
+if (process.env.MAP_INBOX_AUTO_PREBUILD) {
+  merged.inboxAutoPrebuild.enabled = process.env.MAP_INBOX_AUTO_PREBUILD === 'true';
+}
+if (process.env.MAP_INBOX_AUTO_PREBUILD_INTERVAL_MINUTES) {
+  merged.inboxAutoPrebuild.intervalMinutes = Number(process.env.MAP_INBOX_AUTO_PREBUILD_INTERVAL_MINUTES);
+}
+if (process.env.MAP_INBOX_AUTO_MAX_ANALYSIS_JOBS) {
+  merged.inboxAutoPrebuild.maxAnalysisJobs = Number(process.env.MAP_INBOX_AUTO_MAX_ANALYSIS_JOBS);
+}
+if (process.env.MAP_INBOX_AUTO_MAX_BASE_MAP_JOBS) {
+  merged.inboxAutoPrebuild.maxBaseMapJobs = Number(process.env.MAP_INBOX_AUTO_MAX_BASE_MAP_JOBS);
+}
+if (process.env.MAP_INBOX_AUTO_MERGE) {
+  merged.inboxAutoPrebuild.autoMerge = process.env.MAP_INBOX_AUTO_MERGE !== 'false';
+}
+if (process.env.MAP_INBOX_AUTO_MERGED_MAP_NAME) {
+  merged.inboxAutoPrebuild.mergedMapName = process.env.MAP_INBOX_AUTO_MERGED_MAP_NAME;
 }
 if (process.env.MAP_CONVERTER_BINARY) {
   merged.converterBinary = process.env.MAP_CONVERTER_BINARY;

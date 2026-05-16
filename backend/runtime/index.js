@@ -406,6 +406,7 @@ async function getStatus(config) {
       importPackageRoot: config.importPackageRoot,
       captureSourceRoot: config.captureSourceRoot || '',
       captureAutoSync: config.captureAutoSync || null,
+      inboxAutoPrebuild: config.inboxAutoPrebuild || null,
       frontendBuildRoot: config.frontendBuildRoot,
       frontendAvailable,
       tileMapConfig: config.tileMapConfig,
@@ -2827,17 +2828,8 @@ async function refreshDataPackageAnalysis(config, params) {
   const packageId = validatePackageId(params.packageId);
   const packageDir = await resolveDataPackageDir(config, packageId);
   const uploadDir = path.join(packageDir, 'uploads');
-  if (!(await pathExists(uploadDir))) {
-    throw new Error(`data package uploads not found: ${packageId}`);
-  }
   const existing = await readAnalysisFile(packageDir).catch(() => null);
-  const entries = await fsp.readdir(uploadDir, { withFileTypes: true });
-  const files = entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => ({
-      path: path.join(uploadDir, entry.name),
-      originalName: entry.name.replace(/^\d+-/, ''),
-    }));
+  const files = await listDataPackageImportFilesFromRoot(packageDir, uploadDir);
   if (files.length === 0) {
     throw new Error(`data package has no uploaded files: ${packageId}`);
   }
@@ -2854,6 +2846,50 @@ async function refreshDataPackageAnalysis(config, params) {
   };
   await fsp.writeFile(path.join(packageDir, 'analysis.json'), JSON.stringify(combined, null, 2), 'utf8');
   return combined;
+}
+
+async function listImportableFilesRecursive(rootDir, baseDir = rootDir) {
+  const results = [];
+  const walk = async (dir) => {
+    const entries = await fsp.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === '.git' || entry.name === 'node_modules') {
+          continue;
+        }
+        await walk(entryPath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      const originalName = path.relative(baseDir, entryPath).replace(/\\/g, '/').replace(/^\d+-/, '');
+      if (isSupportedPointCloudUploadName(originalName) || isImageName(originalName)) {
+        results.push({
+          path: entryPath,
+          originalName,
+        });
+      }
+    }
+  };
+  await walk(rootDir);
+  results.sort((left, right) => left.originalName.localeCompare(right.originalName, 'zh-CN'));
+  return results;
+}
+
+async function listDataPackageImportFilesFromRoot(packageDir, uploadDir = path.join(packageDir, 'uploads')) {
+  if (await pathExists(uploadDir)) {
+    const entries = await fsp.readdir(uploadDir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => ({
+        path: path.join(uploadDir, entry.name),
+        originalName: entry.name.replace(/^\d+-/, ''),
+      }))
+      .filter((file) => isSupportedPointCloudUploadName(file.originalName) || isImageName(file.originalName));
+  }
+  return listImportableFilesRecursive(packageDir, packageDir);
 }
 
 function getImportPackageRoot(config) {
@@ -3164,6 +3200,94 @@ async function syncCaptureSourcePackages(config, params = {}) {
     generatedBaseMaps,
     mergedMap,
     results,
+  };
+}
+
+async function prebuildDataPackageBaseMaps(config, params = {}) {
+  const progress = typeof params.progress === 'function' ? params.progress : async () => {};
+  const maxAnalysisJobs = Math.max(1, Math.min(Number(params.maxAnalysisJobs) || 20, 100));
+  const maxBaseMapJobs = Math.max(1, Math.min(Number(params.maxBaseMapJobs) || 20, 100));
+  const autoMerge = params.autoMerge !== false;
+  const mergedMapName = sanitizePackageName(params.mergedMapName || 'capture_inbox_merged');
+  const overwriteBaseMaps = params.overwriteBaseMaps === true;
+  const overwriteMergedMap = params.overwriteMergedMap === true;
+  const initialPackages = await listDataPackages(config);
+  const analysisTargets = initialPackages
+    .filter((item) => item.workflowStatus?.errors?.includes('analysis_missing'))
+    .slice(0, maxAnalysisJobs);
+  const refreshedAnalyses = [];
+  await progress(`Inbox precheck queue: ${analysisTargets.length} package(s)`);
+  for (let index = 0; index < analysisTargets.length; index += 1) {
+    const item = analysisTargets[index];
+    await progress(`Prechecking package ${index + 1}/${analysisTargets.length}: ${item.displayName}`);
+    refreshedAnalyses.push(await refreshDataPackageAnalysis(config, { packageId: item.packageId }));
+  }
+
+  const packages = await listDataPackages(config);
+  const baseMapTargets = packages
+    .filter((item) => item.workflowStatus?.canGenerateBaseMap)
+    .filter((item) => overwriteBaseMaps || !item.baseMapExists)
+    .slice(0, maxBaseMapJobs);
+  const generatedBaseMaps = [];
+  await progress(`Inbox base-map prebuild queue: ${baseMapTargets.length} package(s)`);
+  for (let index = 0; index < baseMapTargets.length; index += 1) {
+    const item = baseMapTargets[index];
+    const mapName = sanitizePackageName(item.defaultMapName || item.displayName || item.packageId);
+    await progress(`Generating base map ${index + 1}/${baseMapTargets.length}: ${mapName}`);
+    generatedBaseMaps.push(
+      await importDataPackageBaseMap(config, {
+        packageId: item.packageId,
+        mapName,
+        overwrite: overwriteBaseMaps,
+        progress,
+      })
+    );
+  }
+
+  let mergedMap = null;
+  if (autoMerge) {
+    const mergedMapExists = await pathExists(path.join(config.baseMapRoot, mergedMapName, 'map_images', 'tiles.json'));
+    if (generatedBaseMaps.length === 0 && mergedMapExists && !overwriteMergedMap) {
+      await progress(`Skipping stitched base map: ${mergedMapName} is already current`);
+    } else {
+      const latestPackages = await listDataPackages(config);
+      const groups = new Map();
+      for (const item of latestPackages) {
+        if (!item.workflowStatus?.canMerge || !item.coordinateGroup) {
+          continue;
+        }
+        if (!groups.has(item.coordinateGroup)) {
+          groups.set(item.coordinateGroup, []);
+        }
+        groups.get(item.coordinateGroup).push(item);
+      }
+      const mergeGroups = Array.from(groups.values()).sort((left, right) => {
+        const rightPoints = right.reduce((sum, item) => sum + Number(item.summary?.pointCount || 0), 0);
+        const leftPoints = left.reduce((sum, item) => sum + Number(item.summary?.pointCount || 0), 0);
+        return right.length - left.length || rightPoints - leftPoints;
+      });
+      const mergeTargets = mergeGroups[0] || [];
+      if (mergeTargets.length >= 2) {
+        await progress(`Generating stitched base map: ${mergedMapName}; packages=${mergeTargets.length}`);
+        mergedMap = await importMergedDataPackagesBaseMap(config, {
+          packageIds: mergeTargets.map((item) => item.packageId),
+          mapName: mergedMapName,
+          overwrite: true,
+          progress,
+        });
+      } else {
+        await progress('Skipping stitched base map: fewer than 2 compatible packages');
+      }
+    }
+  }
+
+  return {
+    scannedCount: initialPackages.length,
+    refreshedAnalysisCount: refreshedAnalyses.length,
+    generatedBaseMapCount: generatedBaseMaps.length,
+    refreshedAnalyses,
+    generatedBaseMaps,
+    mergedMap,
   };
 }
 
@@ -3512,17 +3636,7 @@ async function getDataPackageImportFiles(config, packageId) {
   const normalizedPackageId = validatePackageId(packageId);
   const packageDir = await resolveDataPackageDir(config, normalizedPackageId);
   const uploadDir = path.join(packageDir, 'uploads');
-  if (!(await pathExists(uploadDir))) {
-    throw new Error(`data package uploads not found: ${normalizedPackageId}`);
-  }
-  const entries = await fsp.readdir(uploadDir, { withFileTypes: true });
-  const files = entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => ({
-      path: path.join(uploadDir, entry.name),
-      originalName: entry.name.replace(/^\d+-/, ''),
-    }))
-    .filter((file) => isSupportedPointCloudUploadName(file.originalName) || isImageName(file.originalName));
+  const files = await listDataPackageImportFilesFromRoot(packageDir, uploadDir);
   return { packageId: normalizedPackageId, packageDir, files };
 }
 
@@ -4702,6 +4816,7 @@ module.exports = {
   scanCaptureSourcePackages,
   importCaptureSourcePackage,
   syncCaptureSourcePackages,
+  prebuildDataPackageBaseMaps,
   buildDataPackageStitchPlan,
   importDataPackageBaseMap,
   importMergedDataPackagesBaseMap,

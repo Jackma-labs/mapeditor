@@ -55,6 +55,7 @@ const HEAVY_RUNTIME_JOB_TYPES = new Set([
   'import-data-packages-merged-base-map',
   'sync-capture-source-package',
   'sync-capture-source-packages',
+  'prebuild-data-package-base-maps',
 ]);
 
 function log(...args) {
@@ -231,6 +232,50 @@ function startCaptureAutoSyncScheduler() {
   setTimeout(() => startCaptureAutoSyncJob('startup'), 15000);
   setInterval(() => startCaptureAutoSyncJob('interval'), intervalMs);
   log(`Capture auto sync scheduler enabled; interval=${Math.round(intervalMs / 60000)}m`);
+}
+
+function buildInboxAutoPrebuildRequest(trigger = 'auto') {
+  const options = config.inboxAutoPrebuild || {};
+  return {
+    trigger,
+    maxAnalysisJobs: Number(options.maxAnalysisJobs) || 20,
+    maxBaseMapJobs: Number(options.maxBaseMapJobs) || 20,
+    autoMerge: options.autoMerge !== false,
+    mergedMapName: options.mergedMapName || 'capture_inbox_merged',
+    overwriteBaseMaps: false,
+    overwriteMergedMap: false,
+  };
+}
+
+function startInboxAutoPrebuildJob(trigger = 'auto') {
+  if (!config.inboxAutoPrebuild?.enabled) {
+    return null;
+  }
+  const activeJob = findActiveHeavyRuntimeJob();
+  if (activeJob) {
+    log(`Inbox auto prebuild skipped: active heavy job ${activeJob.id}`);
+    return null;
+  }
+  const request = buildInboxAutoPrebuildRequest(trigger);
+  const job = startRuntimeJob('prebuild-data-package-base-maps', (runtimeJob) =>
+    runtime.prebuildDataPackageBaseMaps(config, {
+      ...request,
+      progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+    }),
+    request
+  );
+  log(`Inbox auto prebuild started: ${job.id}`);
+  return job;
+}
+
+function startInboxAutoPrebuildScheduler() {
+  if (!config.inboxAutoPrebuild?.enabled) {
+    return;
+  }
+  const intervalMs = Math.max(5, Number(config.inboxAutoPrebuild.intervalMinutes) || 10) * 60 * 1000;
+  setTimeout(() => startInboxAutoPrebuildJob('startup'), 20000);
+  setInterval(() => startInboxAutoPrebuildJob('interval'), intervalMs);
+  log(`Inbox auto prebuild scheduler enabled; interval=${Math.round(intervalMs / 60000)}m`);
 }
 
 async function removeRuntimeJobFiles(jobId) {
@@ -1023,6 +1068,36 @@ app.post('/runtime/sync-capture-source-packages-job', async (req, res) => {
   }
 });
 
+app.post('/runtime/prebuild-data-package-base-maps-job', async (req, res) => {
+  try {
+    const activeJob = findActiveHeavyRuntimeJob();
+    if (activeJob) {
+      sendRuntimeJobBusy(res, activeJob);
+      return;
+    }
+    const body = req.body || {};
+    const request = {
+      ...buildInboxAutoPrebuildRequest('manual'),
+      ...body,
+      trigger: body.trigger || 'manual',
+    };
+    const job = startRuntimeJob('prebuild-data-package-base-maps', (runtimeJob) =>
+      runtime.prebuildDataPackageBaseMaps(config, {
+        ...request,
+        progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+      }),
+      request
+    );
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: { job: serializeRuntimeJob(job) },
+    });
+  } catch (error) {
+    res.status(500).json({ code: 15081, message: error.message });
+  }
+});
+
 app.patch('/runtime/data-packages/:packageId', async (req, res) => {
   try {
     const result = await runtime.updateDataPackage(config, {
@@ -1669,6 +1744,7 @@ server.listen(config.port, async () => {
     ensureDir(config.releaseRoot),
   ]);
   startCaptureAutoSyncScheduler();
+  startInboxAutoPrebuildScheduler();
   log(`Simple map backend listening on ${config.port}`);
   log('Base map root:', config.baseMapRoot);
   log('Editor map root:', config.editorMapRoot);
