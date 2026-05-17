@@ -7,6 +7,12 @@ const TILE_SIZE = 1024;
 const DEFAULT_MAX_TILES = 72;
 const DEFAULT_CELL_PIXELS = 16;
 const MAX_OCCUPIED_CELLS = 60000;
+const MAX_LINE_CANDIDATES = 120;
+const MAX_AREA_CANDIDATES = 8;
+const LOCAL_WINDOW_METERS = 24;
+const MIN_LOCAL_SEGMENT_METERS = 6;
+const MAX_LOCAL_SEGMENT_METERS = 30;
+const MAX_AREA_CANDIDATE_METERS = 90;
 
 const BASE_MAP_LAYER_DIRS = {
   enhanced: 'map_images',
@@ -401,7 +407,10 @@ function componentToCenterlineCandidate(cells, stats, cellWorldSize, index) {
     covYY += dy * dy;
   }
   const angle = 0.5 * Math.atan2(2 * covXY, covXX - covYY);
-  const lengthCells = Math.max(stats.widthCells, stats.heightCells) * 0.72;
+  const lengthCells = Math.min(
+    Math.max(stats.widthCells, stats.heightCells) * 0.72,
+    MAX_LOCAL_SEGMENT_METERS / cellWorldSize
+  );
   const dx = Math.cos(angle) * lengthCells * 0.5;
   const dy = Math.sin(angle) * lengthCells * 0.5;
   return {
@@ -421,6 +430,120 @@ function componentToCenterlineCandidate(cells, stats, cellWorldSize, index) {
       cellCount: cells.length,
     },
   };
+}
+
+function isBoundaryCell(cell, cellMap) {
+  const neighbors = [
+    buildCellKey(cell.x - 1, cell.y),
+    buildCellKey(cell.x + 1, cell.y),
+    buildCellKey(cell.x, cell.y - 1),
+    buildCellKey(cell.x, cell.y + 1),
+  ];
+  return neighbors.some((key) => !cellMap.has(key));
+}
+
+function buildBoundaryCellMap(cellMap) {
+  const boundaryMap = new Map();
+  for (const cell of cellMap.values()) {
+    if (isBoundaryCell(cell, cellMap)) {
+      boundaryMap.set(cell.key, cell);
+    }
+  }
+  return boundaryMap;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function cellsToLocalLineCandidate(cells, cellWorldSize, index) {
+  if (!Array.isArray(cells) || cells.length < 4) {
+    return null;
+  }
+  let meanX = 0;
+  let meanY = 0;
+  let weightSum = 0;
+  for (const cell of cells) {
+    meanX += cell.x;
+    meanY += cell.y;
+    weightSum += cell.weight || 0;
+  }
+  meanX /= cells.length;
+  meanY /= cells.length;
+  let covXX = 0;
+  let covXY = 0;
+  let covYY = 0;
+  for (const cell of cells) {
+    const dx = cell.x - meanX;
+    const dy = cell.y - meanY;
+    covXX += dx * dx;
+    covXY += dx * dy;
+    covYY += dy * dy;
+  }
+  const angle = 0.5 * Math.atan2(2 * covXY, covXX - covYY);
+  const unitX = Math.cos(angle);
+  const unitY = Math.sin(angle);
+  let minProjection = Infinity;
+  let maxProjection = -Infinity;
+  for (const cell of cells) {
+    const projection = (cell.x - meanX) * unitX + (cell.y - meanY) * unitY;
+    minProjection = Math.min(minProjection, projection);
+    maxProjection = Math.max(maxProjection, projection);
+  }
+  const rawLengthMeters = (maxProjection - minProjection) * cellWorldSize;
+  if (rawLengthMeters < MIN_LOCAL_SEGMENT_METERS) {
+    return null;
+  }
+  const maxHalfLengthCells = (MAX_LOCAL_SEGMENT_METERS / cellWorldSize) / 2;
+  const midpointProjection = (minProjection + maxProjection) / 2;
+  const halfLengthCells = Math.min(maxHalfLengthCells, (maxProjection - minProjection) / 2);
+  const startProjection = midpointProjection - halfLengthCells;
+  const endProjection = midpointProjection + halfLengthCells;
+  const start = cellToWorld(meanX + unitX * startProjection, meanY + unitY * startProjection, cellWorldSize);
+  const end = cellToWorld(meanX + unitX * endProjection, meanY + unitY * endProjection, cellWorldSize);
+  const lengthMeters = clamp(rawLengthMeters, MIN_LOCAL_SEGMENT_METERS, MAX_LOCAL_SEGMENT_METERS);
+  const averageWeight = weightSum / cells.length;
+  return {
+    id: `candidate-line-${index}`,
+    type: 'road_boundary',
+    label: '局部边界候选',
+    confidence: Number(Math.min(0.9, 0.38 + lengthMeters / 85 + averageWeight / 1200).toFixed(2)),
+    geometry: {
+      type: 'LineString',
+      coordinates: [start, end],
+    },
+    metrics: {
+      lengthMeters: Number(lengthMeters.toFixed(2)),
+      sourceCells: cells.length,
+      averageWeight: Number(averageWeight.toFixed(1)),
+    },
+  };
+}
+
+function buildLocalBoundaryCandidates(boundaryCellMap, cellWorldSize) {
+  const windowCells = Math.max(4, Math.round(LOCAL_WINDOW_METERS / cellWorldSize));
+  const windows = new Map();
+  for (const cell of boundaryCellMap.values()) {
+    const key = `${Math.floor(cell.x / windowCells)},${Math.floor(cell.y / windowCells)}`;
+    if (!windows.has(key)) {
+      windows.set(key, []);
+    }
+    windows.get(key).push(cell);
+  }
+  return Array.from(windows.values())
+    .map((cells, index) => cellsToLocalLineCandidate(cells, cellWorldSize, index))
+    .filter(Boolean)
+    .sort(
+      (left, right) =>
+        right.confidence - left.confidence ||
+        right.metrics.lengthMeters - left.metrics.lengthMeters ||
+        right.metrics.sourceCells - left.metrics.sourceCells
+    )
+    .slice(0, MAX_LINE_CANDIDATES)
+    .map((candidate, index) => ({
+      ...candidate,
+      id: `candidate-line-${index}`,
+    }));
 }
 
 async function generateAssistDrawingCandidates(config, params = {}) {
@@ -456,16 +579,8 @@ async function generateAssistDrawingCandidates(config, params = {}) {
   }
   const cells = capOccupiedCells(allCells);
   const cellMap = buildCellMap(cells);
-  const minRunMeters = Math.max(8, cellWorldSize * 6);
-  const minRunCells = Math.max(5, Math.ceil(minRunMeters / cellWorldSize));
-  const runs = reduceRuns(
-    [
-      ...extractRuns(cellMap, 'x', { minRunCells, minRunMeters, cellWorldSize }),
-      ...extractRuns(cellMap, 'y', { minRunCells, minRunMeters, cellWorldSize }),
-    ].sort((left, right) => right.lengthMeters - left.lengthMeters),
-    80
-  );
-  const lineCandidates = runs.map((run, index) => runToCandidate(run, cellWorldSize, index));
+  const boundaryCellMap = buildBoundaryCellMap(cellMap);
+  const lineCandidates = buildLocalBoundaryCandidates(boundaryCellMap, cellWorldSize);
   const components = extractComponents(cellMap).slice(0, 16);
   const areaCandidates = [];
   const centerlineCandidates = [];
@@ -474,11 +589,23 @@ async function generateAssistDrawingCandidates(config, params = {}) {
     const stats = buildComponentStats(component);
     const widthMeters = stats.widthCells * cellWorldSize;
     const heightMeters = stats.heightCells * cellWorldSize;
-    if (component.length >= 24 && widthMeters >= 6 && heightMeters >= 6 && areaCandidates.length < 10) {
+    const maxDimensionMeters = Math.max(widthMeters, heightMeters);
+    if (
+      component.length >= 24 &&
+      widthMeters >= 6 &&
+      heightMeters >= 6 &&
+      maxDimensionMeters <= MAX_AREA_CANDIDATE_METERS &&
+      areaCandidates.length < MAX_AREA_CANDIDATES
+    ) {
       areaCandidates.push(componentToAreaCandidate(component, stats, cellWorldSize, areaCandidates.length));
     }
     const aspect = Math.max(widthMeters, heightMeters) / Math.max(0.001, Math.min(widthMeters, heightMeters));
-    if (component.length >= 28 && aspect >= 2.1 && centerlineCandidates.length < 14) {
+    if (
+      component.length >= 28 &&
+      aspect >= 2.1 &&
+      maxDimensionMeters <= MAX_AREA_CANDIDATE_METERS &&
+      centerlineCandidates.length < 10
+    ) {
       centerlineCandidates.push(
         componentToCenterlineCandidate(component.slice(0, 1200), stats, cellWorldSize, centerlineCandidates.length)
       );
@@ -498,6 +625,7 @@ async function generateAssistDrawingCandidates(config, params = {}) {
       tileCount: levelTiles.length,
       availableTileCount: (tilesByLevel[level] || []).length,
       occupiedCellCount: cellMap.size,
+      boundaryCellCount: boundaryCellMap.size,
       rawOccupiedCellCount: allCells.length,
       truncatedCells: allCells.length > cells.length,
       lineCandidateCount: lineCandidates.length,
