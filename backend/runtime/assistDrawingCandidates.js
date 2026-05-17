@@ -132,7 +132,8 @@ async function readTileCells(tilePath, tile, options) {
       let samples = 0;
       for (let py = blockY; py < Math.min(blockY + options.cellPixels, height); py += 1) {
         for (let px = blockX; px < Math.min(blockX + options.cellPixels, width); px += 1) {
-          const alpha = png.data[(py * width + px) * 4 + 3];
+          const offset = (py * width + px) * 4;
+          const alpha = Math.max(png.data[offset], png.data[offset + 1], png.data[offset + 2]);
           samples += 1;
           alphaSum += alpha;
           if (alpha > maxAlpha) {

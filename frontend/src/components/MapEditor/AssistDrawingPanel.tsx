@@ -73,6 +73,7 @@ export default function AssistDrawingPanel({ baseMapDir, layers }: AssistDrawing
         try {
             const response = await FileService.getAssistDrawingCandidates(baseMapDir, {
                 layer: layerId,
+                level: 2,
                 maxTiles: 72,
                 cellPixels: 16,
             });
