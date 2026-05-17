@@ -576,7 +576,7 @@ export default function MapEditor() {
         <div id="map-editor-container" onClick={handleClick} onMouseUp={handleMouseup} onDoubleClick={handleDbclick}>
             <div id="webgl" />
             <MapEditorBtn />
-            <AssistDrawingPanel baseMapDir={baseMapUi.dir} layers={baseMapUi.layers} />
+            <AssistDrawingPanel baseMapDir={baseMapUi.dir} />
             {baseMapUi.layers.length > 1 && (
                 <div
                     className="basemap-layer-panel"
