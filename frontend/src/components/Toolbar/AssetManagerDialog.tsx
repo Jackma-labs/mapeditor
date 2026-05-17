@@ -977,7 +977,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     <Tag color={qualityColor[record.quality?.rating] || 'default'}>
                         {record.quality?.rating || 'unknown'}
                     </Tag>
-                    <Tag>{getCoordinateLabel(record.quality)}</Tag>
+                    <Tag className="asset-manager-neutral-tag">{getCoordinateLabel(record.quality)}</Tag>
                 </div>
             ),
         },
@@ -989,9 +989,11 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                 const summary = record.summary || {};
                 return (
                     <div className="asset-manager-tag-line">
-                        <Tag>{`点云 ${formatCount(summary.pointCloudFiles)}`}</Tag>
-                        <Tag>{`LAS ${formatCount(summary.lasFiles)}`}</Tag>
-                        {Number(summary.imageFiles || 0) > 0 && <Tag>{`Image ${formatCount(summary.imageFiles)}`}</Tag>}
+                        <Tag className="asset-manager-neutral-tag">{`点云 ${formatCount(summary.pointCloudFiles)}`}</Tag>
+                        <Tag className="asset-manager-neutral-tag">{`LAS ${formatCount(summary.lasFiles)}`}</Tag>
+                        {Number(summary.imageFiles || 0) > 0 && (
+                            <Tag className="asset-manager-neutral-tag">{`Image ${formatCount(summary.imageFiles)}`}</Tag>
+                        )}
                         {Number(summary.trajectory?.poseFileCount || 0) > 0 && (
                             <Tag color="blue">{`RTK ${formatCount(summary.trajectory.poseFileCount)}`}</Tag>
                         )}
