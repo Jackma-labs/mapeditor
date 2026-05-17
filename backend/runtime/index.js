@@ -8,6 +8,7 @@ const unzipper = require('unzipper');
 const { PNG } = require('pngjs');
 const { convertEditorMapToApolloPackage } = require('./editorMapConverter');
 const { runCommand } = require('./process');
+const { generateAssistDrawingCandidates } = require('./assistDrawingCandidates');
 
 const DEFAULT_POINT_CLOUD_RENDER_POINTS = 1000000;
 const configuredPointCloudRenderPoints = Number(
@@ -4820,6 +4821,7 @@ module.exports = {
   buildDataPackageStitchPlan,
   importDataPackageBaseMap,
   importMergedDataPackagesBaseMap,
+  generateAssistDrawingCandidates,
   importBaseMapZip,
   importPointCloudBaseMap,
   importPointCloudFilesBaseMap,

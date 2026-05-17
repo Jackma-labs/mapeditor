@@ -1318,6 +1318,32 @@ app.post('/runtime/import-data-packages-merged-base-map-job', async (req, res) =
   }
 });
 
+app.get('/runtime/assist-drawing-candidates/:mapName', async (req, res) => {
+  try {
+    const result = await runtime.generateAssistDrawingCandidates(config, {
+      mapName: req.params.mapName,
+      layer: req.query.layer,
+      level: req.query.level,
+      maxTiles: req.query.maxTiles,
+      cellPixels: req.query.cellPixels,
+      alphaThreshold: req.query.alphaThreshold,
+      strongAlphaThreshold: req.query.strongAlphaThreshold,
+      minDensity: req.query.minDensity,
+    });
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    log('Generate assist drawing candidates failed:', error);
+    res.status(500).json({
+      code: 15067,
+      message: error.message,
+    });
+  }
+});
+
 app.get('/runtime/jobs', (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
   res.json({

@@ -305,6 +305,20 @@ class FileService {
         });
     }
 
+    async getAssistDrawingCandidates(mapName: string, options: any = {}) {
+        const query = new URLSearchParams();
+        Object.keys(options || {}).forEach((key) => {
+            const value = options[key];
+            if (value !== undefined && value !== null && value !== '') {
+                query.set(key, String(value));
+            }
+        });
+        const queryString = query.toString();
+        return this.requestJson(
+            `/runtime/assist-drawing-candidates/${encodeURIComponent(mapName)}${queryString ? `?${queryString}` : ''}`,
+        );
+    }
+
     async getRuntimeJob(jobId: string, includeLogs: boolean = false) {
         const query = includeLogs ? '?logs=true&tail=200' : '';
         return this.requestJson(`/runtime/jobs/${encodeURIComponent(jobId)}${query}`);
