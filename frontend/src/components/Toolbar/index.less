@@ -613,11 +613,30 @@
         font-weight: 500;
     }
 
-    .asset-manager-subtitle,
-    .asset-manager-id,
     .asset-manager-size div + div {
         color: #7f8da3;
         font-size: 12px;
+    }
+
+    .ant-btn[disabled],
+    .ant-btn[disabled]:hover,
+    .ant-btn[disabled]:focus,
+    .ant-btn-primary[disabled],
+    .ant-btn-primary[disabled]:hover,
+    .ant-btn-primary[disabled]:focus {
+        border-color: #3b4658;
+        background: #252c38;
+        color: #74849c;
+        opacity: 1;
+        text-shadow: none;
+    }
+
+    .ant-btn-dangerous[disabled],
+    .ant-btn-dangerous[disabled]:hover,
+    .ant-btn-dangerous[disabled]:focus {
+        border-color: #4b3940;
+        background: #2c2429;
+        color: #8a7279;
     }
 
     .asset-production-panel {
@@ -626,7 +645,7 @@
         align-items: center;
         gap: 14px;
         margin-bottom: 12px;
-        padding: 12px 14px;
+        padding: 10px 14px;
         border: 1px solid #3e536f;
         border-radius: 6px;
         background: #1c2431;
@@ -644,7 +663,6 @@
     }
 
     .asset-production-title {
-        margin-bottom: 4px;
         color: #ffffff;
         font-size: 15px;
         font-weight: 500;
@@ -654,6 +672,7 @@
     }
 
     .asset-production-meta {
+        margin-top: 4px;
         color: #9eadc5;
         font-size: 12px;
         line-height: 18px;
@@ -674,7 +693,7 @@
     }
 
     .asset-workflow-card {
-        min-height: 118px;
+        min-height: 82px;
         padding: 12px;
         border: 1px solid #343c4d;
         border-radius: 6px;
@@ -682,7 +701,7 @@
     }
 
     .asset-workflow-step {
-        margin-bottom: 8px;
+        margin-bottom: 6px;
         color: #7f8da3;
         font-size: 12px;
     }
@@ -695,11 +714,10 @@
     }
 
     .asset-workflow-desc {
-        min-height: 34px;
         margin-bottom: 10px;
         color: #9eadc5;
         font-size: 12px;
-        line-height: 17px;
+        line-height: 16px;
     }
 
     .asset-selection-panel {
@@ -708,7 +726,7 @@
         justify-content: space-between;
         gap: 16px;
         margin-bottom: 12px;
-        padding: 12px;
+        padding: 10px 12px;
         border: 1px solid #41506a;
         border-radius: 6px;
         background: #202837;
@@ -822,12 +840,20 @@
             background: #222631;
             color: #dbe6f5;
             border-bottom: 1px solid #383b45;
+            white-space: nowrap;
         }
 
         .ant-table-tbody > tr > td {
             background: #181a1f;
             color: #a6b5cc;
             border-bottom: 1px solid #2e3440;
+            vertical-align: middle;
+        }
+
+        .ant-table-cell-fix-right,
+        .ant-table-cell-fix-right-first::after,
+        .ant-table-cell-fix-right-last::after {
+            background: #181a1f;
         }
 
         .ant-table-tbody > tr > td:first-child {
@@ -865,26 +891,28 @@
         white-space: nowrap;
     }
 
-    .asset-manager-content {
+    .asset-manager-tag-line {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px 12px;
-    }
+        gap: 4px;
 
-    .asset-manager-quality {
-        color: #9eadc5;
-        font-size: 12px;
-        line-height: 18px;
-
-        > div {
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+        .ant-tag {
+            margin-right: 0;
         }
     }
 
     .asset-manager-size {
         color: #ffffff;
+    }
+
+    .asset-manager-actions {
+        display: flex;
+        flex-wrap: nowrap;
+
+        .ant-btn {
+            min-width: 48px;
+            padding: 0 8px;
+        }
     }
 }
 

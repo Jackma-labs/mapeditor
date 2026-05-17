@@ -149,6 +149,16 @@ const getWorkflowStatusLabel = (packageInfo: any) =>
 const getWorkflowStatusColor = (packageInfo: any) =>
     workflowStatusColor[packageInfo?.workflowStatus?.code] || (packageInfo?.summary ? 'blue' : 'default');
 
+const coordinateKindLabel: Record<string, string> = {
+    projected_meters_or_large_local: '投影坐标',
+    lonlat_range_compatible: '经纬度',
+    local_meters: '局部坐标',
+    ecef_xyz: 'ECEF',
+};
+
+const getCoordinateLabel = (quality: any) =>
+    coordinateKindLabel[quality?.representativeCoordinateKind] || quality?.representativeCoordinateKind || '坐标未知';
+
 const formatQualityText = (quality: any) => {
     if (!quality) {
         return '未知';
@@ -298,13 +308,11 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         },
         { totalSizeBytes: 0, pointCount: 0, pointCloudFiles: 0, imageFiles: 0, rtkAssets: 0 },
     );
-    const assetCountText = `${formatCount(packages.length)} 个资产包`;
-    const assetSizeText = `${formatBytes(assetStats.totalSizeBytes)} 原始数据`;
-    const selectedCountText = `${formatCount(selectedPackages.length)} 个已选择`;
-    const assetAvailabilityText = `可生成 ${formatCount(assetStats.pointCloudAssets)} 个，已生成 ${formatCount(
-        assetStats.generatedAssets,
-    )} 个，待预检 ${formatCount(assetStats.pendingAssets)} 个，含 RTK ${formatCount(assetStats.rtkAssets)} 个`;
-    const selectedPointText = `${formatCount(selectedStats.pointCount)} 估算点数`;
+    const assetCountText = formatCount(packages.length);
+    const selectedCountText = formatCount(selectedPackages.length);
+    const generatedBaseMapText = `${formatCount(assetStats.generatedAssets)} / ${formatCount(
+        assetStats.pointCloudAssets,
+    )}`;
     const selectedSummaryText = `点云文件 ${formatCount(selectedStats.pointCloudFiles)}，估算点数 ${formatCount(
         selectedStats.pointCount,
     )}，图片 ${formatCount(selectedStats.imageFiles)}，含 RTK 资产 ${formatCount(
@@ -320,7 +328,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
         return '等待至少两个同坐标组资产';
     })();
-    const mergeEntryText = `稳定入口：${AUTO_MERGED_BASE_MAP_NAME}`;
+    const mergeEntryText = AUTO_MERGED_BASE_MAP_NAME;
     const generationModeText = (() => {
         if (selectedPackages.length > 1) {
             return '多包拼图';
@@ -333,8 +341,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     const openStageText = selectedPackages.length === 1 ? '打开当前底图' : '单选后打开';
     const selectionPanelClassName =
         selectedPackages.length > 0 ? 'asset-selection-panel' : 'asset-selection-panel is-empty';
-    const emptySelectionText =
-        '单选用于生成并打开一张底图，多选用于按 RTK/轨迹信息合并拼图。缺点云资产只保留管理能力，不进入底图生产。';
+    const emptySelectionText = '选择一个资产生成单包底图，选择多个资产合并拼图。';
 
     const loadPackages = useCallback(async () => {
         setLoading(true);
@@ -946,17 +953,17 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             title: '资产',
             dataIndex: 'defaultMapName',
             key: 'asset',
+            width: 390,
             render: (_value: string, record: any) => (
-                <div className="asset-manager-name-cell">
+                <div className="asset-manager-name-cell" title={record.packageId}>
                     <div className="asset-manager-name">{getPackageTitle(record)}</div>
-                    <div className="asset-manager-id">{record.packageId}</div>
                 </div>
             ),
         },
         {
             title: '状态',
             key: 'status',
-            width: 118,
+            width: 110,
             render: (_value: string, record: any) => (
                 <Tag color={getWorkflowStatusColor(record)}>{getWorkflowStatusLabel(record)}</Tag>
             ),
@@ -964,32 +971,29 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '坐标/质量',
             key: 'quality',
-            width: 210,
+            width: 150,
             render: (_value: string, record: any) => (
-                <div className="asset-manager-quality">
-                    <div>
-                        <Tag color={qualityColor[record.quality?.rating] || 'default'}>
-                            {record.quality?.rating || 'unknown'}
-                        </Tag>
-                        <span>{record.quality?.representativeCoordinateKind || 'unknown'}</span>
-                    </div>
-                    <div>{record.coordinateGroup || '坐标组未知'}</div>
+                <div className="asset-manager-tag-line">
+                    <Tag color={qualityColor[record.quality?.rating] || 'default'}>
+                        {record.quality?.rating || 'unknown'}
+                    </Tag>
+                    <Tag>{getCoordinateLabel(record.quality)}</Tag>
                 </div>
             ),
         },
         {
             title: '内容',
             key: 'content',
+            width: 180,
             render: (_value: string, record: any) => {
                 const summary = record.summary || {};
                 return (
-                    <div className="asset-manager-content">
-                        <span>{`点云 ${formatCount(summary.pointCloudFiles)}`}</span>
-                        <span>{`LAS ${formatCount(summary.lasFiles)}`}</span>
-                        <span>{`PCD ${formatCount(summary.pcdFiles)}`}</span>
-                        <span>{`Image ${formatCount(summary.imageFiles)}`}</span>
+                    <div className="asset-manager-tag-line">
+                        <Tag>{`点云 ${formatCount(summary.pointCloudFiles)}`}</Tag>
+                        <Tag>{`LAS ${formatCount(summary.lasFiles)}`}</Tag>
+                        {Number(summary.imageFiles || 0) > 0 && <Tag>{`Image ${formatCount(summary.imageFiles)}`}</Tag>}
                         {Number(summary.trajectory?.poseFileCount || 0) > 0 && (
-                            <span>{`RTK ${formatCount(summary.trajectory.poseFileCount)}`}</span>
+                            <Tag color="blue">{`RTK ${formatCount(summary.trajectory.poseFileCount)}`}</Tag>
                         )}
                     </div>
                 );
@@ -998,7 +1002,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '点数/大小',
             key: 'size',
-            width: 150,
+            width: 130,
             render: (_value: string, record: any) => (
                 <div className="asset-manager-size">
                     <div>{formatCount(record.summary?.pointCount)}</div>
@@ -1007,18 +1011,12 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             ),
         },
         {
-            title: '更新时间',
-            dataIndex: 'modifiedAt',
-            key: 'modifiedAt',
-            width: 180,
-            render: (value: string) => formatDateTime(value),
-        },
-        {
             title: '操作',
             key: 'actions',
-            width: 220,
+            width: 190,
+            fixed: 'right' as const,
             render: (_value: string, record: any) => (
-                <Space size={8}>
+                <Space size={6} className="asset-manager-actions">
                     <Button size="small" onClick={() => showDetails(record)}>
                         详情
                     </Button>
@@ -1046,9 +1044,6 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             <div className="asset-manager-toolbar">
                 <div>
                     <div className="asset-manager-title">采图资产与底图生产</div>
-                    <div className="asset-manager-subtitle">
-                        原始采图包入库后，系统会自动预检、生成瓦片，并维护一张可直接标注的合并底图。
-                    </div>
                 </div>
                 <Space>
                     <Button onClick={refreshAll} disabled={loading || uploading}>
@@ -1067,11 +1062,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             </div>
             <div className="asset-production-panel">
                 <div className="asset-production-main">
-                    <div className="asset-production-eyebrow">当前生产状态</div>
+                    <div className="asset-production-eyebrow">生产状态</div>
                     <div className="asset-production-title">{productionStateText}</div>
-                    <div className="asset-production-meta">
-                        {activeBaseMapJobMessage || '新增 ResultOut 同步到入站库后，后台会自动补齐瓦片。'}
-                    </div>
+                    {activeBaseMapJobMessage && <div className="asset-production-meta">{activeBaseMapJobMessage}</div>}
                 </div>
                 <div className="asset-production-merge">
                     <div className="asset-production-eyebrow">合并底图</div>
@@ -1089,7 +1082,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                 <div className="asset-workflow-card">
                     <div className="asset-workflow-step">资产库</div>
                     <div className="asset-workflow-title">{assetCountText}</div>
-                    <div className="asset-workflow-desc">{assetSizeText}</div>
+                    <div className="asset-workflow-desc">资产包</div>
                     <Button
                         size="small"
                         type="primary"
@@ -1100,9 +1093,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </Button>
                 </div>
                 <div className="asset-workflow-card">
-                    <div className="asset-workflow-step">生产准备</div>
-                    <div className="asset-workflow-title">{selectedCountText}</div>
-                    <div className="asset-workflow-desc">{assetAvailabilityText}</div>
+                    <div className="asset-workflow-step">瓦片</div>
+                    <div className="asset-workflow-title">{generatedBaseMapText}</div>
+                    <div className="asset-workflow-desc">已生成 / 可生成</div>
                     <Button
                         size="small"
                         onClick={() => setSelectedPackageIds([])}
@@ -1112,9 +1105,9 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                     </Button>
                 </div>
                 <div className="asset-workflow-card">
-                    <div className="asset-workflow-step">手动生成</div>
+                    <div className="asset-workflow-step">选择</div>
                     <div className="asset-workflow-title">{generationModeText}</div>
-                    <div className="asset-workflow-desc">{selectedPointText}</div>
+                    <div className="asset-workflow-desc">{`${selectedCountText} 个资产`}</div>
                     <Button
                         size="small"
                         onClick={handleGenerateSelectedBaseMap}
@@ -1126,7 +1119,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                 <div className="asset-workflow-card">
                     <div className="asset-workflow-step">标注入口</div>
                     <div className="asset-workflow-title">{openStageText}</div>
-                    <div className="asset-workflow-desc">进入地图编辑画布</div>
+                    <div className="asset-workflow-desc">单包底图</div>
                     <Button
                         size="small"
                         type="primary"
@@ -1140,7 +1133,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             <div className={selectionPanelClassName}>
                 {selectedPackages.length === 0 ? (
                     <div>
-                        <div className="asset-selection-title">先选择一个或多个可用资产</div>
+                        <div className="asset-selection-title">请选择资产</div>
                         <div className="asset-selection-meta">{emptySelectionText}</div>
                     </div>
                 ) : (
@@ -1236,6 +1229,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                 dataSource={packages}
                 loading={loading}
                 pagination={{ pageSize: 6, showSizeChanger: false }}
+                scroll={{ x: 1150 }}
                 className="asset-manager-table"
                 locale={{ emptyText: '还没有资产包，请先上传采图 ZIP。' }}
             />
