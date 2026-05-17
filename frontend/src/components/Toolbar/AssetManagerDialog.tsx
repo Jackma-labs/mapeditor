@@ -1016,7 +1016,6 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             title: '操作',
             key: 'actions',
             width: 190,
-            fixed: 'right' as const,
             render: (_value: string, record: any) => (
                 <Space size={6} className="asset-manager-actions">
                     <Button size="small" onClick={() => showDetails(record)}>
