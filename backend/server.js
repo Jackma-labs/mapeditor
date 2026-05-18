@@ -77,6 +77,10 @@ function buildDreamviewProxyPath(originalUrl = '/') {
   return stripped.startsWith('/') ? stripped : `/${stripped}`;
 }
 
+function isExpectedSocketClose(error) {
+  return error?.code === 'EPIPE' || error?.code === 'ECONNRESET';
+}
+
 function proxyDreamviewHttp(req, res) {
   const target = getDreamviewProxyTarget();
   const targetPath = buildDreamviewProxyPath(req.originalUrl || req.url);
@@ -108,11 +112,21 @@ function proxyDreamviewHttp(req, res) {
   );
 
   proxyReq.on('error', (error) => {
-    if (!res.headersSent) {
+    if (!res.headersSent && !res.destroyed) {
       res.status(502).send(`Dreamview proxy failed: ${error.message}`);
       return;
     }
-    res.end();
+    if (!res.destroyed) {
+      res.end();
+    }
+  });
+  req.on('aborted', () => {
+    proxyReq.destroy();
+  });
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      proxyReq.destroy();
+    }
   });
   req.pipe(proxyReq);
 }
@@ -122,7 +136,38 @@ function handleDreamviewUpgrade(req, socket, head) {
   const targetPort = Number(target.port || (target.protocol === 'https:' ? 443 : 80));
   const targetPath = buildDreamviewProxyPath(req.url || '/');
   const upstream = net.connect(targetPort, target.hostname);
+  let connected = false;
+
+  const destroyStream = (stream) => {
+    if (!stream.destroyed) {
+      stream.destroy();
+    }
+  };
+
+  const destroyBoth = () => {
+    socket.unpipe(upstream);
+    upstream.unpipe(socket);
+    destroyStream(socket);
+    destroyStream(upstream);
+  };
+
+  socket.setNoDelay?.(true);
+  upstream.setNoDelay?.(true);
+
+  socket.on('error', (error) => {
+    if (!isExpectedSocketClose(error)) {
+      log('Dreamview websocket client error:', error.message);
+    }
+    destroyBoth();
+  });
+  socket.on('close', () => {
+    destroyStream(upstream);
+  });
+  upstream.on('close', () => {
+    destroyStream(socket);
+  });
   upstream.on('connect', () => {
+    connected = true;
     const headerLines = [
       `${req.method} ${targetPath} HTTP/${req.httpVersion}`,
       ...Object.entries(req.headers).map(([key, value]) => {
@@ -141,8 +186,12 @@ function handleDreamviewUpgrade(req, socket, head) {
   });
   upstream.on('error', (error) => {
     log('Dreamview websocket proxy failed:', error.message);
-    if (!socket.destroyed) {
-      socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+    if (!connected && !socket.destroyed) {
+      socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n', () => destroyStream(socket));
+    }
+    destroyStream(upstream);
+    if (connected) {
+      destroyStream(socket);
     }
   });
 }
