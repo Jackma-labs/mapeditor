@@ -15,6 +15,17 @@ container_running() {
   docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null | grep -qx true
 }
 
+wait_for_docker() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    if docker info >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 wait_for_container() {
   local attempt
   for attempt in $(seq 1 30); do
@@ -27,6 +38,10 @@ wait_for_container() {
 }
 
 start_container() {
+  if ! wait_for_docker; then
+    echo "Docker daemon is not ready" >&2
+    return 1
+  fi
   if ! container_exists; then
     echo "ApolloLite container is missing: ${CONTAINER}" >&2
     return 1
