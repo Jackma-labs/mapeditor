@@ -645,6 +645,39 @@ async function runApolloLiteValidationCommand(config, params) {
   return runCommand('bash', ['-lc', command], { timeoutMs: 5 * 60 * 1000 });
 }
 
+async function updateApolloLiteDefaultMapFlag(apolloLite, mapName) {
+  if (!apolloLite.root || !(await pathExists(apolloLite.root))) {
+    return null;
+  }
+  const flagfilePath = path.join(apolloLite.root, 'modules/common/data/global_flagfile.txt');
+  if (!(await pathExists(flagfilePath))) {
+    return null;
+  }
+  const mapDirValue = `/apollo/modules/map/data/${mapName}`;
+  const backupPath = `${flagfilePath}.mapeditor.bak`;
+  if (!(await pathExists(backupPath))) {
+    await fsp.copyFile(flagfilePath, backupPath).catch(() => {});
+  }
+  const lines = (await fsp.readFile(flagfilePath, 'utf8')).split(/\r?\n/);
+  let replaced = false;
+  const nextLines = lines.map((line) => {
+    if (line.startsWith('--map_dir=')) {
+      replaced = true;
+      return `--map_dir=${mapDirValue}`;
+    }
+    return line;
+  });
+  if (!replaced) {
+    nextLines.push(`--map_dir=${mapDirValue}`);
+  }
+  await fsp.writeFile(flagfilePath, `${nextLines.join('\n').replace(/\n+$/u, '')}\n`, 'utf8');
+  return {
+    flagfilePath,
+    backupPath,
+    mapDir: mapDirValue,
+  };
+}
+
 async function stageReleasedMapToApolloLite(config, params = {}) {
   const progress = typeof params.progress === 'function' ? params.progress : async () => {};
   const apolloLite = await getApolloLiteStatus(config);
@@ -692,6 +725,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
   await fsp.writeFile(path.join(stagingDir, 'mapeditor_apollolite_stage.json'), JSON.stringify(stageManifest, null, 2), 'utf8');
   await fsp.rm(targetDir, { recursive: true, force: true });
   await fsp.rename(stagingDir, targetDir);
+  const defaultMapFlag = await updateApolloLiteDefaultMapFlag(apolloLite, mapName);
 
   let validation = null;
   if (apolloLite.validationCommand) {
@@ -718,6 +752,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
       mapRoot: apolloLite.mapRoot,
       validationCommandConfigured: apolloLite.validationCommandConfigured,
     },
+    defaultMapFlag,
     warnings: inspection.warnings,
     removedEmptyBinaries,
   });
@@ -729,6 +764,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     targetDir,
     inspection,
     removedEmptyBinaries,
+    defaultMapFlag,
     validation,
     record,
   };
