@@ -427,14 +427,94 @@ function getApolloLiteConfig(config) {
   };
 }
 
+function mapApolloContainerPathToHost(root, targetPath) {
+  if (!root || !targetPath) {
+    return targetPath;
+  }
+  const normalized = targetPath.replace(/\\/gu, '/');
+  if (normalized === '/apollo') {
+    return root;
+  }
+  if (normalized.startsWith('/apollo/')) {
+    return path.join(root, ...normalized.slice('/apollo/'.length).split('/').filter(Boolean));
+  }
+  return targetPath;
+}
+
+async function readMappedApolloLiteSymlink(root, linkPath) {
+  try {
+    const stat = await fsp.lstat(linkPath);
+    if (!stat.isSymbolicLink()) {
+      return null;
+    }
+    const target = await fsp.readlink(linkPath);
+    const resolved = path.isAbsolute(target) ? target : path.resolve(path.dirname(linkPath), target);
+    return mapApolloContainerPathToHost(root, resolved);
+  } catch (error) {
+    return null;
+  }
+}
+
 async function findApolloLiteCandidate(root, candidates) {
   if (!root) {
     return null;
   }
+  const bazelBinTarget = await readMappedApolloLiteSymlink(root, path.join(root, 'bazel-bin'));
   for (const candidate of candidates) {
     const fullPath = path.join(root, ...candidate.split('/'));
     if (await pathExists(fullPath)) {
       return fullPath;
+    }
+    const mappedSymlinkPath = await readMappedApolloLiteSymlink(root, fullPath);
+    if (mappedSymlinkPath && await pathExists(mappedSymlinkPath)) {
+      return mappedSymlinkPath;
+    }
+    if (bazelBinTarget && candidate.startsWith('bazel-bin/')) {
+      const mappedBazelPath = path.join(bazelBinTarget, ...candidate.slice('bazel-bin/'.length).split('/'));
+      if (await pathExists(mappedBazelPath)) {
+        return mappedBazelPath;
+      }
+    }
+  }
+  return null;
+}
+
+async function findApolloLiteFrontendAssets(root) {
+  if (!root) {
+    return null;
+  }
+  const configuredPath = await findApolloLiteCandidate(root, APOLLOLITE_FRONTEND_ASSET_CANDIDATES);
+  if (configuredPath) {
+    return configuredPath;
+  }
+  for (const cacheName of ['bazel', 'bazel-dreamview']) {
+    const cacheRoot = path.join(root, '.cache', cacheName);
+    let outputBases = [];
+    try {
+      outputBases = await fsp.readdir(cacheRoot, { withFileTypes: true });
+    } catch (error) {
+      continue;
+    }
+    for (const outputBase of outputBases) {
+      if (!outputBase.isDirectory()) {
+        continue;
+      }
+      const externalRoot = path.join(cacheRoot, outputBase.name, 'external');
+      let externalRepos = [];
+      try {
+        externalRepos = await fsp.readdir(externalRoot, { withFileTypes: true });
+      } catch (error) {
+        continue;
+      }
+      for (const externalRepo of externalRepos) {
+        if (!externalRepo.isDirectory() || !externalRepo.name.includes('dreamview_frontend_assets')) {
+          continue;
+        }
+        const assetPath = path.join(externalRoot, externalRepo.name, 'dist');
+        if (await pathExists(assetPath)) {
+          return assetPath;
+        }
+      }
     }
   }
   return null;
@@ -480,7 +560,7 @@ async function getApolloLiteStatus(config) {
   const cyberLaunchPath = await findApolloLiteCandidate(apolloLite.root, APOLLOLITE_CYBER_LAUNCH_CANDIDATES);
   const dreamviewPath = await findApolloLiteCandidate(apolloLite.root, APOLLOLITE_DREAMVIEW_CANDIDATES);
   const monitorPath = await findApolloLiteCandidate(apolloLite.root, APOLLOLITE_MONITOR_CANDIDATES);
-  const frontendAssetPath = await findApolloLiteCandidate(apolloLite.root, APOLLOLITE_FRONTEND_ASSET_CANDIDATES);
+  const frontendAssetPath = await findApolloLiteFrontendAssets(apolloLite.root);
   const defaultMapFlag = await readApolloLiteDefaultMapFlag(apolloLite.root);
   const stagingReady = apolloLite.enabled && Boolean(apolloLite.mapRoot) && mapRootWritable;
   const dreamviewRuntimeAvailable = Boolean(cyberLaunchPath && dreamviewPath && frontendAssetPath);
