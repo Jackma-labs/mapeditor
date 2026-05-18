@@ -23,7 +23,6 @@ import { comparePointsWithPreCheck } from 'src/diff/compareWithPreCheck';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer';
 import { updateElements } from 'src/diff/updateElement';
 import { initialMapState } from 'src/constant/initialMapState';
-import FileService from 'src/service/index';
 import _ from 'lodash';
 import initThree from '../../threeUtil/initThree';
 import CameraControl from '../../threeUtil/cameraControl';
@@ -33,15 +32,6 @@ import './index.less';
 import BezierCurve3Control from '../../threeUtil/BezierCurve3Control';
 import noData from '../../assets/images/no_attr.png';
 import noPermission from '../../assets/images/no_permission.png';
-
-const layerDisplayName: { [key: string]: string } = {
-    enhanced: '增强底图',
-    raw: '原始点云',
-    ground: '地面',
-    marking: '标线高亮',
-    edge: '边界/路沿',
-    structure: '立物/杆牌',
-};
 
 export default function MapEditor() {
     const [mapState, setMapState, undo, redo, dataImport] = useManagerStore((state) => [
@@ -73,11 +63,9 @@ export default function MapEditor() {
     const [showRemind, setShowRemind] = useState(true);
     const [baseMapUi, setBaseMapUi] = useState({
         dir: '',
-        layers: [] as any[],
-        activeLayerId: 'enhanced',
         opacity: 1,
-        pointCount: 0,
-        layerPointCount: 0,
+        pointSize: 1.2,
+        supportsPointSize: false,
     });
     const render = () => {
         renderer.current?.render(scene.current, camera.current);
@@ -244,14 +232,10 @@ export default function MapEditor() {
                 if (!data.options?.keepCamera) {
                     baseMap.scale = 4;
                 }
-                const layers = Array.isArray(data.json?.layers) ? data.json.layers : [];
                 setBaseMapUi((prev) => ({
                     ...prev,
                     dir: data.dir,
-                    layers,
-                    activeLayerId: data.json?.layerId || data.layerId || 'enhanced',
-                    pointCount: data.json?.pointCount || 0,
-                    layerPointCount: data.json?.layerPointCount || data.json?.pointCount || 0,
+                    supportsPointSize: data.json?.type === 'point_cloud',
                 }));
                 setShowRemind(false);
                 baseMap.renderMap(data.dir, data.json, data.options || {});
@@ -411,26 +395,6 @@ export default function MapEditor() {
         render();
     };
 
-    const handleLayerChange = async (layerId: string) => {
-        if (!baseMapUi.dir || layerId === baseMapUi.activeLayerId) {
-            return;
-        }
-        const response = await FileService.getBaseMapInfo(baseMapUi.dir, layerId);
-        if (!response || response.code) {
-            return;
-        }
-        PubSub.publish('renderMap', {
-            dir: baseMapUi.dir,
-            json: response,
-            layerId,
-            options: {
-                keepCamera: true,
-                preserveCommands: true,
-                layerId,
-            },
-        });
-    };
-
     const handleOpacityChange = (value: number) => {
         setBaseMapUi((prev) => ({
             ...prev,
@@ -439,40 +403,29 @@ export default function MapEditor() {
         PubSub.publish('baseMapOpacity', value);
     };
 
+    const handlePointSizeChange = (value: number) => {
+        setBaseMapUi((prev) => ({
+            ...prev,
+            pointSize: value,
+        }));
+        PubSub.publish('baseMapPointSize', value);
+    };
+
     return (
         <div id="map-editor-container" onClick={handleClick} onMouseUp={handleMouseup} onDoubleClick={handleDbclick}>
             <div id="webgl" />
             <MapEditorBtn />
-            {baseMapUi.layers.length > 1 && (
+            {baseMapUi.dir && (
                 <div
                     className="basemap-layer-panel"
                     onClick={(event) => event.stopPropagation()}
                     onMouseUp={(event) => event.stopPropagation()}
                 >
                     <div className="basemap-layer-header">
-                        <div>
-                            <div className="basemap-layer-title">点云底图图层</div>
-                            <div className="basemap-layer-subtitle">
-                                {layerDisplayName[baseMapUi.activeLayerId] || baseMapUi.activeLayerId}
-                                {baseMapUi.layerPointCount ? ` · ${baseMapUi.layerPointCount.toLocaleString()} 点` : ''}
-                            </div>
-                        </div>
+                        <div className="basemap-layer-title">底图控制</div>
                         <button type="button" onClick={() => PubSub.publish('fitBaseMap')}>
                             居中
                         </button>
-                    </div>
-                    <div className="basemap-layer-buttons">
-                        {baseMapUi.layers.map((layer) => (
-                            <button
-                                key={layer.id}
-                                type="button"
-                                className={layer.id === baseMapUi.activeLayerId ? 'active' : ''}
-                                onClick={() => handleLayerChange(layer.id)}
-                            >
-                                <span className={`basemap-layer-dot layer-${layer.id}`} />
-                                {layerDisplayName[layer.id] || layer.name || layer.id}
-                            </button>
-                        ))}
                     </div>
                     <div className="basemap-layer-actions">
                         <span>透明度</span>
@@ -484,6 +437,25 @@ export default function MapEditor() {
                             value={baseMapUi.opacity}
                             onChange={(event) => handleOpacityChange(Number(event.target.value))}
                         />
+                        <span className="basemap-control-value">{`${Math.round(baseMapUi.opacity * 100)}%`}</span>
+                    </div>
+                    <div className={`basemap-layer-actions ${baseMapUi.supportsPointSize ? '' : 'is-disabled'}`}>
+                        <span>点大小</span>
+                        <input
+                            type="range"
+                            min="0.6"
+                            max="3"
+                            step="0.1"
+                            value={baseMapUi.pointSize}
+                            disabled={!baseMapUi.supportsPointSize}
+                            title={
+                                baseMapUi.supportsPointSize ? '调整点云渲染大小' : 'PNG 瓦片的点大小需要重新生成底图'
+                            }
+                            onChange={(event) => handlePointSizeChange(Number(event.target.value))}
+                        />
+                        <span className="basemap-control-value">
+                            {baseMapUi.supportsPointSize ? baseMapUi.pointSize.toFixed(1) : '瓦片固定'}
+                        </span>
                     </div>
                 </div>
             )}

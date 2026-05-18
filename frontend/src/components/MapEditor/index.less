@@ -17,8 +17,8 @@
         display: flex;
         flex-direction: column;
         align-items: stretch;
-        width: 396px;
-        gap: 10px;
+        width: 300px;
+        gap: 12px;
         padding: 12px;
         background: rgba(17, 21, 29, 0.94);
         border: 1px solid rgba(115, 128, 150, 0.58);
@@ -37,28 +37,35 @@
             font-weight: 600;
             line-height: 20px;
         }
-        .basemap-layer-subtitle{
-            color: #91a0b8;
-            font-size: 12px;
-            line-height: 18px;
-        }
-        .basemap-layer-buttons,
         .basemap-layer-actions{
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 10px;
             width: 100%;
-        }
-        .basemap-layer-buttons{
-            flex-wrap: wrap;
         }
         .basemap-layer-actions{
             color: #aab7ca;
             font-size: 12px;
+            span:first-child{
+                flex: 0 0 44px;
+            }
+            &.is-disabled{
+                color: #7f8ca3;
+                input[type='range']{
+                    opacity: 0.5;
+                    cursor: not-allowed;
+                }
+            }
+        }
+        .basemap-control-value{
+            flex: 0 0 58px;
+            color: #d7e4f5;
+            text-align: right;
+            white-space: nowrap;
         }
         button{
             height: 28px;
-            min-width: 72px;
+            min-width: 64px;
             padding: 0 10px;
             border: 1px solid rgba(126, 141, 164, 0.46);
             border-radius: 4px;
@@ -81,108 +88,9 @@
                 color: #ffffff;
             }
         }
-        .basemap-layer-dot{
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #dbe7ff;
-            flex: 0 0 auto;
-            &.layer-raw{ background: #82aaff; }
-            &.layer-ground{ background: #64d98a; }
-            &.layer-marking{ background: #ffd45c; }
-            &.layer-edge{ background: #46d7ff; }
-            &.layer-structure{ background: #ff9d4d; }
-        }
         input[type='range']{
             flex: 1;
             accent-color: #1f6feb;
-        }
-    }
-    .assist-drawing-panel{
-        position: absolute;
-        right: 16px;
-        bottom: 16px;
-        z-index: 8;
-        width: 320px;
-        padding: 12px;
-        background: rgba(17, 21, 29, 0.94);
-        border: 1px solid rgba(115, 128, 150, 0.58);
-        border-radius: 6px;
-        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.24);
-        color: #aab7ca;
-        .assist-drawing-header,
-        .assist-drawing-actions,
-        .assist-drawing-layers,
-        .assist-drawing-stats{
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .assist-drawing-header{
-            justify-content: space-between;
-            margin-bottom: 10px;
-        }
-        .assist-drawing-title{
-            color: #eef4ff;
-            font-size: 14px;
-            font-weight: 600;
-            line-height: 20px;
-        }
-        .assist-drawing-meta{
-            color: #91a0b8;
-            font-size: 12px;
-            line-height: 18px;
-        }
-        .assist-drawing-layers{
-            flex-wrap: wrap;
-            margin-bottom: 10px;
-        }
-        .assist-drawing-actions{
-            margin-bottom: 10px;
-        }
-        .assist-drawing-stats{
-            flex-wrap: wrap;
-            color: #c8d6ea;
-            font-size: 12px;
-            span{
-                padding: 2px 7px;
-                border: 1px solid rgba(126, 141, 164, 0.42);
-                border-radius: 4px;
-                background: rgba(40, 50, 66, 0.88);
-            }
-        }
-        .assist-drawing-error{
-            color: #ff8b8b;
-            font-size: 12px;
-            line-height: 18px;
-        }
-        button{
-            height: 28px;
-            min-width: 58px;
-            padding: 0 10px;
-            border: 1px solid rgba(126, 141, 164, 0.46);
-            border-radius: 4px;
-            background: #2f3747;
-            color: #c8d6ea;
-            cursor: pointer;
-            font-size: 13px;
-            line-height: 26px;
-            &:hover:not(:disabled){
-                color: #ffffff;
-                border-color: #6f89b5;
-            }
-            &.active,
-            &.primary{
-                background: #1f6feb;
-                border-color: #1f6feb;
-                color: #ffffff;
-            }
-            &:disabled{
-                border-color: #3b4658;
-                background: #252c38;
-                color: #74849c;
-                cursor: not-allowed;
-            }
         }
     }
     .lane-handle-container{

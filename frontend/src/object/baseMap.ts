@@ -47,6 +47,8 @@ export default class BaseMap {
 
     private opacity: number = 1;
 
+    private pointSize: number = 1.2;
+
     private currentMapExtent: number = 0;
 
     /**
@@ -100,6 +102,10 @@ export default class BaseMap {
             this.transparency(opacity);
             this.renderer();
         });
+        PubSub.subscribe('baseMapPointSize', (_name, pointSize: number) => {
+            this.updatePointSize(pointSize);
+            this.renderer();
+        });
     }
 
     get Scene(): THREE.Scene {
@@ -144,7 +150,19 @@ export default class BaseMap {
         const style = layerMaterialStyles[this.activeLayerId] || layerMaterialStyles.enhanced;
         Object.keys(this.meshs).forEach((id: string) => {
             const mesh = this.meshs[id];
-            (mesh.material as THREE.MeshBasicMaterial).opacity = this.opacity * style.opacity;
+            (mesh.material as THREE.MeshBasicMaterial | THREE.PointsMaterial).opacity = this.opacity * style.opacity;
+        });
+    }
+
+    public updatePointSize(val: number) {
+        this.pointSize = Math.max(0.6, Math.min(3, Number(val) || 1.2));
+        Object.keys(this.meshs).forEach((id: string) => {
+            const mesh = this.meshs[id];
+            if (mesh instanceof THREE.Points) {
+                const material = mesh.material as THREE.PointsMaterial;
+                material.size = this.pointSize;
+                material.needsUpdate = true;
+            }
         });
     }
 
@@ -265,7 +283,7 @@ export default class BaseMap {
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         const material = new THREE.PointsMaterial({
-            size: 1.2,
+            size: this.pointSize,
             sizeAttenuation: false,
             vertexColors: true,
             transparent: true,
