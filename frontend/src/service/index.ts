@@ -383,6 +383,15 @@ class FileService {
         });
     }
 
+    async startApolloLiteSimulationSmokeTestJob(mapName: string = '') {
+        return this.requestJson('/runtime/apollolite-sim-smoke-test-job', {
+            method: 'POST',
+            body: JSON.stringify({
+                mapName,
+            }),
+        });
+    }
+
     async startDeployLatestReleasedMapJob() {
         return this.requestJson('/runtime/deploy-latest-job', {
             method: 'POST',

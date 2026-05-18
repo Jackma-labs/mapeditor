@@ -294,6 +294,15 @@ export default function Index(prop: { messageApi: any }) {
                     key: 'apollolite-stage-latest',
                 },
                 {
+                    label: (
+                        <FileMenuLabel
+                            title="一键仿真跑图"
+                            description="启动仿真模块、下发测试路线、检查车辆是否起步"
+                        />
+                    ),
+                    key: 'apollolite-sim-smoke-test',
+                },
+                {
                     label: <FileMenuLabel title="部署历史 / 回滚" description="查看部署记录，必要时回滚" />,
                     key: 'deploy-history',
                 },
@@ -514,6 +523,68 @@ export default function Index(prop: { messageApi: any }) {
         });
     };
 
+    const runApolloLiteSimulationSmokeTest = () => {
+        Modal.confirm({
+            title: '一键仿真跑图',
+            content:
+                '同步最新发布地图到 ApolloLite，启动 Routing / Planning / Control，自动生成一条测试路线并检查车辆是否起步。',
+            okText: '开始跑图',
+            cancelText: '取消',
+            onOk: async () => {
+                try {
+                    const response = await FileService.startApolloLiteSimulationSmokeTestJob();
+                    if (response?.code !== 0) {
+                        throw new Error(response?.message || '提交仿真跑图任务失败');
+                    }
+                    const jobId = response?.data?.job?.id;
+                    if (!jobId) {
+                        throw new Error('后台任务没有返回 jobId');
+                    }
+                    const job = await waitForRuntimeJob(jobId, 'ApolloLite 仿真跑图');
+                    const result = job.result || {};
+                    const route = result.route || {};
+                    const motion = result.motion || {};
+                    const dreamviewUrl = result.stage?.apolloLite?.dreamviewUrl || result.apolloLite?.dreamviewUrl;
+                    const content = (
+                        <div className="runtime-status-modal">
+                            <p>{`地图: ${result.mapName || ''}`}</p>
+                            <p>{`测试路线: ${route.laneIds?.length || 0} 条车道，约 ${Number(route.estimatedLengthMeters || 0).toFixed(1)} m`}</p>
+                            <p>{`车辆起步: ${motion.moved ? '通过' : '未确认'}`}</p>
+                            <p>{`最大速度: ${Number.isFinite(motion.maxSpeedMps) ? `${motion.maxSpeedMps.toFixed(3)} m/s` : '未读取'}`}</p>
+                            {motion.message && <p>{motion.message}</p>}
+                            {dreamviewUrl && (
+                                <p>
+                                    <span>Dreamview: </span>
+                                    <a href={dreamviewUrl} target="_blank" rel="noreferrer">
+                                        {dreamviewUrl}
+                                    </a>
+                                </p>
+                            )}
+                        </div>
+                    );
+                    if (result.ready) {
+                        Modal.success({
+                            title: '仿真跑图通过',
+                            width: 680,
+                            content,
+                        });
+                        return;
+                    }
+                    Modal.warning({
+                        title: '仿真跑图未完全通过',
+                        width: 680,
+                        content,
+                    });
+                } catch (error: any) {
+                    Modal.error({
+                        title: '仿真跑图失败',
+                        content: error?.message || 'Unknown error',
+                    });
+                }
+            },
+        });
+    };
+
     const rollbackDeployment = async (deploymentId: string) => {
         try {
             const response = await FileService.startRollbackDeploymentJob(deploymentId);
@@ -616,6 +687,9 @@ export default function Index(prop: { messageApi: any }) {
                 break;
             case 'apollolite-stage-latest':
                 stageLatestMapToApolloLite();
+                break;
+            case 'apollolite-sim-smoke-test':
+                runApolloLiteSimulationSmokeTest();
                 break;
             case 'deploy-history':
                 showDeploymentHistory();

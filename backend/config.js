@@ -70,6 +70,7 @@ const defaults = {
     mapRoot: process.env.MAP_APOLLOLITE_MAP_ROOT || '',
     dreamviewUrl: process.env.MAP_APOLLOLITE_DREAMVIEW_URL || 'http://127.0.0.1:8888',
     dreamviewProxyTarget: process.env.MAP_APOLLOLITE_DREAMVIEW_PROXY_TARGET || 'http://127.0.0.1:8888',
+    dockerContainer: process.env.MAP_APOLLOLITE_DOCKER_CONTAINER || '',
     autoStageOnRelease: process.env.MAP_APOLLOLITE_AUTO_STAGE_ON_RELEASE === 'true',
     validationCommand: process.env.MAP_APOLLOLITE_VALIDATION_COMMAND || '',
   },
@@ -234,6 +235,15 @@ if (process.env.MAP_APOLLOLITE_ROOT) {
 }
 if (process.env.MAP_APOLLOLITE_MAP_ROOT) {
   merged.apolloLite.mapRoot = process.env.MAP_APOLLOLITE_MAP_ROOT;
+}
+if (process.env.MAP_APOLLOLITE_DREAMVIEW_URL) {
+  merged.apolloLite.dreamviewUrl = process.env.MAP_APOLLOLITE_DREAMVIEW_URL;
+}
+if (process.env.MAP_APOLLOLITE_DREAMVIEW_PROXY_TARGET) {
+  merged.apolloLite.dreamviewProxyTarget = process.env.MAP_APOLLOLITE_DREAMVIEW_PROXY_TARGET;
+}
+if (process.env.MAP_APOLLOLITE_DOCKER_CONTAINER) {
+  merged.apolloLite.dockerContainer = process.env.MAP_APOLLOLITE_DOCKER_CONTAINER;
 }
 if (process.env.MAP_APOLLOLITE_AUTO_STAGE_ON_RELEASE) {
   merged.apolloLite.autoStageOnRelease = process.env.MAP_APOLLOLITE_AUTO_STAGE_ON_RELEASE === 'true';

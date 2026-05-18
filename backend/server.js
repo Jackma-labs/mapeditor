@@ -61,6 +61,7 @@ const HEAVY_RUNTIME_JOB_TYPES = new Set([
   'sync-capture-source-packages',
   'prebuild-data-package-base-maps',
   'stage-apollolite-map',
+  'apollolite-sim-smoke-test',
 ]);
 
 function log(...args) {
@@ -1707,6 +1708,40 @@ app.post('/runtime/apollolite-stage-latest-job', async (_req, res) => {
   } catch (error) {
     res.status(500).json({
       code: 15054,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/apollolite-sim-smoke-test-job', async (req, res) => {
+  try {
+    const activeJob = findActiveHeavyRuntimeJob();
+    if (activeJob) {
+      sendRuntimeJobBusy(res, activeJob);
+      return;
+    }
+    const body = req.body || {};
+    const job = startRuntimeJob(
+      'apollolite-sim-smoke-test',
+      (runtimeJob) =>
+        runtime.runApolloLiteSimulationSmokeTest(config, {
+          mapName: body.mapName || '',
+          progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+        }),
+      {
+        mapName: body.mapName || '',
+      }
+    );
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15055,
       message: error.message,
     });
   }

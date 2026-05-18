@@ -8,6 +8,7 @@ const { Writable } = require('stream');
 const { pipeline } = require('stream/promises');
 const unzipper = require('unzipper');
 const { PNG } = require('pngjs');
+const WebSocketClient = require('ws');
 const { convertEditorMapToApolloPackage } = require('./editorMapConverter');
 const { runCommand } = require('./process');
 const { generateAssistDrawingCandidates } = require('./assistDrawingCandidates');
@@ -60,7 +61,26 @@ const APOLLOLITE_FRONTEND_ASSET_CANDIDATES = [
   'modules/dreamview_plus/frontend/dist',
   'modules/dreamview_plus/frontend/build',
 ];
+const APOLLOLITE_SIMULATION_COMPONENTS = [
+  {
+    name: 'Routing',
+    actionModule: 'Routing',
+    candidates: ['bazel-bin/modules/routing/librouting_component.so'],
+  },
+  {
+    name: 'Planning',
+    actionModule: 'Planning',
+    candidates: ['bazel-bin/modules/planning/libplanning_component.so'],
+  },
+  {
+    name: 'Control',
+    actionModule: 'Control',
+    candidates: ['bazel-bin/modules/control/libcontrol_component.so'],
+  },
+];
 const APOLLOLITE_DREAMVIEW_HTTP_TIMEOUT_MS = 1500;
+const APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS = 5000;
+const APOLLOLITE_SIM_MOTION_TIMEOUT_MS = 15000;
 
 function normalizeZipOpenError(error, label) {
   const message = String(error?.message || error || '');
@@ -427,6 +447,7 @@ function getApolloLiteConfig(config) {
     mapRoot,
     dreamviewUrl: String(apolloLite.dreamviewUrl || 'http://127.0.0.1:8888').trim(),
     dreamviewProxyTarget: String(apolloLite.dreamviewProxyTarget || 'http://127.0.0.1:8888').trim(),
+    dockerContainer: String(apolloLite.dockerContainer || '').trim(),
     autoStageOnRelease: apolloLite.autoStageOnRelease === true,
     validationCommand: String(apolloLite.validationCommand || '').trim(),
   };
@@ -1033,6 +1054,566 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     },
     record,
   };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildDreamviewWebSocketUrl(apolloLite) {
+  const target = apolloLite.dreamviewProxyTarget || apolloLite.dreamviewUrl || 'http://127.0.0.1:8888';
+  const parsed = new URL(target);
+  parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+  const pathname = parsed.pathname.replace(/\/+$/u, '');
+  parsed.pathname = !pathname || pathname === '/' ? '/websocket' : `${pathname}/websocket`;
+  parsed.search = '';
+  return parsed.toString();
+}
+
+function extractTopLevelProtoBlocks(text, blockName) {
+  const blocks = [];
+  const lines = text.split(/\r?\n/u);
+  let collecting = false;
+  let depth = 0;
+  let current = [];
+  const startPattern = new RegExp(`^\\s*${blockName}\\s*\\{\\s*$`, 'u');
+  for (const line of lines) {
+    if (!collecting && startPattern.test(line)) {
+      collecting = true;
+      current = [line];
+      depth = (line.match(/\{/gu) || []).length - (line.match(/\}/gu) || []).length;
+      continue;
+    }
+    if (!collecting) {
+      continue;
+    }
+    current.push(line);
+    depth += (line.match(/\{/gu) || []).length - (line.match(/\}/gu) || []).length;
+    if (depth <= 0) {
+      blocks.push(current.join('\n'));
+      collecting = false;
+      current = [];
+      depth = 0;
+    }
+  }
+  return blocks;
+}
+
+function parseApolloMapLanes(mapText) {
+  const laneBlocks = extractTopLevelProtoBlocks(mapText, 'lane');
+  return laneBlocks
+    .map((block) => {
+      const id = block.match(/\bid:\s*"([^"]+)"/u)?.[1] || '';
+      const successorIds = Array.from(block.matchAll(/successor_id\s*\{\s*id:\s*"([^"]+)"/gu)).map((match) => match[1]);
+      const laneType = Number(block.match(/\n\s*type:\s*(\d+)/u)?.[1] || 0);
+      const centralStart = block.search(/central_curve\s*\{/u);
+      const centralBody = centralStart >= 0 ? block.slice(centralStart) : block;
+      const stopMatch = centralBody.search(/\n\s*(left_boundary|right_boundary|overlap_id|successor_id|predecessor_id|junction_id)\s*\{/u);
+      const centralText = stopMatch >= 0 ? centralBody.slice(0, stopMatch) : centralBody;
+      const points = Array.from(
+        centralText.matchAll(
+          /point\s*\{\s*x:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*y:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu
+        )
+      ).map((match) => ({
+        x: Number(match[1]),
+        y: Number(match[2]),
+      })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+      const length = polylineLength(points);
+      return {
+        id,
+        successorIds,
+        laneType,
+        points,
+        length,
+      };
+    })
+    .filter((lane) => lane.id && lane.points.length >= 2 && lane.length > 0.5);
+}
+
+function polylineLength(points) {
+  let length = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    length += Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y);
+  }
+  return length;
+}
+
+function pointAtPolylineFraction(points, fraction) {
+  if (points.length === 0) {
+    return { x: 0, y: 0 };
+  }
+  if (points.length === 1) {
+    return points[0];
+  }
+  const target = Math.max(0, Math.min(1, fraction)) * polylineLength(points);
+  let travelled = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const prev = points[index - 1];
+    const next = points[index];
+    const segmentLength = Math.hypot(next.x - prev.x, next.y - prev.y);
+    if (travelled + segmentLength >= target) {
+      const ratio = segmentLength > 0 ? (target - travelled) / segmentLength : 0;
+      return {
+        x: prev.x + (next.x - prev.x) * ratio,
+        y: prev.y + (next.y - prev.y) * ratio,
+      };
+    }
+    travelled += segmentLength;
+  }
+  return points[points.length - 1];
+}
+
+function headingAtPolylineFraction(points, fraction) {
+  if (points.length < 2) {
+    return 0;
+  }
+  const target = Math.max(0, Math.min(1, fraction)) * polylineLength(points);
+  let travelled = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const prev = points[index - 1];
+    const next = points[index];
+    const segmentLength = Math.hypot(next.x - prev.x, next.y - prev.y);
+    if (travelled + segmentLength >= target || index === points.length - 1) {
+      return Math.atan2(next.y - prev.y, next.x - prev.x);
+    }
+    travelled += segmentLength;
+  }
+  const prev = points[points.length - 2];
+  const next = points[points.length - 1];
+  return Math.atan2(next.y - prev.y, next.x - prev.x);
+}
+
+function closestPointOnPolyline(points, target) {
+  const totalLength = polylineLength(points);
+  let best = null;
+  let travelled = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const prev = points[index - 1];
+    const next = points[index];
+    const dx = next.x - prev.x;
+    const dy = next.y - prev.y;
+    const segmentLength = Math.hypot(dx, dy);
+    const ratio = segmentLength > 0
+      ? Math.max(0, Math.min(1, ((target.x - prev.x) * dx + (target.y - prev.y) * dy) / (segmentLength * segmentLength)))
+      : 0;
+    const point = {
+      x: prev.x + dx * ratio,
+      y: prev.y + dy * ratio,
+    };
+    const distance = Math.hypot(target.x - point.x, target.y - point.y);
+    const fraction = totalLength > 0 ? (travelled + segmentLength * ratio) / totalLength : 0;
+    if (!best || distance < best.distanceMeters) {
+      best = {
+        point,
+        distanceMeters: distance,
+        fraction,
+        heading: Math.atan2(dy, dx),
+      };
+    }
+    travelled += segmentLength;
+  }
+  return best;
+}
+
+function findNearestLaneProjection(lanes, point) {
+  let best = null;
+  for (const lane of lanes) {
+    const projection = closestPointOnPolyline(lane.points, point);
+    if (!projection) {
+      continue;
+    }
+    if (!best || projection.distanceMeters < best.distanceMeters) {
+      best = {
+        ...projection,
+        lane,
+      };
+    }
+  }
+  return best;
+}
+
+function followSimulationSuccessors(startLane, laneById) {
+  const pathItems = [];
+  const visited = new Set();
+  let current = startLane;
+  while (current && !visited.has(current.id) && pathItems.length < 16) {
+    pathItems.push(current);
+    visited.add(current.id);
+    const nextId = current.successorIds.find((id) => laneById.has(id) && !visited.has(id));
+    current = nextId ? laneById.get(nextId) : null;
+  }
+  return pathItems;
+}
+
+function chooseSimulationLanePath(lanes, startPose = null) {
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+  const cityDrivingLanes = lanes.filter((lane) => lane.laneType === 2);
+  const routableStartLanes = cityDrivingLanes.length > 0 ? cityDrivingLanes : lanes;
+  if (startPose && Number.isFinite(startPose.x) && Number.isFinite(startPose.y)) {
+    const startProjection = findNearestLaneProjection(routableStartLanes, startPose);
+    if (startProjection) {
+      const lanesFromPose = followSimulationSuccessors(startProjection.lane, laneById);
+      if (lanesFromPose.length > 0) {
+        return {
+          lanes: lanesFromPose,
+          startProjection,
+        };
+      }
+    }
+  }
+  let bestPath = [];
+  let bestLength = 0;
+  for (const lane of lanes) {
+    const pathItems = followSimulationSuccessors(lane, laneById);
+    const length = pathItems.reduce((sum, item) => sum + item.length, 0);
+    if (length > bestLength) {
+      bestPath = pathItems;
+      bestLength = length;
+    }
+  }
+  if (bestPath.length > 0) {
+    return {
+      lanes: bestPath,
+      startProjection: null,
+    };
+  }
+  const longestLane = lanes.reduce((best, lane) => (lane.length > (best?.length || 0) ? lane : best), null);
+  return {
+    lanes: longestLane ? [longestLane] : [],
+    startProjection: null,
+  };
+}
+
+async function buildApolloLiteSimulationRoute(mapDir, startPose = null) {
+  const baseMapTextPath = path.join(mapDir, 'base_map.txt');
+  if (!(await pathExists(baseMapTextPath))) {
+    throw new Error(`ApolloLite smoke test requires base_map.txt: ${baseMapTextPath}`);
+  }
+  const mapText = await fsp.readFile(baseMapTextPath, 'utf8');
+  const lanes = parseApolloMapLanes(mapText);
+  if (lanes.length === 0) {
+    throw new Error(`no drivable lanes found in ${baseMapTextPath}`);
+  }
+  const laneSelection = chooseSimulationLanePath(lanes, startPose);
+  const lanePath = laneSelection.lanes;
+  if (lanePath.length === 0) {
+    throw new Error(`no usable route can be derived from ${baseMapTextPath}`);
+  }
+  const startLane = lanePath[0];
+  const hasCityDrivingLanes = lanes.some((lane) => lane.laneType === 2);
+  let endLaneIndex = 0;
+  for (let index = lanePath.length - 1; index > 0; index -= 1) {
+    if (lanePath[index].laneType === 2 || !hasCityDrivingLanes) {
+      endLaneIndex = index;
+      break;
+    }
+  }
+  const effectiveLanePath = lanePath.slice(0, endLaneIndex + 1);
+  const endLane = effectiveLanePath[effectiveLanePath.length - 1];
+  const singleLane = startLane.id === endLane.id;
+  const startFraction = laneSelection.startProjection?.fraction ?? (singleLane ? 0.12 : 0.08);
+  const endFraction = singleLane ? 0.88 : 0.82;
+  const laneStart = pointAtPolylineFraction(startLane.points, startFraction);
+  const usePoseStart = startPose && laneSelection.startProjection && laneSelection.startProjection.distanceMeters < 1.5;
+  const start = usePoseStart
+    ? { x: startPose.x, y: startPose.y }
+    : laneStart;
+  const end = pointAtPolylineFraction(endLane.points, endFraction);
+  const heading = usePoseStart && Number.isFinite(startPose.heading)
+    ? startPose.heading
+    : headingAtPolylineFraction(startLane.points, startFraction);
+  return {
+    laneIds: effectiveLanePath.map((lane) => lane.id),
+    estimatedLengthMeters: effectiveLanePath.reduce((sum, lane) => sum + lane.length, 0),
+    startMode: usePoseStart ? 'current_vehicle_pose' : 'map_lane',
+    startLaneId: startLane.id,
+    startProjectionDistanceMeters: laneSelection.startProjection?.distanceMeters ?? null,
+    request: {
+      type: 'SendRoutingRequest',
+      start: {
+        x: start.x,
+        y: start.y,
+        heading,
+      },
+      end: {
+        x: end.x,
+        y: end.y,
+        id: endLane.id,
+      },
+    },
+  };
+}
+
+async function inspectApolloLiteSimulationComponents(apolloLite) {
+  const components = [];
+  for (const component of APOLLOLITE_SIMULATION_COMPONENTS) {
+    const componentPath = await findApolloLiteCandidate(apolloLite.root, component.candidates);
+    components.push({
+      name: component.name,
+      actionModule: component.actionModule,
+      available: Boolean(componentPath),
+      path: componentPath || '',
+    });
+  }
+  return components;
+}
+
+function connectDreamviewWebSocket(wsUrl) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocketClient(wsUrl, { perMessageDeflate: false });
+    const timer = setTimeout(() => {
+      ws.terminate();
+      reject(new Error(`Dreamview websocket timeout: ${wsUrl}`));
+    }, APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS);
+    ws.once('open', () => {
+      clearTimeout(timer);
+      resolve(ws);
+    });
+    ws.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+function sendDreamviewMessage(ws, payload) {
+  if (ws.readyState !== WebSocketClient.OPEN) {
+    throw new Error('Dreamview websocket is not open');
+  }
+  ws.send(JSON.stringify(payload));
+}
+
+async function runDreamviewSimulationSequence(apolloLite, route, progress) {
+  const wsUrl = buildDreamviewWebSocketUrl(apolloLite);
+  await progress(`Connecting Dreamview websocket: ${wsUrl}`);
+  const ws = await connectDreamviewWebSocket(wsUrl);
+  const observedTypes = new Set();
+  ws.on('message', (data) => {
+    try {
+      const message = JSON.parse(Buffer.isBuffer(data) ? data.toString('utf8') : String(data));
+      if (message?.type) {
+        observedTypes.add(message.type);
+      }
+    } catch (error) {
+      // Dreamview can emit non-JSON diagnostics; they are not needed for the smoke test.
+    }
+  });
+  try {
+    sendDreamviewMessage(ws, { type: 'ToggleSimControl', enable: true });
+    await delay(500);
+    sendDreamviewMessage(ws, { type: 'HMIAction', action: 'CHANGE_MAP', value: route.mapName });
+    await delay(500);
+    for (const component of APOLLOLITE_SIMULATION_COMPONENTS) {
+      await progress(`Starting ApolloLite module: ${component.actionModule}`);
+      sendDreamviewMessage(ws, {
+        type: 'HMIAction',
+        action: 'START_MODULE',
+        value: component.actionModule,
+      });
+      await delay(400);
+    }
+    await delay(1200);
+    await progress(`Sending simulation route across ${route.laneIds.length} lane(s)`);
+    sendDreamviewMessage(ws, route.request);
+    await delay(1200);
+  } finally {
+    ws.close();
+  }
+  return {
+    wsUrl,
+    observedTypes: Array.from(observedTypes),
+  };
+}
+
+async function resolveApolloLiteDockerContainer(apolloLite) {
+  if (apolloLite.dockerContainer) {
+    return apolloLite.dockerContainer;
+  }
+  const result = await runCommand('docker', ['ps', '--format', '{{.Names}}'], {
+    timeoutMs: 5000,
+  }).catch(() => null);
+  if (!result || result.code !== 0) {
+    return '';
+  }
+  const names = result.stdout.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean);
+  return names.find((name) => /apollo.*dev|apollo.*lite|apollo_dev/u.test(name)) || '';
+}
+
+function parseChassisSample(stdout) {
+  const speedMatches = Array.from(stdout.matchAll(/speed_mps:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu));
+  const speedMps = speedMatches.length > 0 ? Number(speedMatches[speedMatches.length - 1][1]) : null;
+  const drivingMode = stdout.match(/driving_mode:\s*([A-Z_]+)/u)?.[1] || '';
+  const gearLocation = stdout.match(/gear_location:\s*([A-Z_]+)/u)?.[1] || '';
+  return {
+    speedMps: Number.isFinite(speedMps) ? speedMps : null,
+    drivingMode,
+    gearLocation,
+    rawExcerpt: stdout.trim().slice(0, 2000),
+  };
+}
+
+function parseLocalizationPose(stdout) {
+  const positionMatches = Array.from(
+    stdout.matchAll(
+      /position\s*\{\s*x:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*y:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu
+    )
+  );
+  if (positionMatches.length === 0) {
+    return null;
+  }
+  const position = positionMatches[positionMatches.length - 1];
+  const headingMatches = Array.from(stdout.matchAll(/heading:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu));
+  const heading = headingMatches.length > 0 ? Number(headingMatches[headingMatches.length - 1][1]) : null;
+  const pose = {
+    x: Number(position[1]),
+    y: Number(position[2]),
+    heading,
+  };
+  if (!Number.isFinite(pose.x) || !Number.isFinite(pose.y)) {
+    return null;
+  }
+  return pose;
+}
+
+async function readApolloLiteChassisSample(containerName) {
+  const command = [
+    'cd /apollo',
+    'source cyber/setup.bash >/dev/null 2>&1 || true',
+    "timeout 2 cyber_channel echo /apollo/canbus/chassis 2>/dev/null | sed -n '1,180p' || true",
+  ].join(' && ');
+  const result = await runCommand('docker', ['exec', '-u', 'dell', containerName, 'bash', '-lc', command], {
+    timeoutMs: 5000,
+  });
+  return parseChassisSample(result.stdout || '');
+}
+
+async function readApolloLiteLocalizationPose(apolloLite, progress) {
+  const containerName = await resolveApolloLiteDockerContainer(apolloLite);
+  if (!containerName) {
+    return null;
+  }
+  await progress(`Reading current vehicle pose from ApolloLite container: ${containerName}`);
+  const command = [
+    'cd /apollo',
+    'source cyber/setup.bash >/dev/null 2>&1 || true',
+    "timeout 2 cyber_channel echo /apollo/localization/pose 2>/dev/null | sed -n '1,180p' || true",
+  ].join(' && ');
+  const result = await runCommand('docker', ['exec', '-u', 'dell', containerName, 'bash', '-lc', command], {
+    timeoutMs: 5000,
+  }).catch(() => null);
+  if (!result) {
+    return null;
+  }
+  return parseLocalizationPose(result.stdout || '');
+}
+
+async function waitForApolloLiteMotion(apolloLite, progress) {
+  const containerName = await resolveApolloLiteDockerContainer(apolloLite);
+  if (!containerName) {
+    return {
+      available: false,
+      moved: false,
+      containerName: '',
+      maxSpeedMps: null,
+      message: 'ApolloLite docker container was not found; route was sent but vehicle motion could not be verified',
+    };
+  }
+  await progress(`Reading chassis from ApolloLite container: ${containerName}`);
+  const deadline = Date.now() + APOLLOLITE_SIM_MOTION_TIMEOUT_MS;
+  let lastSample = null;
+  let maxSpeedMps = 0;
+  while (Date.now() < deadline) {
+    lastSample = await readApolloLiteChassisSample(containerName).catch((error) => ({
+      speedMps: null,
+      error: error.message,
+      rawExcerpt: '',
+    }));
+    if (Number.isFinite(lastSample.speedMps)) {
+      maxSpeedMps = Math.max(maxSpeedMps, Math.abs(lastSample.speedMps));
+      if (maxSpeedMps > 0.05) {
+        return {
+          available: true,
+          moved: true,
+          containerName,
+          maxSpeedMps,
+          lastSample,
+          message: 'vehicle motion detected',
+        };
+      }
+    }
+    await delay(1000);
+  }
+  return {
+    available: true,
+    moved: false,
+    containerName,
+    maxSpeedMps,
+    lastSample,
+    message: 'route was sent, but chassis speed did not rise above 0.05 m/s',
+  };
+}
+
+async function runApolloLiteSimulationSmokeTest(config, params = {}) {
+  const progress = typeof params.progress === 'function' ? params.progress : async () => {};
+  await progress('Preparing ApolloLite map');
+  const stage = await stageReleasedMapToApolloLite(config, {
+    mapName: params.mapName || '',
+    progress,
+  });
+  const apolloLite = {
+    ...getApolloLiteConfig(config),
+    ...(stage.apolloLite || {}),
+  };
+  const components = await inspectApolloLiteSimulationComponents(apolloLite);
+  const missingComponents = components.filter((component) => !component.available);
+  if (missingComponents.length > 0) {
+    throw new Error(
+      `ApolloLite PNC components are missing: ${missingComponents.map((component) => component.name).join(', ')}. Build routing/planning/control first.`
+    );
+  }
+  const startPose = await readApolloLiteLocalizationPose(apolloLite, progress);
+  if (startPose) {
+    await progress(`Current vehicle pose: x=${startPose.x.toFixed(3)}, y=${startPose.y.toFixed(3)}`);
+  }
+  await progress('Building route from staged Apollo map');
+  const route = await buildApolloLiteSimulationRoute(stage.targetDir, startPose);
+  route.mapName = stage.mapName;
+  route.startPose = startPose;
+  const dreamview = await runDreamviewSimulationSequence(apolloLite, route, progress);
+  await progress('Checking whether the simulated vehicle starts moving');
+  const motion = await waitForApolloLiteMotion(apolloLite, progress);
+  const ready = motion.moved === true;
+  const result = {
+    ready,
+    mapName: stage.mapName,
+    targetDir: stage.targetDir,
+    stage,
+    apolloLite,
+    components,
+    route,
+    dreamview,
+    motion,
+  };
+  await appendDeploymentRecord(config, {
+    id: createDeploymentId('apollolite-sim'),
+    type: 'apollolite-sim-smoke-test',
+    mapName: stage.mapName,
+    status: ready ? 'succeeded' : 'failed',
+    startedAt: stage.record?.finishedAt || new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    targetDir: stage.targetDir,
+    route: {
+      laneIds: route.laneIds,
+      estimatedLengthMeters: route.estimatedLengthMeters,
+    },
+    motion,
+  }).catch(() => {});
+  if (!ready) {
+    await progress(motion.message || 'ApolloLite simulation route was sent, but vehicle motion was not confirmed');
+    return result;
+  }
+  await progress(`ApolloLite simulation smoke test passed: max speed ${motion.maxSpeedMps.toFixed(3)} m/s`);
+  return result;
 }
 
 async function importBaseMapZip(config, params) {
@@ -5432,6 +6013,7 @@ module.exports = {
   createBaseMap,
   inspectReleasedMapForApolloLite,
   stageReleasedMapToApolloLite,
+  runApolloLiteSimulationSmokeTest,
   deployReleasedMap,
   deployLatestReleasedMap,
   rollbackDeployment,
