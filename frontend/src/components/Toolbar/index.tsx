@@ -337,11 +337,14 @@ export default function Index(prop: { messageApi: any }) {
             }
             const doctor = response.data;
             const checks = doctor.checks || [];
-            let apolloLiteState = '未启用';
-            if (doctor.status?.apolloLite?.ready) {
-                apolloLiteState = '已就绪';
-            } else if (doctor.status?.apolloLite?.enabled) {
-                apolloLiteState = '未就绪';
+            const apolloLite = doctor.status?.apolloLite;
+            let apolloLiteState = '\u672a\u542f\u7528';
+            if (apolloLite?.simulationReady) {
+                apolloLiteState = '\u4eff\u771f\u5c31\u7eea';
+            } else if (apolloLite?.stagingReady) {
+                apolloLiteState = '\u4ec5\u5730\u56fe\u5206\u53d1\u5c31\u7eea';
+            } else if (apolloLite?.enabled) {
+                apolloLiteState = '\u672a\u5c31\u7eea';
             }
             const runtimeLines = [
                 `运行模式: ${doctor.status?.mode || ''}`,
@@ -462,6 +465,10 @@ export default function Index(prop: { messageApi: any }) {
                     }
                     const job = await waitForRuntimeJob(jobId, 'ApolloLite 仿真预检');
                     const warnings = job.result?.inspection?.warnings || [];
+                    const apolloLite = job.result?.apolloLite;
+                    const apolloLiteState = apolloLite?.simulationReady
+                        ? '\u4eff\u771f\u5c31\u7eea'
+                        : '\u5730\u56fe\u5df2\u540c\u6b65\uff0c\u4eff\u771f\u8fd0\u884c\u73af\u5883\u5f85\u5c31\u7eea';
                     Modal.success({
                         title: 'ApolloLite 预检完成',
                         width: 680,
@@ -469,6 +476,8 @@ export default function Index(prop: { messageApi: any }) {
                             <div className="runtime-status-modal">
                                 <p>{`地图: ${job.result?.mapName || ''}`}</p>
                                 <p>{`目录: ${job.result?.targetDir || ''}`}</p>
+                                <p>{`ApolloLite: ${apolloLiteState}`}</p>
+                                {apolloLite?.simulationMessage && <p>{apolloLite.simulationMessage}</p>}
                                 {warnings.length > 0 && (
                                     <ul>
                                         {warnings.map((item: string) => (

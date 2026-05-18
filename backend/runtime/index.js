@@ -40,6 +40,24 @@ const APOLLOLITE_RUNTIME_FILE_GROUPS = [
   },
 ];
 const APOLLOLITE_TRACE_FILES = ['editor_map.json'];
+const APOLLOLITE_GLOBAL_FLAGFILE = 'modules/common/data/global_flagfile.txt';
+const APOLLOLITE_CYBER_LAUNCH_CANDIDATES = [
+  'bazel-bin/cyber/tools/cyber_launch/cyber_launch',
+  'bazel-bin/cyber/tools/cyber_launch/cyber_launch.exe',
+];
+const APOLLOLITE_DREAMVIEW_CANDIDATES = [
+  'bazel-bin/modules/dreamview/dreamview',
+  'bazel-bin/modules/dreamview_plus/dreamview_plus',
+];
+const APOLLOLITE_MONITOR_CANDIDATES = [
+  'bazel-bin/modules/monitor/libmonitor.so',
+];
+const APOLLOLITE_FRONTEND_ASSET_CANDIDATES = [
+  'modules/dreamview/frontend/dist',
+  'modules/dreamview/frontend/build',
+  'modules/dreamview_plus/frontend/dist',
+  'modules/dreamview_plus/frontend/build',
+];
 
 function normalizeZipOpenError(error, label) {
   const message = String(error?.message || error || '');
@@ -409,28 +427,105 @@ function getApolloLiteConfig(config) {
   };
 }
 
+async function findApolloLiteCandidate(root, candidates) {
+  if (!root) {
+    return null;
+  }
+  for (const candidate of candidates) {
+    const fullPath = path.join(root, ...candidate.split('/'));
+    if (await pathExists(fullPath)) {
+      return fullPath;
+    }
+  }
+  return null;
+}
+
+async function readApolloLiteDefaultMapFlag(root) {
+  const flagfilePath = root ? path.join(root, ...APOLLOLITE_GLOBAL_FLAGFILE.split('/')) : '';
+  if (!flagfilePath || !(await pathExists(flagfilePath))) {
+    return {
+      available: false,
+      flagfilePath,
+      mapDir: '',
+      mapName: '',
+    };
+  }
+  try {
+    const content = await fsp.readFile(flagfilePath, 'utf8');
+    const mapDirLine = content.split(/\r?\n/).find((line) => line.startsWith('--map_dir='));
+    const mapDir = mapDirLine ? mapDirLine.slice('--map_dir='.length).trim() : '';
+    return {
+      available: true,
+      flagfilePath,
+      mapDir,
+      mapName: mapDir ? path.basename(mapDir) : '',
+    };
+  } catch (error) {
+    return {
+      available: false,
+      flagfilePath,
+      mapDir: '',
+      mapName: '',
+      error: error.message,
+    };
+  }
+}
+
 async function getApolloLiteStatus(config) {
   const apolloLite = getApolloLiteConfig(config);
   const rootAvailable = apolloLite.root ? await pathExists(apolloLite.root) : false;
   const apolloShAvailable = apolloLite.root ? await pathExists(path.join(apolloLite.root, 'apollo.sh')) : false;
   const mapRootWritable = apolloLite.mapRoot ? await pathWritable(apolloLite.mapRoot) : false;
   const whlAvailable = process.platform === 'win32' ? false : await pathExists('/usr/local/bin/whl');
-  const ready = apolloLite.enabled && Boolean(apolloLite.mapRoot) && mapRootWritable;
+  const cyberLaunchPath = await findApolloLiteCandidate(apolloLite.root, APOLLOLITE_CYBER_LAUNCH_CANDIDATES);
+  const dreamviewPath = await findApolloLiteCandidate(apolloLite.root, APOLLOLITE_DREAMVIEW_CANDIDATES);
+  const monitorPath = await findApolloLiteCandidate(apolloLite.root, APOLLOLITE_MONITOR_CANDIDATES);
+  const frontendAssetPath = await findApolloLiteCandidate(apolloLite.root, APOLLOLITE_FRONTEND_ASSET_CANDIDATES);
+  const defaultMapFlag = await readApolloLiteDefaultMapFlag(apolloLite.root);
+  const stagingReady = apolloLite.enabled && Boolean(apolloLite.mapRoot) && mapRootWritable;
+  const dreamviewRuntimeAvailable = Boolean(cyberLaunchPath && dreamviewPath && frontendAssetPath);
+  const simulationReady =
+    stagingReady && (Boolean(apolloLite.validationCommand) || dreamviewRuntimeAvailable);
+  const stagingMessage = !apolloLite.enabled
+    ? 'ApolloLite staging is disabled'
+    : !apolloLite.mapRoot
+      ? 'ApolloLite mapRoot is not configured'
+      : mapRootWritable
+        ? 'ApolloLite staging map directory is writable'
+        : `ApolloLite map directory is not writable: ${apolloLite.mapRoot}`;
+  const simulationMessage = !apolloLite.enabled
+    ? 'ApolloLite simulation is disabled'
+    : !stagingReady
+      ? 'ApolloLite map staging is not ready'
+      : apolloLite.validationCommand
+        ? 'ApolloLite validation command is configured'
+        : dreamviewRuntimeAvailable
+          ? 'ApolloLite Dreamview runtime appears available'
+          : 'ApolloLite map staging is ready, but Dreamview runtime is not built or configured';
   return {
     ...apolloLite,
     rootAvailable,
     apolloShAvailable,
     mapRootWritable,
     whlAvailable,
-    ready,
+    ready: stagingReady,
+    stagingReady,
+    simulationReady,
+    dreamviewRuntimeAvailable,
+    cyberLaunchAvailable: Boolean(cyberLaunchPath),
+    dreamviewBinaryAvailable: Boolean(dreamviewPath),
+    monitorAvailable: Boolean(monitorPath),
+    frontendAssetsAvailable: Boolean(frontendAssetPath),
+    cyberLaunchPath,
+    dreamviewPath,
+    monitorPath,
+    frontendAssetPath,
+    defaultMapFlag,
+    defaultMapName: defaultMapFlag.mapName,
     validationCommandConfigured: Boolean(apolloLite.validationCommand),
-    message: !apolloLite.enabled
-      ? 'ApolloLite staging is disabled'
-      : !apolloLite.mapRoot
-        ? 'ApolloLite mapRoot is not configured'
-        : mapRootWritable
-          ? 'ApolloLite staging map directory is writable'
-          : `ApolloLite map directory is not writable: ${apolloLite.mapRoot}`,
+    message: stagingMessage,
+    stagingMessage,
+    simulationMessage,
   };
 }
 
@@ -750,6 +845,9 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     apolloLite: {
       root: apolloLite.root,
       mapRoot: apolloLite.mapRoot,
+      stagingReady: apolloLite.stagingReady,
+      simulationReady: apolloLite.simulationReady,
+      simulationMessage: apolloLite.simulationMessage,
       validationCommandConfigured: apolloLite.validationCommandConfigured,
     },
     defaultMapFlag,
@@ -766,6 +864,14 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     removedEmptyBinaries,
     defaultMapFlag,
     validation,
+    apolloLite: {
+      root: apolloLite.root,
+      mapRoot: apolloLite.mapRoot,
+      stagingReady: apolloLite.stagingReady,
+      simulationReady: apolloLite.simulationReady,
+      simulationMessage: apolloLite.simulationMessage,
+      validationCommandConfigured: apolloLite.validationCommandConfigured,
+    },
     record,
   };
 }
@@ -4699,9 +4805,9 @@ async function getRuntimeDoctor(config) {
   );
   addCheck(
     'apollolite-staging',
-    status.apolloLite.ready,
+    status.apolloLite.stagingReady,
     status.apolloLite.enabled ? 'error' : 'warning',
-    status.apolloLite.message
+    status.apolloLite.stagingMessage || status.apolloLite.message
   );
   if (status.apolloLite.enabled && status.apolloLite.root) {
     addCheck(
@@ -4711,6 +4817,12 @@ async function getRuntimeDoctor(config) {
       status.apolloLite.apolloShAvailable
         ? `ApolloLite source is available: ${status.apolloLite.root}`
         : `ApolloLite source is incomplete or missing apollo.sh: ${status.apolloLite.root}`
+    );
+    addCheck(
+      'apollolite-simulation',
+      status.apolloLite.simulationReady,
+      'warning',
+      status.apolloLite.simulationMessage
     );
   }
 
