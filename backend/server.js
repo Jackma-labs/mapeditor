@@ -1916,6 +1916,7 @@ app.get('/mapcreator/:mapName/:level/proj.png', async (req, res) => {
     return;
   }
   res.set('Access-Control-Allow-Origin', '*');
+  res.set('Cache-Control', 'public, max-age=300');
   res.sendFile(pngPath);
 });
 
@@ -1954,6 +1955,7 @@ app.get('/mapcreator/:mapName/layers/:layer/:level/:y/:file', async (req, res) =
     return;
   }
   res.set('Access-Control-Allow-Origin', '*');
+  res.set('Cache-Control', 'public, max-age=300');
   res.sendFile(pngPath);
 });
 
@@ -1972,6 +1974,7 @@ app.get('/mapcreator/:mapName/:level/:y/:file', async (req, res) => {
     return;
   }
   res.set('Access-Control-Allow-Origin', '*');
+  res.set('Cache-Control', 'public, max-age=300');
   res.sendFile(pngPath);
 });
 
