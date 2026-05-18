@@ -29,7 +29,6 @@ import initThree from '../../threeUtil/initThree';
 import CameraControl from '../../threeUtil/cameraControl';
 import BaseMap from '../../object/baseMap';
 import MapEditorBtn from './MapEditorBtn';
-import AssistDrawingPanel from './AssistDrawingPanel';
 import './index.less';
 import BezierCurve3Control from '../../threeUtil/BezierCurve3Control';
 import noData from '../../assets/images/no_attr.png';
@@ -67,7 +66,6 @@ export default function MapEditor() {
     const addIconControl = useRef<AddIconControl>(null);
     const mouseMoveControl = useRef<MouseMoveControl>(null);
     const rangingControl = useRef<RangingControl>(null);
-    const assistCandidateGroup = useRef<THREE.Group>(null);
     const timer = useRef(new Date().getTime());
     const setTimer = useRef(null);
     const destroyRequestAnimationHandle = useRef(null);
@@ -84,125 +82,6 @@ export default function MapEditor() {
     const render = () => {
         renderer.current?.render(scene.current, camera.current);
         labelRender.current?.render(scene.current, camera.current);
-    };
-
-    const clearAssistCandidates = () => {
-        if (!assistCandidateGroup.current || !scene.current) {
-            return;
-        }
-        disposeGroup(assistCandidateGroup.current, scene.current);
-        assistCandidateGroup.current = null;
-        render();
-    };
-
-    const toScenePoint = (coordinate: number[]) => {
-        const center = useManagerStore.getState().mapState.imageBasemapCenter || { x: 0, y: 0 };
-        return new THREE.Vector3(
-            Number(coordinate[0]) - Number(center.x || 0),
-            Number(coordinate[1]) - Number(center.y || 0),
-            2,
-        );
-    };
-
-    const getCandidateColor = (type: string) => {
-        if (type === 'centerline') {
-            return 0xffc857;
-        }
-        if (type === 'road_boundary') {
-            return 0x38d9ff;
-        }
-        return 0x7cf29a;
-    };
-
-    const buildCandidateLine = (candidate: any) => {
-        const coordinates = candidate?.geometry?.coordinates || [];
-        if (!Array.isArray(coordinates) || coordinates.length < 2) {
-            return null;
-        }
-        const points = coordinates.map((coordinate: number[]) => toScenePoint(coordinate));
-        const geometry = new THREE.BufferGeometry().setFromPoints(points);
-        const material = new THREE.LineBasicMaterial({
-            color: getCandidateColor(candidate.type),
-            transparent: true,
-            opacity: candidate.type === 'centerline' ? 0.95 : 0.82,
-            depthWrite: false,
-        });
-        const line = new THREE.Line(geometry, material);
-        line.renderOrder = 8;
-        line.userData = {
-            type: 'AssistCandidate',
-            candidateId: candidate.id,
-            candidateType: candidate.type,
-        };
-        return line;
-    };
-
-    const buildCandidatePolygon = (candidate: any) => {
-        const ring = candidate?.geometry?.coordinates?.[0] || [];
-        if (!Array.isArray(ring) || ring.length < 4) {
-            return null;
-        }
-        const points = ring.map((coordinate: number[]) => toScenePoint(coordinate));
-        const shape = new THREE.Shape(points.map((point) => new THREE.Vector2(point.x, point.y)));
-        const fillGeometry = new THREE.ShapeGeometry(shape);
-        const fillMaterial = new THREE.MeshBasicMaterial({
-            color: 0x54e38b,
-            transparent: true,
-            opacity: 0.12,
-            depthWrite: false,
-            side: THREE.DoubleSide,
-        });
-        const fill = new THREE.Mesh(fillGeometry, fillMaterial);
-        fill.renderOrder = 6;
-        fill.userData = {
-            type: 'AssistCandidate',
-            candidateId: candidate.id,
-            candidateType: candidate.type,
-        };
-
-        const borderGeometry = new THREE.BufferGeometry().setFromPoints(points);
-        const borderMaterial = new THREE.LineBasicMaterial({
-            color: 0x54e38b,
-            transparent: true,
-            opacity: 0.72,
-            depthWrite: false,
-        });
-        const border = new THREE.Line(borderGeometry, borderMaterial);
-        border.renderOrder = 7;
-        border.userData = fill.userData;
-
-        const group = new THREE.Group();
-        group.add(fill);
-        group.add(border);
-        return group;
-    };
-
-    const renderAssistCandidates = (payload: any) => {
-        if (!scene.current) {
-            return;
-        }
-        if (assistCandidateGroup.current) {
-            disposeGroup(assistCandidateGroup.current, scene.current);
-        }
-        const group = new THREE.Group();
-        group.name = 'assistDrawingCandidates';
-        group.userData = {
-            type: 'AssistCandidateLayer',
-            mapName: payload?.mapName,
-        };
-        const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
-        candidates.forEach((candidate: any) => {
-            const object =
-                candidate?.geometry?.type === 'Polygon'
-                    ? buildCandidatePolygon(candidate)
-                    : buildCandidateLine(candidate);
-            if (object) {
-                group.add(object);
-            }
-        });
-        assistCandidateGroup.current = group;
-        scene.current.add(group);
-        render();
     };
 
     const visibilitychangeHandle = () => {
@@ -394,18 +273,6 @@ export default function MapEditor() {
             PubSub.subscribe('closeRemind', () => {
                 setShowRemind(false);
             });
-            PubSub.subscribe('assistCandidatesRender', (_name, data: any) => {
-                renderAssistCandidates(data);
-            });
-            PubSub.subscribe('assistCandidatesClear', () => {
-                clearAssistCandidates();
-            });
-            PubSub.subscribe('assistCandidatesVisible', (_name, visible: boolean) => {
-                if (assistCandidateGroup.current) {
-                    assistCandidateGroup.current.visible = visible;
-                    render();
-                }
-            });
         }
     }, []);
     // 监听键盘交互
@@ -576,7 +443,6 @@ export default function MapEditor() {
         <div id="map-editor-container" onClick={handleClick} onMouseUp={handleMouseup} onDoubleClick={handleDbclick}>
             <div id="webgl" />
             <MapEditorBtn />
-            <AssistDrawingPanel baseMapDir={baseMapUi.dir} />
             {baseMapUi.layers.length > 1 && (
                 <div
                     className="basemap-layer-panel"
