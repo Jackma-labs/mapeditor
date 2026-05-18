@@ -611,7 +611,18 @@ async function selectReleasedMapName(config, mapName) {
   if (maps.length === 0) {
     throw new Error(`no released maps found at ${config.releaseRoot}`);
   }
-  return maps[0].mapName;
+  const rejected = [];
+  for (const map of maps) {
+    const inspection = await inspectReleasedMapForApolloLite(config, map.mapName).catch((error) => ({
+      ready: false,
+      errors: [error.message],
+    }));
+    if (inspection.ready) {
+      return map.mapName;
+    }
+    rejected.push(`${map.mapName}: ${(inspection.errors || []).join('; ')}`);
+  }
+  throw new Error(`no ApolloLite-ready released map found. ${rejected.join(' | ')}`);
 }
 
 async function runApolloLiteValidationCommand(config, params) {
