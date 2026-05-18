@@ -1,5 +1,7 @@
 const fs = require('fs');
 const fsp = fs.promises;
+const http = require('http');
+const https = require('https');
 const path = require('path');
 const readline = require('readline');
 const { Writable } = require('stream');
@@ -58,6 +60,7 @@ const APOLLOLITE_FRONTEND_ASSET_CANDIDATES = [
   'modules/dreamview_plus/frontend/dist',
   'modules/dreamview_plus/frontend/build',
 ];
+const APOLLOLITE_DREAMVIEW_HTTP_TIMEOUT_MS = 1500;
 
 function normalizeZipOpenError(error, label) {
   const message = String(error?.message || error || '');
@@ -422,9 +425,72 @@ function getApolloLiteConfig(config) {
     enabled: apolloLite.enabled === true,
     root,
     mapRoot,
+    dreamviewUrl: String(apolloLite.dreamviewUrl || 'http://127.0.0.1:8888').trim(),
     autoStageOnRelease: apolloLite.autoStageOnRelease === true,
     validationCommand: String(apolloLite.validationCommand || '').trim(),
   };
+}
+
+async function probeHttpUrl(urlString, timeoutMs = APOLLOLITE_DREAMVIEW_HTTP_TIMEOUT_MS) {
+  if (!urlString) {
+    return {
+      url: '',
+      ok: false,
+      message: 'Dreamview URL is not configured',
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(urlString);
+  } catch (error) {
+    return {
+      url: urlString,
+      ok: false,
+      error: error.message,
+      message: `Invalid Dreamview URL: ${urlString}`,
+    };
+  }
+
+  const client = parsed.protocol === 'https:' ? https : http;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(result);
+    };
+    const req = client.request(
+      parsed,
+      {
+        method: 'GET',
+        timeout: timeoutMs,
+      },
+      (res) => {
+        res.resume();
+        finish({
+          url: urlString,
+          ok: res.statusCode >= 200 && res.statusCode < 500,
+          statusCode: res.statusCode,
+          message: `HTTP ${res.statusCode}`,
+        });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy(new Error(`timeout after ${timeoutMs}ms`));
+    });
+    req.on('error', (error) => {
+      finish({
+        url: urlString,
+        ok: false,
+        error: error.message,
+        message: error.message,
+      });
+    });
+    req.end();
+  });
 }
 
 function mapApolloContainerPathToHost(root, targetPath) {
@@ -564,8 +630,16 @@ async function getApolloLiteStatus(config) {
   const defaultMapFlag = await readApolloLiteDefaultMapFlag(apolloLite.root);
   const stagingReady = apolloLite.enabled && Boolean(apolloLite.mapRoot) && mapRootWritable;
   const dreamviewRuntimeAvailable = Boolean(cyberLaunchPath && dreamviewPath && frontendAssetPath);
+  const dreamviewHttp = dreamviewRuntimeAvailable
+    ? await probeHttpUrl(apolloLite.dreamviewUrl)
+    : {
+      url: apolloLite.dreamviewUrl,
+      ok: false,
+      message: 'Dreamview runtime is not built or configured',
+    };
+  const dreamviewHttpReady = Boolean(dreamviewHttp.ok);
   const simulationReady =
-    stagingReady && (Boolean(apolloLite.validationCommand) || dreamviewRuntimeAvailable);
+    stagingReady && (Boolean(apolloLite.validationCommand) || (dreamviewRuntimeAvailable && dreamviewHttpReady));
   const stagingMessage = !apolloLite.enabled
     ? 'ApolloLite staging is disabled'
     : !apolloLite.mapRoot
@@ -577,11 +651,13 @@ async function getApolloLiteStatus(config) {
     ? 'ApolloLite simulation is disabled'
     : !stagingReady
       ? 'ApolloLite map staging is not ready'
-      : apolloLite.validationCommand
-        ? 'ApolloLite validation command is configured'
-        : dreamviewRuntimeAvailable
-          ? 'ApolloLite Dreamview runtime appears available'
-          : 'ApolloLite map staging is ready, but Dreamview runtime is not built or configured';
+    : apolloLite.validationCommand
+      ? 'ApolloLite validation command is configured'
+        : dreamviewRuntimeAvailable && dreamviewHttpReady
+          ? `ApolloLite Dreamview is reachable at ${apolloLite.dreamviewUrl}`
+          : dreamviewRuntimeAvailable
+            ? `ApolloLite Dreamview is built, but not reachable at ${apolloLite.dreamviewUrl}: ${dreamviewHttp.message || 'no response'}`
+            : 'ApolloLite map staging is ready, but Dreamview runtime is not built or configured';
   return {
     ...apolloLite,
     rootAvailable,
@@ -592,6 +668,8 @@ async function getApolloLiteStatus(config) {
     stagingReady,
     simulationReady,
     dreamviewRuntimeAvailable,
+    dreamviewHttpReady,
+    dreamviewHttp,
     cyberLaunchAvailable: Boolean(cyberLaunchPath),
     dreamviewBinaryAvailable: Boolean(dreamviewPath),
     monitorAvailable: Boolean(monitorPath),

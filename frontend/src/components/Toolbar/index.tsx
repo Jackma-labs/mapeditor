@@ -346,6 +346,12 @@ export default function Index(prop: { messageApi: any }) {
             } else if (apolloLite?.enabled) {
                 apolloLiteState = '\u672a\u5c31\u7eea';
             }
+            let dreamviewState = '未编译';
+            if (apolloLite?.dreamviewRuntimeAvailable) {
+                dreamviewState = apolloLite?.dreamviewHttpReady
+                    ? `已运行 ${apolloLite.dreamviewUrl || ''}`
+                    : `已编译，页面未响应 ${apolloLite.dreamviewUrl || ''}`;
+            }
             const runtimeLines = [
                 `运行模式: ${doctor.status?.mode || ''}`,
                 `生产就绪: ${doctor.ready ? '是' : '否'}`,
@@ -353,6 +359,7 @@ export default function Index(prop: { messageApi: any }) {
                 `底图生成器: ${doctor.status?.local?.tileMapCreatorAvailable ? '已安装' : '缺失'}`,
                 `边缘部署: ${doctor.status?.edgeDeploy?.enabled ? '已启用' : '未启用'}`,
                 `ApolloLite: ${apolloLiteState}`,
+                `Dreamview: ${dreamviewState}`,
             ];
             Modal.info({
                 title: '运行状态',
@@ -469,6 +476,7 @@ export default function Index(prop: { messageApi: any }) {
                     const apolloLiteState = apolloLite?.simulationReady
                         ? '\u4eff\u771f\u5c31\u7eea'
                         : '\u5730\u56fe\u5df2\u540c\u6b65\uff0c\u4eff\u771f\u8fd0\u884c\u73af\u5883\u5f85\u5c31\u7eea';
+                    const dreamviewReady = apolloLite?.dreamviewRuntimeAvailable && apolloLite?.dreamviewHttpReady;
                     Modal.success({
                         title: 'ApolloLite 预检完成',
                         width: 680,
@@ -477,6 +485,14 @@ export default function Index(prop: { messageApi: any }) {
                                 <p>{`地图: ${job.result?.mapName || ''}`}</p>
                                 <p>{`目录: ${job.result?.targetDir || ''}`}</p>
                                 <p>{`ApolloLite: ${apolloLiteState}`}</p>
+                                {apolloLite?.dreamviewUrl && (
+                                    <p>
+                                        {`Dreamview: ${dreamviewReady ? '可访问' : '未响应'} `}
+                                        <a href={apolloLite.dreamviewUrl} target="_blank" rel="noreferrer">
+                                            {apolloLite.dreamviewUrl}
+                                        </a>
+                                    </p>
+                                )}
                                 {apolloLite?.simulationMessage && <p>{apolloLite.simulationMessage}</p>}
                                 {warnings.length > 0 && (
                                     <ul>
