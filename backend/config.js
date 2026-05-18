@@ -64,6 +64,13 @@ const defaults = {
     targetMapRoot: process.env.MAP_EDGE_TARGET_MAP_ROOT || '/apollo/modules/map/data',
     postDeployCommand: process.env.MAP_EDGE_POST_DEPLOY_COMMAND || '',
   },
+  apolloLite: {
+    enabled: process.env.MAP_APOLLOLITE_ENABLED === 'true',
+    root: process.env.MAP_APOLLOLITE_ROOT || '',
+    mapRoot: process.env.MAP_APOLLOLITE_MAP_ROOT || '',
+    autoStageOnRelease: process.env.MAP_APOLLOLITE_AUTO_STAGE_ON_RELEASE === 'true',
+    validationCommand: process.env.MAP_APOLLOLITE_VALIDATION_COMMAND || '',
+  },
 };
 
 const CONFIG_FILENAME = 'server.config.json';
@@ -83,6 +90,14 @@ if (fs.existsSync(configPath)) {
 }
 
 const merged = Object.assign({}, defaults, userConfig);
+merged.edgeDeploy = {
+  ...defaults.edgeDeploy,
+  ...(userConfig.edgeDeploy || {}),
+};
+merged.apolloLite = {
+  ...defaults.apolloLite,
+  ...(userConfig.apolloLite || {}),
+};
 
 if (process.env.MAP_BACKEND_PORT || process.env.PORT) {
   merged.port = Number(process.env.MAP_BACKEND_PORT || process.env.PORT);
@@ -209,6 +224,21 @@ if (process.env.MAP_EDGE_TARGET_MAP_ROOT) {
 if (process.env.MAP_EDGE_POST_DEPLOY_COMMAND) {
   merged.edgeDeploy.postDeployCommand = process.env.MAP_EDGE_POST_DEPLOY_COMMAND;
 }
+if (process.env.MAP_APOLLOLITE_ENABLED) {
+  merged.apolloLite.enabled = process.env.MAP_APOLLOLITE_ENABLED === 'true';
+}
+if (process.env.MAP_APOLLOLITE_ROOT) {
+  merged.apolloLite.root = process.env.MAP_APOLLOLITE_ROOT;
+}
+if (process.env.MAP_APOLLOLITE_MAP_ROOT) {
+  merged.apolloLite.mapRoot = process.env.MAP_APOLLOLITE_MAP_ROOT;
+}
+if (process.env.MAP_APOLLOLITE_AUTO_STAGE_ON_RELEASE) {
+  merged.apolloLite.autoStageOnRelease = process.env.MAP_APOLLOLITE_AUTO_STAGE_ON_RELEASE === 'true';
+}
+if (process.env.MAP_APOLLOLITE_VALIDATION_COMMAND) {
+  merged.apolloLite.validationCommand = process.env.MAP_APOLLOLITE_VALIDATION_COMMAND;
+}
 
 function ensureAbsolute(dirPath) {
   if (typeof dirPath !== 'string' || dirPath.length === 0) {
@@ -230,5 +260,7 @@ merged.converterBinary = ensureAbsolute(merged.converterBinary);
 merged.frontendBuildRoot = ensureAbsolute(merged.frontendBuildRoot);
 merged.tileMapCreatorBinary = ensureAbsolute(merged.tileMapCreatorBinary);
 merged.tileMapConfig = ensureAbsolute(merged.tileMapConfig);
+merged.apolloLite.root = ensureAbsolute(merged.apolloLite.root);
+merged.apolloLite.mapRoot = ensureAbsolute(merged.apolloLite.mapRoot);
 
 module.exports = merged;

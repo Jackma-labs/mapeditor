@@ -25,6 +25,21 @@ const GROUND_MAX_RELATIVE_Z = 0.35;
 const CURB_EDGE_Z_DELTA = 0.12;
 const INTENSITY_SAMPLE_LIMIT = 200000;
 const TRAJECTORY_METADATA_READ_BYTES = 8 * 1024 * 1024;
+const APOLLOLITE_RUNTIME_FILE_GROUPS = [
+  {
+    name: 'base_map',
+    candidates: ['base_map.bin', 'base_map.txt'],
+  },
+  {
+    name: 'sim_map',
+    candidates: ['sim_map.bin', 'sim_map.txt'],
+  },
+  {
+    name: 'routing_map',
+    candidates: ['routing_map.bin', 'routing_map.txt'],
+  },
+];
+const APOLLOLITE_TRACE_FILES = ['editor_map.json'];
 
 function normalizeZipOpenError(error, label) {
   const message = String(error?.message || error || '');
@@ -381,6 +396,44 @@ async function checkDockerRuntime(config) {
   };
 }
 
+function getApolloLiteConfig(config) {
+  const apolloLite = config.apolloLite || {};
+  const root = String(apolloLite.root || '').trim();
+  const mapRoot = String(apolloLite.mapRoot || (root ? path.join(root, 'modules/map/data') : '')).trim();
+  return {
+    enabled: apolloLite.enabled === true,
+    root,
+    mapRoot,
+    autoStageOnRelease: apolloLite.autoStageOnRelease === true,
+    validationCommand: String(apolloLite.validationCommand || '').trim(),
+  };
+}
+
+async function getApolloLiteStatus(config) {
+  const apolloLite = getApolloLiteConfig(config);
+  const rootAvailable = apolloLite.root ? await pathExists(apolloLite.root) : false;
+  const apolloShAvailable = apolloLite.root ? await pathExists(path.join(apolloLite.root, 'apollo.sh')) : false;
+  const mapRootWritable = apolloLite.mapRoot ? await pathWritable(apolloLite.mapRoot) : false;
+  const whlAvailable = process.platform === 'win32' ? false : await pathExists('/usr/local/bin/whl');
+  const ready = apolloLite.enabled && Boolean(apolloLite.mapRoot) && mapRootWritable;
+  return {
+    ...apolloLite,
+    rootAvailable,
+    apolloShAvailable,
+    mapRootWritable,
+    whlAvailable,
+    ready,
+    validationCommandConfigured: Boolean(apolloLite.validationCommand),
+    message: !apolloLite.enabled
+      ? 'ApolloLite staging is disabled'
+      : !apolloLite.mapRoot
+        ? 'ApolloLite mapRoot is not configured'
+        : mapRootWritable
+          ? 'ApolloLite staging map directory is writable'
+          : `ApolloLite map directory is not writable: ${apolloLite.mapRoot}`,
+  };
+}
+
 async function getStatus(config) {
   const localConverterAvailable = await pathExists(config.converterBinary);
   const localConverterFallbackAvailable = true;
@@ -421,6 +474,7 @@ async function getStatus(config) {
       targetMapRoot: config.edgeDeploy.targetMapRoot,
       enabled: config.edgeDeploy.mode !== 'disabled',
     },
+    apolloLite: await getApolloLiteStatus(config),
   };
 }
 
@@ -454,6 +508,219 @@ async function listReleasedMaps(config) {
   }
   maps.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
   return maps;
+}
+
+async function readReleasedMapManifest(mapDir) {
+  const manifestPath = path.join(mapDir, 'manifest.json');
+  if (!(await pathExists(manifestPath))) {
+    return null;
+  }
+  const content = await fsp.readFile(manifestPath, 'utf8');
+  return JSON.parse(content.replace(/^\uFEFF/, ''));
+}
+
+async function inspectReleasedMapForApolloLite(config, mapName) {
+  const normalizedMapName = validateMapName(mapName);
+  const mapDir = path.join(config.releaseRoot, normalizedMapName);
+  if (!(await pathExists(mapDir))) {
+    throw new Error(`released map not found: ${normalizedMapName}`);
+  }
+  const files = {};
+  const candidateFiles = Array.from(
+    new Set([
+      ...APOLLOLITE_TRACE_FILES,
+      'manifest.json',
+      ...APOLLOLITE_RUNTIME_FILE_GROUPS.flatMap((group) => group.candidates),
+    ])
+  );
+  for (const fileName of candidateFiles) {
+    const filePath = path.join(mapDir, fileName);
+    const exists = await pathExists(filePath);
+    const stat = exists ? await fsp.stat(filePath) : null;
+    files[fileName] = {
+      exists,
+      sizeBytes: stat ? stat.size : 0,
+      usable: exists && stat && stat.size > 0,
+    };
+  }
+
+  const errors = [];
+  const warnings = [];
+  const runtimeSelections = {};
+  const textFallbacks = [];
+  for (const fileName of APOLLOLITE_TRACE_FILES) {
+    if (!files[fileName].usable) {
+      errors.push(`${fileName} is missing or empty`);
+    }
+  }
+  if (!files['manifest.json'].usable) {
+    warnings.push('manifest.json is missing; traceability metadata will be limited');
+  }
+  for (const group of APOLLOLITE_RUNTIME_FILE_GROUPS) {
+    const selected = group.candidates.find((fileName) => files[fileName].usable) || null;
+    if (!selected) {
+      errors.push(`${group.name} is missing; expected one of ${group.candidates.join(', ')}`);
+      continue;
+    }
+    runtimeSelections[group.name] = selected;
+    const binary = `${group.name}.bin`;
+    const text = `${group.name}.txt`;
+    if (files[binary] && files[binary].exists && !files[binary].usable && files[text]?.usable) {
+      textFallbacks.push({ emptyBinary: binary, textFile: text });
+      warnings.push(`${binary} is empty; ApolloLite staging will use ${text}`);
+    }
+    if (selected.endsWith('.txt')) {
+      warnings.push(`${group.name} uses text-map fallback; native Apollo binary output is still preferred`);
+    }
+  }
+
+  const manifest = await readReleasedMapManifest(mapDir).catch((error) => ({
+    parseError: error.message,
+  }));
+  if (manifest?.parseError) {
+    warnings.push(`manifest.json parse failed: ${manifest.parseError}`);
+  }
+
+  return {
+    mapName: normalizedMapName,
+    path: mapDir,
+    ready: errors.length === 0,
+    errors,
+    warnings,
+    files,
+    runtimeSelections,
+    textFallbacks,
+    manifest,
+  };
+}
+
+function resolveApolloLiteMapPath(mapRoot, mapName) {
+  const targetDir = path.resolve(mapRoot, mapName);
+  const relative = path.relative(path.resolve(mapRoot), targetDir);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`unsafe ApolloLite map path: ${mapName}`);
+  }
+  return targetDir;
+}
+
+async function selectReleasedMapName(config, mapName) {
+  if (mapName) {
+    return validateMapName(mapName);
+  }
+  const maps = await listReleasedMaps(config);
+  if (maps.length === 0) {
+    throw new Error(`no released maps found at ${config.releaseRoot}`);
+  }
+  return maps[0].mapName;
+}
+
+async function runApolloLiteValidationCommand(config, params) {
+  const commandTemplate = params.validationCommand;
+  if (!commandTemplate) {
+    return null;
+  }
+  const replacements = {
+    mapName: params.mapName,
+    mapDir: params.mapDir,
+    apolloLiteRoot: params.apolloLiteRoot,
+  };
+  let command = commandTemplate;
+  for (const [key, value] of Object.entries(replacements)) {
+    command = command.replaceAll(`{${key}}`, String(value || '').replace(/"/g, '\\"'));
+  }
+  if (process.platform === 'win32') {
+    return runCommand('cmd', ['/c', command], { timeoutMs: 5 * 60 * 1000 });
+  }
+  return runCommand('bash', ['-lc', command], { timeoutMs: 5 * 60 * 1000 });
+}
+
+async function stageReleasedMapToApolloLite(config, params = {}) {
+  const progress = typeof params.progress === 'function' ? params.progress : async () => {};
+  const apolloLite = await getApolloLiteStatus(config);
+  if (!apolloLite.enabled) {
+    throw new Error('ApolloLite staging is disabled');
+  }
+  if (!apolloLite.mapRoot) {
+    throw new Error('MAP_APOLLOLITE_MAP_ROOT is required');
+  }
+  if (!apolloLite.mapRootWritable) {
+    throw new Error(`ApolloLite map root is not writable: ${apolloLite.mapRoot}`);
+  }
+
+  const mapName = await selectReleasedMapName(config, params.mapName);
+  await progress(`Checking released map for ApolloLite: ${mapName}`);
+  const inspection = await inspectReleasedMapForApolloLite(config, mapName);
+  if (!inspection.ready) {
+    throw new Error(`ApolloLite map preflight failed: ${inspection.errors.join('; ')}`);
+  }
+
+  const targetDir = resolveApolloLiteMapPath(apolloLite.mapRoot, mapName);
+  const stagingDir = resolveApolloLiteMapPath(apolloLite.mapRoot, `.mapeditor-stage-${mapName}-${Date.now()}`);
+  await progress(`Copying map package into ApolloLite staging: ${targetDir}`);
+  await fsp.rm(stagingDir, { recursive: true, force: true });
+  await fsp.cp(inspection.path, stagingDir, { recursive: true, force: true });
+
+  const removedEmptyBinaries = [];
+  for (const fallback of inspection.textFallbacks) {
+    const emptyBinaryPath = path.join(stagingDir, fallback.emptyBinary);
+    await fsp.rm(emptyBinaryPath, { force: true });
+    removedEmptyBinaries.push(fallback.emptyBinary);
+  }
+
+  const stagedAt = new Date().toISOString();
+  const stageManifest = {
+    mapName,
+    stagedAt,
+    sourceDir: inspection.path,
+    targetDir,
+    runtimeSelections: inspection.runtimeSelections,
+    warnings: inspection.warnings,
+    removedEmptyBinaries,
+    apolloLiteRoot: apolloLite.root,
+  };
+  await fsp.writeFile(path.join(stagingDir, 'mapeditor_apollolite_stage.json'), JSON.stringify(stageManifest, null, 2), 'utf8');
+  await fsp.rm(targetDir, { recursive: true, force: true });
+  await fsp.rename(stagingDir, targetDir);
+
+  let validation = null;
+  if (apolloLite.validationCommand) {
+    await progress('Running ApolloLite validation command');
+    validation = await runApolloLiteValidationCommand(config, {
+      validationCommand: apolloLite.validationCommand,
+      mapName,
+      mapDir: targetDir,
+      apolloLiteRoot: apolloLite.root,
+    });
+  }
+
+  const record = await appendDeploymentRecord(config, {
+    id: createDeploymentId('apollolite-stage'),
+    type: 'apollolite-stage',
+    mapName,
+    status: 'succeeded',
+    startedAt: stagedAt,
+    finishedAt: new Date().toISOString(),
+    sourceDir: inspection.path,
+    targetDir,
+    apolloLite: {
+      root: apolloLite.root,
+      mapRoot: apolloLite.mapRoot,
+      validationCommandConfigured: apolloLite.validationCommandConfigured,
+    },
+    warnings: inspection.warnings,
+    removedEmptyBinaries,
+  });
+
+  await progress(`ApolloLite staging ready: ${mapName}`);
+  return {
+    mapName,
+    sourceDir: inspection.path,
+    targetDir,
+    inspection,
+    removedEmptyBinaries,
+    validation,
+    record,
+  };
 }
 
 async function importBaseMapZip(config, params) {
@@ -4383,6 +4650,22 @@ async function getRuntimeDoctor(config) {
       ? `Edge deploy enabled for ${status.edgeDeploy.user}@${status.edgeDeploy.host}:${status.edgeDeploy.targetMapRoot}`
       : 'Edge deploy is disabled'
   );
+  addCheck(
+    'apollolite-staging',
+    status.apolloLite.ready,
+    status.apolloLite.enabled ? 'error' : 'warning',
+    status.apolloLite.message
+  );
+  if (status.apolloLite.enabled && status.apolloLite.root) {
+    addCheck(
+      'apollolite-root',
+      status.apolloLite.rootAvailable && status.apolloLite.apolloShAvailable,
+      'warning',
+      status.apolloLite.apolloShAvailable
+        ? `ApolloLite source is available: ${status.apolloLite.root}`
+        : `ApolloLite source is incomplete or missing apollo.sh: ${status.apolloLite.root}`
+    );
+  }
 
   const hasError = checks.some((check) => check.status === 'error');
   const hasWarning = checks.some((check) => check.status === 'warning');
@@ -4803,6 +5086,7 @@ async function rollbackDeployment(config, params = {}) {
 module.exports = {
   getStatus,
   getRuntimeDoctor,
+  getApolloLiteStatus,
   getDeployConfig,
   discoverEdgeMapRoot,
   configureEdgeDeploy,
@@ -4828,6 +5112,8 @@ module.exports = {
   importMapPackageZip,
   convertEditorMap,
   createBaseMap,
+  inspectReleasedMapForApolloLite,
+  stageReleasedMapToApolloLite,
   deployReleasedMap,
   deployLatestReleasedMap,
   rollbackDeployment,

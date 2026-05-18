@@ -288,6 +288,12 @@ export default function Index(prop: { messageApi: any }) {
                     key: 'deploy-latest',
                 },
                 {
+                    label: (
+                        <FileMenuLabel title="ApolloLite 仿真预检" description="检查并同步最新发布地图到本机仿真目录" />
+                    ),
+                    key: 'apollolite-stage-latest',
+                },
+                {
                     label: <FileMenuLabel title="部署历史 / 回滚" description="查看部署记录，必要时回滚" />,
                     key: 'deploy-history',
                 },
@@ -331,12 +337,19 @@ export default function Index(prop: { messageApi: any }) {
             }
             const doctor = response.data;
             const checks = doctor.checks || [];
+            let apolloLiteState = '未启用';
+            if (doctor.status?.apolloLite?.ready) {
+                apolloLiteState = '已就绪';
+            } else if (doctor.status?.apolloLite?.enabled) {
+                apolloLiteState = '未就绪';
+            }
             const runtimeLines = [
                 `运行模式: ${doctor.status?.mode || ''}`,
                 `生产就绪: ${doctor.ready ? '是' : '否'}`,
                 `地图转换器: ${doctor.status?.local?.converterAvailable ? '已安装' : '缺失'}`,
                 `底图生成器: ${doctor.status?.local?.tileMapCreatorAvailable ? '已安装' : '缺失'}`,
                 `边缘部署: ${doctor.status?.edgeDeploy?.enabled ? '已启用' : '未启用'}`,
+                `ApolloLite: ${apolloLiteState}`,
             ];
             Modal.info({
                 title: '运行状态',
@@ -424,6 +437,51 @@ export default function Index(prop: { messageApi: any }) {
                 } catch (error: any) {
                     Modal.error({
                         title: '部署失败',
+                        content: error?.message || 'Unknown error',
+                    });
+                }
+            },
+        });
+    };
+
+    const stageLatestMapToApolloLite = () => {
+        Modal.confirm({
+            title: 'ApolloLite 仿真预检',
+            content: '检查最新发布地图，并同步到本机 ApolloLite 地图目录。该步骤不会影响边缘设备。',
+            okText: '预检并同步',
+            cancelText: '取消',
+            onOk: async () => {
+                try {
+                    const response = await FileService.startStageLatestMapToApolloLiteJob();
+                    if (response?.code !== 0) {
+                        throw new Error(response?.message || '提交 ApolloLite 预检任务失败');
+                    }
+                    const jobId = response?.data?.job?.id;
+                    if (!jobId) {
+                        throw new Error('后台任务没有返回 jobId');
+                    }
+                    const job = await waitForRuntimeJob(jobId, 'ApolloLite 仿真预检');
+                    const warnings = job.result?.inspection?.warnings || [];
+                    Modal.success({
+                        title: 'ApolloLite 预检完成',
+                        width: 680,
+                        content: (
+                            <div className="runtime-status-modal">
+                                <p>{`地图: ${job.result?.mapName || ''}`}</p>
+                                <p>{`目录: ${job.result?.targetDir || ''}`}</p>
+                                {warnings.length > 0 && (
+                                    <ul>
+                                        {warnings.map((item: string) => (
+                                            <li key={item}>{item}</li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                        ),
+                    });
+                } catch (error: any) {
+                    Modal.error({
+                        title: 'ApolloLite 预检失败',
                         content: error?.message || 'Unknown error',
                     });
                 }
@@ -530,6 +588,9 @@ export default function Index(prop: { messageApi: any }) {
                 break;
             case 'deploy-latest':
                 deployLatestReleasedMap();
+                break;
+            case 'apollolite-stage-latest':
+                stageLatestMapToApolloLite();
                 break;
             case 'deploy-history':
                 showDeploymentHistory();

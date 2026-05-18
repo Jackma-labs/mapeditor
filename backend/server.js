@@ -56,6 +56,7 @@ const HEAVY_RUNTIME_JOB_TYPES = new Set([
   'sync-capture-source-package',
   'sync-capture-source-packages',
   'prebuild-data-package-base-maps',
+  'stage-apollolite-map',
 ]);
 
 function log(...args) {
@@ -654,6 +655,19 @@ async function handleReleaseMapFile(ws, requestId, info) {
     }
     const jsonPath = await saveEditorMap(mapName, map);
     const result = await runConverter(mapName, jsonPath, dir);
+    let apolloLiteStage = null;
+    let apolloLiteStageError = null;
+    if (config.apolloLite?.enabled && config.apolloLite?.autoStageOnRelease) {
+      try {
+        apolloLiteStage = await runtime.stageReleasedMapToApolloLite(config, {
+          mapName,
+          progress: (message) => log(`[apollolite:${mapName}] ${message}`),
+        });
+      } catch (stageError) {
+        apolloLiteStageError = stageError.message;
+        log('ApolloLite staging after release failed:', stageError);
+      }
+    }
     sendWsResponse(ws, requestId, {
       code: 0,
       message: 'Success',
@@ -661,6 +675,8 @@ async function handleReleaseMapFile(ws, requestId, info) {
         mapName,
         output_dir: dir,
         stdout: result.stdout.trim(),
+        apolloLiteStage,
+        apolloLiteStageError,
       },
     });
   } catch (error) {
@@ -755,6 +771,7 @@ app.get('/config', (_req, res) => {
     runtimeMode: config.runtimeMode,
     runtimeDockerContainer: config.runtimeDockerContainer,
     edgeDeploy: config.edgeDeploy,
+    apolloLite: config.apolloLite,
   });
 });
 
@@ -1478,6 +1495,85 @@ app.get('/runtime/deployments', async (_req, res) => {
   } catch (error) {
     res.status(500).json({
       code: 15046,
+      message: error.message,
+    });
+  }
+});
+
+app.get('/runtime/apollolite/status', async (_req, res) => {
+  try {
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: await runtime.getApolloLiteStatus(config),
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15052,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/apollolite-stage-map-job', async (req, res) => {
+  try {
+    const activeJob = findActiveHeavyRuntimeJob();
+    if (activeJob) {
+      sendRuntimeJobBusy(res, activeJob);
+      return;
+    }
+    const body = req.body || {};
+    const job = startRuntimeJob(
+      'stage-apollolite-map',
+      (runtimeJob) =>
+        runtime.stageReleasedMapToApolloLite(config, {
+          mapName: body.mapName || '',
+          progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+        }),
+      {
+        mapName: body.mapName || '',
+      }
+    );
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15053,
+      message: error.message,
+    });
+  }
+});
+
+app.post('/runtime/apollolite-stage-latest-job', async (_req, res) => {
+  try {
+    const activeJob = findActiveHeavyRuntimeJob();
+    if (activeJob) {
+      sendRuntimeJobBusy(res, activeJob);
+      return;
+    }
+    const job = startRuntimeJob(
+      'stage-apollolite-map',
+      (runtimeJob) =>
+        runtime.stageReleasedMapToApolloLite(config, {
+          progress: (message) => updateRuntimeJobProgress(runtimeJob, message),
+        }),
+      {}
+    );
+    res.status(202).json({
+      code: 0,
+      message: 'Accepted',
+      data: {
+        job: serializeRuntimeJob(job),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      code: 15054,
       message: error.message,
     });
   }

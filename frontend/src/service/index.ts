@@ -372,6 +372,17 @@ class FileService {
         return this.requestJson('/runtime/deployments');
     }
 
+    async getApolloLiteStatus() {
+        return this.requestJson('/runtime/apollolite/status');
+    }
+
+    async startStageLatestMapToApolloLiteJob() {
+        return this.requestJson('/runtime/apollolite-stage-latest-job', {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
+    }
+
     async startDeployLatestReleasedMapJob() {
         return this.requestJson('/runtime/deploy-latest-job', {
             method: 'POST',
