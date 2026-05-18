@@ -2,6 +2,8 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const http = require('http');
+const https = require('https');
+const net = require('net');
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -34,6 +36,8 @@ if (fs.existsSync(config.frontendBuildRoot)) {
 
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/plugins/map' });
+const existingUpgradeListeners = server.listeners('upgrade');
+server.removeAllListeners('upgrade');
 
 let lastAccessedBaseMapDir = null;
 
@@ -61,6 +65,86 @@ const HEAVY_RUNTIME_JOB_TYPES = new Set([
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
+}
+
+function getDreamviewProxyTarget() {
+  const target = config.apolloLite?.dreamviewProxyTarget || 'http://127.0.0.1:8888';
+  return new URL(target);
+}
+
+function buildDreamviewProxyPath(originalUrl = '/') {
+  const stripped = originalUrl.replace(/^\/dreamview(?=\/|$)/u, '') || '/';
+  return stripped.startsWith('/') ? stripped : `/${stripped}`;
+}
+
+function proxyDreamviewHttp(req, res) {
+  const target = getDreamviewProxyTarget();
+  const targetPath = buildDreamviewProxyPath(req.originalUrl || req.url);
+  const client = target.protocol === 'https:' ? https : http;
+  const headers = {
+    ...req.headers,
+    host: target.host,
+  };
+  delete headers['accept-encoding'];
+
+  const proxyReq = client.request(
+    {
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || (target.protocol === 'https:' ? 443 : 80),
+      method: req.method,
+      path: targetPath,
+      headers,
+    },
+    (proxyRes) => {
+      res.statusCode = proxyRes.statusCode || 502;
+      for (const [key, value] of Object.entries(proxyRes.headers)) {
+        if (typeof value !== 'undefined') {
+          res.setHeader(key, value);
+        }
+      }
+      proxyRes.pipe(res);
+    }
+  );
+
+  proxyReq.on('error', (error) => {
+    if (!res.headersSent) {
+      res.status(502).send(`Dreamview proxy failed: ${error.message}`);
+      return;
+    }
+    res.end();
+  });
+  req.pipe(proxyReq);
+}
+
+function handleDreamviewUpgrade(req, socket, head) {
+  const target = getDreamviewProxyTarget();
+  const targetPort = Number(target.port || (target.protocol === 'https:' ? 443 : 80));
+  const targetPath = buildDreamviewProxyPath(req.url || '/');
+  const upstream = net.connect(targetPort, target.hostname);
+  upstream.on('connect', () => {
+    const headerLines = [
+      `${req.method} ${targetPath} HTTP/${req.httpVersion}`,
+      ...Object.entries(req.headers).map(([key, value]) => {
+        const normalizedValue = Array.isArray(value) ? value.join(', ') : value;
+        return `${key}: ${key.toLowerCase() === 'host' ? target.host : normalizedValue}`;
+      }),
+      '',
+      '',
+    ];
+    upstream.write(headerLines.join('\r\n'));
+    if (head?.length) {
+      upstream.write(head);
+    }
+    socket.pipe(upstream);
+    upstream.pipe(socket);
+  });
+  upstream.on('error', (error) => {
+    log('Dreamview websocket proxy failed:', error.message);
+    if (!socket.destroyed) {
+      socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+    }
+  });
 }
 
 function buildRuntimeJobPath(jobId) {
@@ -1842,6 +1926,12 @@ app.get('/mapcreator/:mapName/:level/:y/:file', async (req, res) => {
   res.sendFile(pngPath);
 });
 
+app.get('/dreamview', (_req, res) => {
+  res.redirect(302, '/dreamview/');
+});
+
+app.use('/dreamview/', proxyDreamviewHttp);
+
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/mapcreator/') || req.path === '/healthz') {
     next();
@@ -1857,6 +1947,16 @@ app.get('*', (req, res, next) => {
     message:
       'Frontend build not found. Run npm run build in frontend or use npm run dev.',
   });
+});
+
+server.on('upgrade', (req, socket, head) => {
+  if (req.url === '/dreamview' || req.url?.startsWith('/dreamview/')) {
+    handleDreamviewUpgrade(req, socket, head);
+    return;
+  }
+  for (const listener of existingUpgradeListeners) {
+    listener.call(server, req, socket, head);
+  }
 });
 
 server.listen(config.port, async () => {

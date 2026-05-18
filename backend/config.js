@@ -69,6 +69,7 @@ const defaults = {
     root: process.env.MAP_APOLLOLITE_ROOT || '',
     mapRoot: process.env.MAP_APOLLOLITE_MAP_ROOT || '',
     dreamviewUrl: process.env.MAP_APOLLOLITE_DREAMVIEW_URL || 'http://127.0.0.1:8888',
+    dreamviewProxyTarget: process.env.MAP_APOLLOLITE_DREAMVIEW_PROXY_TARGET || 'http://127.0.0.1:8888',
     autoStageOnRelease: process.env.MAP_APOLLOLITE_AUTO_STAGE_ON_RELEASE === 'true',
     validationCommand: process.env.MAP_APOLLOLITE_VALIDATION_COMMAND || '',
   },

@@ -426,6 +426,7 @@ function getApolloLiteConfig(config) {
     root,
     mapRoot,
     dreamviewUrl: String(apolloLite.dreamviewUrl || 'http://127.0.0.1:8888').trim(),
+    dreamviewProxyTarget: String(apolloLite.dreamviewProxyTarget || 'http://127.0.0.1:8888').trim(),
     autoStageOnRelease: apolloLite.autoStageOnRelease === true,
     validationCommand: String(apolloLite.validationCommand || '').trim(),
   };
