@@ -1926,11 +1926,13 @@ app.get('/mapcreator/:mapName/:level/:y/:file', async (req, res) => {
   res.sendFile(pngPath);
 });
 
-app.get('/dreamview', (_req, res) => {
-  res.redirect(302, '/dreamview/');
+app.use('/dreamview', (req, res) => {
+  if (req.originalUrl === '/dreamview') {
+    res.redirect(302, '/dreamview/');
+    return;
+  }
+  proxyDreamviewHttp(req, res);
 });
-
-app.use('/dreamview/', proxyDreamviewHttp);
 
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/mapcreator/') || req.path === '/healthz') {
