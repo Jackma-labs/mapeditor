@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Button } from 'antd';
+import { Button, message } from 'antd';
 import PubSub from 'pubsub-js';
 import * as THREE from 'three';
 import { mapElementZ } from 'src/constant/mapElementZ';
@@ -226,6 +226,30 @@ function getWorkflowSteps(report: MapQualityReport): WorkflowStep[] {
     ];
 }
 
+function formatIssueReport(report: MapQualityReport, issues: MapQualityIssue[]) {
+    const lines = [
+        '地图质量检查报告',
+        `车道：${report.summary.lanes}，连接：${report.summary.laneEdges}，拓扑区域：${report.summary.laneComponents}`,
+        `错误：${report.summary.errors}，警告：${report.summary.warnings}`,
+        '',
+    ];
+    if (issues.length === 0) {
+        lines.push('当前未发现阻塞发布的问题。');
+        return lines.join('\n');
+    }
+    issues.slice(0, 80).forEach((issue, index) => {
+        lines.push(`${index + 1}. [${issue.severity === 'error' ? '错误' : '警告'}] ${issue.title}`);
+        lines.push(`   建议：${issue.suggestion}`);
+        (issue.details || []).forEach((detail) => {
+            lines.push(`   ${detail}`);
+        });
+    });
+    if (issues.length > 80) {
+        lines.push(`还有 ${issues.length - 80} 个问题未列出。`);
+    }
+    return lines.join('\n');
+}
+
 export default function MapQualityPanel() {
     const [collapsed, setCollapsed] = useState(false);
     const [selectedIssueId, setSelectedIssueId] = useState('');
@@ -268,6 +292,15 @@ export default function MapQualityPanel() {
         }
     };
 
+    const handleCopyReport = async () => {
+        try {
+            await navigator.clipboard.writeText(formatIssueReport(report, issues));
+            message.success('已复制质量报告');
+        } catch (_error) {
+            message.error('复制失败，请检查浏览器剪贴板权限');
+        }
+    };
+
     const filteredIssues = issues.filter((issue) => issueFilter === 'all' || issue.severity === issueFilter);
     const topIssues = filteredIssues.slice(0, 18);
     const remainingIssueCount = filteredIssues.length - topIssues.length;
@@ -300,9 +333,16 @@ export default function MapQualityPanel() {
                         {`车道 ${report.summary.lanes} / 连接 ${report.summary.laneEdges} / 错误 ${report.summary.errors} / 警告 ${report.summary.warnings}`}
                     </div>
                 </div>
-                <Button size="small" onClick={() => setCollapsed(!collapsed)}>
-                    {collapsed ? '展开' : '收起'}
-                </Button>
+                <div className="quality-panel-actions">
+                    {issues.length > 0 && (
+                        <Button size="small" onClick={handleCopyReport}>
+                            复制
+                        </Button>
+                    )}
+                    <Button size="small" onClick={() => setCollapsed(!collapsed)}>
+                        {collapsed ? '展开' : '收起'}
+                    </Button>
+                </div>
             </div>
             {!collapsed && (
                 <>
