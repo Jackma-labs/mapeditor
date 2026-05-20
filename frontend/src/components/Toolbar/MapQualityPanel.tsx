@@ -11,6 +11,7 @@ import { inspectMapQuality, MapQualityIssue, MapQualityReport, pickElementFromIs
 const OVERLAY_GROUP_NAME = '__map_quality_overlay__';
 
 type WorkflowStepStatus = 'pass' | 'warning' | 'error';
+type IssueFilter = 'all' | 'error' | 'warning';
 
 interface WorkflowStep {
     label: string;
@@ -228,6 +229,7 @@ function getWorkflowSteps(report: MapQualityReport): WorkflowStep[] {
 export default function MapQualityPanel() {
     const [collapsed, setCollapsed] = useState(false);
     const [selectedIssueId, setSelectedIssueId] = useState('');
+    const [issueFilter, setIssueFilter] = useState<IssueFilter>('all');
     const [mapState, setMapState] = useManagerStore((state) => [state.mapState, state.setMapState]);
     const report = useMemo(() => inspectMapQuality(mapState), [mapState]);
     const hasMapData = Object.keys(mapState.lanes).length > 0 || Object.keys(mapState.boundarys).length > 0;
@@ -266,9 +268,28 @@ export default function MapQualityPanel() {
         }
     };
 
-    const topIssues = issues.slice(0, 18);
+    const filteredIssues = issues.filter((issue) => issueFilter === 'all' || issue.severity === issueFilter);
+    const topIssues = filteredIssues.slice(0, 18);
+    const remainingIssueCount = filteredIssues.length - topIssues.length;
     const statusClass = getStatusClass(report.summary.errors, report.summary.warnings);
     const workflowSteps = getWorkflowSteps(report);
+    const filterItems: { label: string; value: IssueFilter; count: number }[] = [
+        {
+            label: '全部',
+            value: 'all',
+            count: issues.length,
+        },
+        {
+            label: '错误',
+            value: 'error',
+            count: report.summary.errors,
+        },
+        {
+            label: '警告',
+            value: 'warning',
+            count: report.summary.warnings,
+        },
+    ];
 
     return (
         <div className={`quality-panel ${statusClass} ${collapsed ? 'is-collapsed' : ''}`}>
@@ -294,7 +315,23 @@ export default function MapQualityPanel() {
                         ))}
                     </div>
                     <div className="quality-panel-body">
-                        {issues.length === 0 && <div className="quality-panel-empty">当前未发现阻塞发布的问题。</div>}
+                        <div className="quality-filter">
+                            {filterItems.map((item) => (
+                                <button
+                                    type="button"
+                                    key={item.value}
+                                    className={issueFilter === item.value ? 'active' : ''}
+                                    onClick={() => setIssueFilter(item.value)}
+                                >
+                                    {`${item.label} ${item.count}`}
+                                </button>
+                            ))}
+                        </div>
+                        {filteredIssues.length === 0 && (
+                            <div className="quality-panel-empty">
+                                {issues.length === 0 ? '当前未发现阻塞发布的问题。' : '当前筛选下没有问题。'}
+                            </div>
+                        )}
                         {topIssues.map((issue) => (
                             <button
                                 type="button"
@@ -320,8 +357,8 @@ export default function MapQualityPanel() {
                                 </span>
                             </button>
                         ))}
-                        {issues.length > topIssues.length && (
-                            <div className="quality-panel-more">{`还有 ${issues.length - topIssues.length} 个问题，优先处理红色错误。`}</div>
+                        {remainingIssueCount > 0 && (
+                            <div className="quality-panel-more">{`还有 ${remainingIssueCount} 个问题，优先处理红色错误。`}</div>
                         )}
                     </div>
                 </>
