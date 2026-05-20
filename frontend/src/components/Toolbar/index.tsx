@@ -13,6 +13,7 @@ import DialogOperate from './operateDialog';
 import DialogMessage from './messageDialog';
 import AssetManagerDialog from './AssetManagerDialog';
 import EdgeDeployDialog from './EdgeDeployDialog';
+import MapQualityPanel from './MapQualityPanel';
 import arrowsDown from '../../assets/images/ic_arrows_down.svg';
 import RemindModal from '../RemindModal';
 
@@ -993,6 +994,7 @@ export default function Index(prop: ToolbarProps) {
                     )}
                 </div>
             )}
+            <MapQualityPanel />
             <Tooltip
                 title="还没有编辑内容!"
                 trigger="hover"
