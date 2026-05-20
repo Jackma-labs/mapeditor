@@ -309,16 +309,31 @@ export default function MapQualityPanel() {
 
     const handleAutoRepair = () => {
         if (repairActions.length === 0) {
-            message.info('当前没有可安全自动修复的问题');
+            Modal.info({
+                title: '暂无可自动修复项',
+                content: (
+                    <div>
+                        <p>当前质量问题需要人工判断，或者端点距离/方向差超过自动连接阈值。</p>
+                        {issues.length > 0 && (
+                            <ul>
+                                {issues.slice(0, 5).map((issue) => (
+                                    <li key={issue.id}>{issue.title}</li>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
+                ),
+                okText: '知道了',
+            });
             return;
         }
         const previewActions = repairActions.slice(0, 6);
         Modal.confirm({
-            title: `自动修复 ${repairActions.length} 项质量问题`,
+            title: `智能修复 ${repairActions.length} 项质量问题`,
             content: (
                 <div>
                     <p>
-                        本次只修复确定性的结构问题，例如失效引用、缺失基础属性和缺失渲染对象；拓扑连接和交通语义仍需人工确认。
+                        本次会修复确定性的结构问题，并对端点接近、方向一致的车道断点执行确认后的吸附连接；交通语义仍需人工确认。
                     </p>
                     <ul>
                         {previewActions.map((action) => (
@@ -336,7 +351,7 @@ export default function MapQualityPanel() {
                 addCommand([new ApplyMapQualityRepairsCommand(repairActions)]);
                 setSelectedIssueId('');
                 PubSub.publish('render');
-                message.success(`已自动修复 ${repairActions.length} 项问题，请复核后再发布`);
+                message.success(`已智能修复 ${repairActions.length} 项问题，请复核后再发布`);
             },
         });
     };
@@ -374,8 +389,8 @@ export default function MapQualityPanel() {
                     </div>
                 </div>
                 <div className="quality-panel-actions">
-                    <Button size="small" disabled={repairActions.length === 0} onClick={handleAutoRepair}>
-                        {repairActions.length > 0 ? `自动修复 ${repairActions.length}` : '自动修复'}
+                    <Button size="small" disabled={issues.length === 0} onClick={handleAutoRepair}>
+                        {repairActions.length > 0 ? `智能修复 ${repairActions.length}` : '智能修复'}
                     </Button>
                     {issues.length > 0 && (
                         <Button size="small" onClick={handleCopyReport}>

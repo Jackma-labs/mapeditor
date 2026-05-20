@@ -1,7 +1,9 @@
 import { ThreeElementType, ThreeObject } from 'src/interface/commonInterFace';
 import { LaneDireaciotn, LaneTrend, LaneType, ProssibleDrivingDirection } from 'src/interface/laneInterFace';
 import { MapState } from 'src/interface/mapStateInterface';
+import { buildLaneRelations } from 'src/quality/mapQuality';
 import { useManagerStore } from 'src/store';
+import * as THREE from 'three';
 
 type RepairKind =
     | 'removeMissingBoundaryPoints'
@@ -9,7 +11,14 @@ type RepairKind =
     | 'fillLanePossibleDirection'
     | 'fillLaneType'
     | 'restoreLaneGroud'
-    | 'restoreLaneArrow';
+    | 'restoreLaneArrow'
+    | 'snapLaneSuccessorStart';
+
+interface BoundaryPointPatch {
+    boundaryId: string;
+    pointIndex: number;
+    pointId: string;
+}
 
 export interface MapQualityRepairAction {
     kind: RepairKind;
@@ -20,6 +29,9 @@ export interface MapQualityRepairAction {
     nextValue?: number;
     groudId?: string;
     arrowId?: string;
+    targetLaneId?: string;
+    pointPatches?: BoundaryPointPatch[];
+    confidence?: number;
 }
 
 export interface MapQualityRepairResult {
@@ -54,6 +66,10 @@ const validPossibleDirections = new Set<number>([
 
 const validLaneTypes = new Set<number>([LaneType.CityDriving, LaneType.Biking, LaneType.Shared]);
 
+const MAX_TOPOLOGY_REPAIR_CANDIDATES = 12;
+const MAX_ENDPOINT_PAIR_DISTANCE = 4;
+const MAX_ENDPOINT_ANGLE_DEGREES = 35;
+
 function getNextNumericId(usedIds: Set<string>) {
     let maxId = 0;
     usedIds.forEach((id) => {
@@ -69,6 +85,192 @@ function getNextNumericId(usedIds: Set<string>) {
 
 function getLaneGroudType(laneType: LaneTrend) {
     return laneType === LaneTrend.Curve ? ThreeElementType.LaneCurveGroud : ThreeElementType.LaneGroud;
+}
+
+function getBoundaryPointIndex(mapState: MapState, laneId: string, side: 'left' | 'right', endpoint: 'start' | 'end') {
+    const lane = mapState.lanes[laneId];
+    if (!lane) {
+        return -1;
+    }
+    const boundaryId = side === 'left' ? lane.leftBoundaryId : lane.rightBoundaryId;
+    const boundary = mapState.boundarys[boundaryId];
+    if (!boundary?.pointIds?.length) {
+        return -1;
+    }
+    const reverse = side === 'left' ? lane.leftBoundaryReverse : lane.rightBoundaryReverse;
+    const isStart = endpoint === 'start';
+    if ((isStart && reverse) || (!isStart && !reverse)) {
+        return boundary.pointIds.length - 1;
+    }
+    return 0;
+}
+
+function getLaneEndpoint(
+    mapState: MapState,
+    laneId: string,
+    endpoint: 'start' | 'end',
+): {
+    leftBoundaryId: string;
+    rightBoundaryId: string;
+    leftPointId: string;
+    rightPointId: string;
+    leftIndex: number;
+    rightIndex: number;
+    center: THREE.Vector2;
+} | null {
+    const lane = mapState.lanes[laneId];
+    if (!lane) {
+        return null;
+    }
+    const leftBoundary = mapState.boundarys[lane.leftBoundaryId];
+    const rightBoundary = mapState.boundarys[lane.rightBoundaryId];
+    const leftIndex = getBoundaryPointIndex(mapState, laneId, 'left', endpoint);
+    const rightIndex = getBoundaryPointIndex(mapState, laneId, 'right', endpoint);
+    const leftPointId = leftBoundary?.pointIds?.[leftIndex];
+    const rightPointId = rightBoundary?.pointIds?.[rightIndex];
+    const leftPoint = leftPointId && mapState.points[leftPointId];
+    const rightPoint = rightPointId && mapState.points[rightPointId];
+    if (!leftBoundary || !rightBoundary || !leftPoint || !rightPoint) {
+        return null;
+    }
+    return {
+        leftBoundaryId: lane.leftBoundaryId,
+        rightBoundaryId: lane.rightBoundaryId,
+        leftPointId,
+        rightPointId,
+        leftIndex,
+        rightIndex,
+        center: new THREE.Vector2(
+            (leftPoint.position.x + rightPoint.position.x) / 2,
+            (leftPoint.position.y + rightPoint.position.y) / 2,
+        ),
+    };
+}
+
+function getLaneDirectionVector(mapState: MapState, laneId: string) {
+    const start = getLaneEndpoint(mapState, laneId, 'start');
+    const end = getLaneEndpoint(mapState, laneId, 'end');
+    if (!start || !end) {
+        return null;
+    }
+    const vector = end.center.clone().sub(start.center);
+    if (vector.length() < 0.001) {
+        return null;
+    }
+    return vector.normalize();
+}
+
+function getEndpointDistance(mapState: MapState, sourceLaneId: string, targetLaneId: string) {
+    const sourceEnd = getLaneEndpoint(mapState, sourceLaneId, 'end');
+    const targetStart = getLaneEndpoint(mapState, targetLaneId, 'start');
+    if (!sourceEnd || !targetStart) {
+        return null;
+    }
+    const sourceLeftPoint = mapState.points[sourceEnd.leftPointId].position;
+    const sourceRightPoint = mapState.points[sourceEnd.rightPointId].position;
+    const targetLeftPoint = mapState.points[targetStart.leftPointId].position;
+    const targetRightPoint = mapState.points[targetStart.rightPointId].position;
+    const leftDistance = sourceLeftPoint.distanceTo(targetLeftPoint);
+    const rightDistance = sourceRightPoint.distanceTo(targetRightPoint);
+    const crossedLeftDistance = sourceLeftPoint.distanceTo(targetRightPoint);
+    const crossedRightDistance = sourceRightPoint.distanceTo(targetLeftPoint);
+    return {
+        sourceEnd,
+        targetStart,
+        leftDistance,
+        rightDistance,
+        averageDistance: (leftDistance + rightDistance) / 2,
+        crossedAverageDistance: (crossedLeftDistance + crossedRightDistance) / 2,
+    };
+}
+
+function getDirectionAngleDegrees(mapState: MapState, sourceLaneId: string, targetLaneId: string) {
+    const sourceVector = getLaneDirectionVector(mapState, sourceLaneId);
+    const targetVector = getLaneDirectionVector(mapState, targetLaneId);
+    if (!sourceVector || !targetVector) {
+        return null;
+    }
+    const dot = THREE.MathUtils.clamp(sourceVector.dot(targetVector), -1, 1);
+    return THREE.MathUtils.radToDeg(Math.acos(dot));
+}
+
+function buildTopologyRepairActions(mapState: MapState): MapQualityRepairAction[] {
+    const lanes = Object.values(mapState.lanes);
+    if (lanes.length < 2) {
+        return [];
+    }
+    const relations = buildLaneRelations(mapState);
+    const sourceCandidates = lanes
+        .map((sourceLane) => {
+            if (relations[sourceLane.id]?.successors.length > 0) {
+                return null;
+            }
+            let bestAction: MapQualityRepairAction = null;
+            lanes.forEach((targetLane) => {
+                if (sourceLane.id === targetLane.id) {
+                    return;
+                }
+                if (relations[targetLane.id]?.predecessors.length > 0) {
+                    return;
+                }
+                const distance = getEndpointDistance(mapState, sourceLane.id, targetLane.id);
+                const angle = getDirectionAngleDegrees(mapState, sourceLane.id, targetLane.id);
+                if (!distance || angle === null) {
+                    return;
+                }
+                if (
+                    distance.sourceEnd.leftPointId === distance.targetStart.leftPointId &&
+                    distance.sourceEnd.rightPointId === distance.targetStart.rightPointId
+                ) {
+                    return;
+                }
+                if (distance.crossedAverageDistance < distance.averageDistance) {
+                    return;
+                }
+                if (distance.averageDistance > MAX_ENDPOINT_PAIR_DISTANCE || angle > MAX_ENDPOINT_ANGLE_DEGREES) {
+                    return;
+                }
+                const action: MapQualityRepairAction = {
+                    kind: 'snapLaneSuccessorStart',
+                    targetId: sourceLane.id,
+                    targetLaneId: targetLane.id,
+                    title: `连接车道 ${sourceLane.id} -> ${targetLane.id}`,
+                    description: `端点平均距离 ${distance.averageDistance.toFixed(2)}m，方向夹角 ${angle.toFixed(
+                        1,
+                    )}°，将前车道终点吸附到后车道起点。`,
+                    pointPatches: [
+                        {
+                            boundaryId: distance.sourceEnd.leftBoundaryId,
+                            pointIndex: distance.sourceEnd.leftIndex,
+                            pointId: distance.targetStart.leftPointId,
+                        },
+                        {
+                            boundaryId: distance.sourceEnd.rightBoundaryId,
+                            pointIndex: distance.sourceEnd.rightIndex,
+                            pointId: distance.targetStart.rightPointId,
+                        },
+                    ],
+                    confidence: Math.max(0, 1 - distance.averageDistance / MAX_ENDPOINT_PAIR_DISTANCE),
+                };
+                if (!bestAction || (action.confidence || 0) > (bestAction.confidence || 0)) {
+                    bestAction = action;
+                }
+            });
+            return bestAction;
+        })
+        .filter(Boolean);
+    const uniqueKeys = new Set<string>();
+    return sourceCandidates
+        .filter((action) => {
+            const key = `${action.targetId}-${action.targetLaneId}`;
+            if (uniqueKeys.has(key)) {
+                return false;
+            }
+            uniqueKeys.add(key);
+            return true;
+        })
+        .sort((left, right) => (right.confidence || 0) - (left.confidence || 0))
+        .slice(0, MAX_TOPOLOGY_REPAIR_CANDIDATES);
 }
 
 function addRenderElement(
@@ -182,7 +384,7 @@ export function buildMapQualityRepairActions(mapState: MapState): MapQualityRepa
         }
     });
 
-    return actions;
+    return [...actions, ...buildTopologyRepairActions(mapState)];
 }
 
 export function applyMapQualityRepairs(mapState: MapState, actions: MapQualityRepairAction[]): MapQualityRepairResult {
@@ -288,6 +490,27 @@ export function applyMapQualityRepairs(mapState: MapState, actions: MapQualityRe
                 action.arrowId,
                 ThreeElementType.LaneRelativeDirection,
             );
+            return;
+        }
+        if (action.kind === 'snapLaneSuccessorStart' && action.pointPatches) {
+            action.pointPatches.forEach((patch) => {
+                const boundary = nextMapState.boundarys[patch.boundaryId];
+                if (!boundary || !nextMapState.points[patch.pointId] || !boundary.pointIds[patch.pointIndex]) {
+                    return;
+                }
+                const nextPointIds = [...boundary.pointIds];
+                nextPointIds[patch.pointIndex] = patch.pointId;
+                nextMapState.boundarys[patch.boundaryId] = {
+                    ...boundary,
+                    pointIds: nextPointIds,
+                };
+                addRenderElement(
+                    nextMapState.needRenderElements,
+                    ThreeObject.Boundary,
+                    patch.boundaryId,
+                    boundary.type,
+                );
+            });
         }
     });
 
