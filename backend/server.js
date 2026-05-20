@@ -75,6 +75,45 @@ function log(...args) {
   console.log(new Date().toISOString(), ...args);
 }
 
+function sendSuccess(res, data, options = {}) {
+  const payload = {
+    code: 0,
+    message: options.message || 'Success',
+  };
+  if (typeof data !== 'undefined') {
+    payload.data = data;
+  }
+  res.status(options.status || 200).json(payload);
+}
+
+function sendError(res, status, code, message, data) {
+  const payload = {
+    code,
+    message,
+  };
+  if (typeof data !== 'undefined') {
+    payload.data = data;
+  }
+  res.status(status).json(payload);
+}
+
+function sendAcceptedJob(res, job) {
+  sendSuccess(
+    res,
+    {
+      job: serializeRuntimeJob(job),
+    },
+    {
+      status: 202,
+      message: 'Accepted',
+    }
+  );
+}
+
+function sendRuntimeJobNotFound(res, jobId) {
+  sendError(res, 404, 404, `job not found: ${jobId}`);
+}
+
 function parseCookies(cookieHeader = '') {
   return String(cookieHeader || '')
     .split(';')
@@ -407,12 +446,8 @@ function findActiveHeavyRuntimeJob() {
 }
 
 function sendRuntimeJobBusy(res, activeJob) {
-  res.status(409).json({
-    code: 15066,
-    message: `A base-map generation job is already running: ${activeJob.id}`,
-    data: {
-      job: serializeRuntimeJob(activeJob),
-    },
+  sendError(res, 409, 15066, `A base-map generation job is already running: ${activeJob.id}`, {
+    job: serializeRuntimeJob(activeJob),
   });
 }
 
@@ -1078,48 +1113,27 @@ app.use(requireAuth);
 
 app.get('/runtime/status', async (_req, res) => {
   try {
-    res.json({
-      code: 0,
-      message: 'Success',
-      data: await runtime.getStatus(config),
-    });
+    sendSuccess(res, await runtime.getStatus(config));
   } catch (error) {
-    res.status(500).json({
-      code: 500,
-      message: error.message,
-    });
+    sendError(res, 500, 500, error.message);
   }
 });
 
 app.get('/runtime/doctor', async (_req, res) => {
   try {
-    res.json({
-      code: 0,
-      message: 'Success',
-      data: await runtime.getRuntimeDoctor(config),
-    });
+    sendSuccess(res, await runtime.getRuntimeDoctor(config));
   } catch (error) {
-    res.status(500).json({
-      code: 500,
-      message: error.message,
-    });
+    sendError(res, 500, 500, error.message);
   }
 });
 
 app.get('/runtime/released-maps', async (_req, res) => {
   try {
-    res.json({
-      code: 0,
-      message: 'Success',
-      data: {
-        maps: await runtime.listReleasedMaps(config),
-      },
+    sendSuccess(res, {
+      maps: await runtime.listReleasedMaps(config),
     });
   } catch (error) {
-    res.status(500).json({
-      code: 500,
-      message: error.message,
-    });
+    sendError(res, 500, 500, error.message);
   }
 });
 
@@ -1261,13 +1275,7 @@ app.post('/runtime/analyze-data-package-job', upload.any(), async (req, res) => 
       },
       request
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
     log('Start analyze data package job failed:', error);
     if (staged?.jobTmpDir) {
@@ -1279,10 +1287,7 @@ app.post('/runtime/analyze-data-package-job', upload.any(), async (req, res) => 
         await fsp.unlink(file.path).catch(() => {});
       }
     }
-    res.status(500).json({
-      code: 15057,
-      message: error.message,
-    });
+    sendError(res, 500, 15057, error.message);
   }
 });
 
@@ -1340,18 +1345,9 @@ app.post('/runtime/sync-capture-source-package-job', async (req, res) => {
         overwrite: body.overwrite === true,
       }
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
-    res.status(500).json({
-      code: 15068,
-      message: error.message,
-    });
+    sendError(res, 500, 15068, error.message);
   }
 });
 
@@ -1374,18 +1370,9 @@ app.post('/runtime/sync-capture-source-packages-job', async (req, res) => {
         limit: Number(body.limit) || 50,
       }
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
-    res.status(500).json({
-      code: 15069,
-      message: error.message,
-    });
+    sendError(res, 500, 15069, error.message);
   }
 });
 
@@ -1409,13 +1396,9 @@ app.post('/runtime/prebuild-data-package-base-maps-job', async (req, res) => {
       }),
       request
     );
-    res.json({
-      code: 0,
-      message: 'Success',
-      data: { job: serializeRuntimeJob(job) },
-    });
+    sendSuccess(res, { job: serializeRuntimeJob(job) });
   } catch (error) {
-    res.status(500).json({ code: 15081, message: error.message });
+    sendError(res, 500, 15081, error.message);
   }
 });
 
@@ -1467,19 +1450,10 @@ app.post('/runtime/refresh-data-package-analysis-job', async (req, res) => {
         packageId: body.packageId || '',
       }
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
     log('Start refresh data package analysis job failed:', error);
-    res.status(500).json({
-      code: 15058,
-      message: error.message,
-    });
+    sendError(res, 500, 15058, error.message);
   }
 });
 
@@ -1516,19 +1490,10 @@ app.post('/runtime/refresh-all-data-package-analysis-job', async (req, res) => {
         onlyMissing,
       }
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
     log('Start refresh all data packages analysis job failed:', error);
-    res.status(500).json({
-      code: 15062,
-      message: error.message,
-    });
+    sendError(res, 500, 15062, error.message);
   }
 });
 
@@ -1587,19 +1552,10 @@ app.post('/runtime/import-data-package-base-map-job', async (req, res) => {
         overwrite: body.overwrite === true,
       }
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
     log('Start data package import job failed:', error);
-    res.status(500).json({
-      code: 15056,
-      message: error.message,
-    });
+    sendError(res, 500, 15056, error.message);
   }
 });
 
@@ -1623,19 +1579,10 @@ app.post('/runtime/import-data-packages-merged-base-map-job', async (req, res) =
         overwrite: body.overwrite === true,
       }
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
     log('Start merged data package import job failed:', error);
-    res.status(500).json({
-      code: 15059,
-      message: error.message,
-    });
+    sendError(res, 500, 15059, error.message);
   }
 });
 
@@ -1667,50 +1614,32 @@ app.get('/runtime/assist-drawing-candidates/:mapName', async (req, res) => {
 
 app.get('/runtime/jobs', (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
-  res.json({
-    code: 0,
-    message: 'Success',
-    data: {
-      jobs: listRuntimeJobs().slice(0, limit),
-    },
+  sendSuccess(res, {
+    jobs: listRuntimeJobs().slice(0, limit),
   });
 });
 
 app.get('/runtime/jobs/:jobId', (req, res) => {
   const job = runtimeJobs.get(req.params.jobId);
   if (!job) {
-    res.status(404).json({
-      code: 404,
-      message: `job not found: ${req.params.jobId}`,
-    });
+    sendRuntimeJobNotFound(res, req.params.jobId);
     return;
   }
-  res.json({
-    code: 0,
-    message: 'Success',
-    data: {
-      job: serializeRuntimeJob(job, {
-        includeLogs: req.query.logs === 'true',
-        tail: req.query.tail,
-      }),
-    },
+  sendSuccess(res, {
+    job: serializeRuntimeJob(job, {
+      includeLogs: req.query.logs === 'true',
+      tail: req.query.tail,
+    }),
   });
 });
 
 app.get('/runtime/jobs/:jobId/logs', (req, res) => {
   if (!runtimeJobs.has(req.params.jobId)) {
-    res.status(404).json({
-      code: 404,
-      message: `job not found: ${req.params.jobId}`,
-    });
+    sendRuntimeJobNotFound(res, req.params.jobId);
     return;
   }
-  res.json({
-    code: 0,
-    message: 'Success',
-    data: {
-      logs: readRuntimeJobLogs(req.params.jobId, req.query.tail),
-    },
+  sendSuccess(res, {
+    logs: readRuntimeJobLogs(req.params.jobId, req.query.tail),
   });
 });
 
