@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Button, message } from 'antd';
+import { Button, Modal, message } from 'antd';
 import PubSub from 'pubsub-js';
 import * as THREE from 'three';
 import { mapElementZ } from 'src/constant/mapElementZ';
@@ -7,6 +7,7 @@ import { MapState } from 'src/interface/mapStateInterface';
 import { ThreeElementType } from 'src/interface/commonInterFace';
 import { useManagerStore } from 'src/store';
 import { inspectMapQuality, MapQualityIssue, MapQualityReport, pickElementFromIssue } from 'src/quality/mapQuality';
+import { ApplyMapQualityRepairsCommand, buildMapQualityRepairActions } from 'src/quality/mapQualityRepair';
 
 const OVERLAY_GROUP_NAME = '__map_quality_overlay__';
 
@@ -254,8 +255,13 @@ export default function MapQualityPanel() {
     const [collapsed, setCollapsed] = useState(false);
     const [selectedIssueId, setSelectedIssueId] = useState('');
     const [issueFilter, setIssueFilter] = useState<IssueFilter>('all');
-    const [mapState, setMapState] = useManagerStore((state) => [state.mapState, state.setMapState]);
+    const [mapState, setMapState, addCommand] = useManagerStore((state) => [
+        state.mapState,
+        state.setMapState,
+        state.addCommand,
+    ]);
     const report = useMemo(() => inspectMapQuality(mapState), [mapState]);
+    const repairActions = useMemo(() => buildMapQualityRepairActions(mapState), [mapState]);
     const hasMapData = Object.keys(mapState.lanes).length > 0 || Object.keys(mapState.boundarys).length > 0;
     const issues = report.issues;
 
@@ -301,6 +307,40 @@ export default function MapQualityPanel() {
         }
     };
 
+    const handleAutoRepair = () => {
+        if (repairActions.length === 0) {
+            message.info('当前没有可安全自动修复的问题');
+            return;
+        }
+        const previewActions = repairActions.slice(0, 6);
+        Modal.confirm({
+            title: `自动修复 ${repairActions.length} 项质量问题`,
+            content: (
+                <div>
+                    <p>
+                        本次只修复确定性的结构问题，例如失效引用、缺失基础属性和缺失渲染对象；拓扑连接和交通语义仍需人工确认。
+                    </p>
+                    <ul>
+                        {previewActions.map((action) => (
+                            <li key={`${action.kind}-${action.targetId}`}>{action.title}</li>
+                        ))}
+                    </ul>
+                    {repairActions.length > previewActions.length && (
+                        <p>{`还有 ${repairActions.length - previewActions.length} 项将一起处理。`}</p>
+                    )}
+                </div>
+            ),
+            okText: '执行修复',
+            cancelText: '取消',
+            onOk: () => {
+                addCommand([new ApplyMapQualityRepairsCommand(repairActions)]);
+                setSelectedIssueId('');
+                PubSub.publish('render');
+                message.success(`已自动修复 ${repairActions.length} 项问题，请复核后再发布`);
+            },
+        });
+    };
+
     const filteredIssues = issues.filter((issue) => issueFilter === 'all' || issue.severity === issueFilter);
     const topIssues = filteredIssues.slice(0, 18);
     const remainingIssueCount = filteredIssues.length - topIssues.length;
@@ -334,6 +374,9 @@ export default function MapQualityPanel() {
                     </div>
                 </div>
                 <div className="quality-panel-actions">
+                    <Button size="small" disabled={repairActions.length === 0} onClick={handleAutoRepair}>
+                        {repairActions.length > 0 ? `自动修复 ${repairActions.length}` : '自动修复'}
+                    </Button>
                     {issues.length > 0 && (
                         <Button size="small" onClick={handleCopyReport}>
                             复制
