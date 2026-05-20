@@ -562,7 +562,7 @@ export default function Index(prop: ToolbarProps) {
 
     const showHelpDocs = () => {
         Modal.info({
-            title: '地图生产帮助文档',
+            title: '地图生产工作流',
             width: 760,
             icon: null,
             okText: '关闭',
@@ -573,19 +573,22 @@ export default function Index(prop: ToolbarProps) {
                         <h3>标准流程</h3>
                         <div className="help-doc-step">
                             <span>1</span>
-                            <p>采图数据进入采图包工作台，系统自动预检、生成单包底图，并维护一张合并底图。</p>
+                            <p>进入采图包工作台，同步 NAS 采图包，完成预检、单包底图生成和多段底图合并。</p>
                         </div>
                         <div className="help-doc-step">
                             <span>2</span>
-                            <p>打开合并底图开始标注；需要局部返工时，可打开单包底图核对点云质量。</p>
+                            <p>新建标注任务时选择一个已生成底图，从空标注开始绘制。</p>
                         </div>
                         <div className="help-doc-step">
                             <span>3</span>
-                            <p>标注完成后保存并发布地图包，系统会生成 Apollo 可部署文件。</p>
+                            <p>继续编辑标注时打开已有标注地图，系统会自动加载关联底图瓦片作为背景。</p>
                         </div>
                         <div className="help-doc-step">
                             <span>4</span>
-                            <p>发布后先执行 ApolloLite 仿真跑图，确认车辆可起步，Routing / Planning / Control 正常。</p>
+                            <p>
+                                标注完成后保存并发布地图包，系统会生成 Apollo 可部署文件；发布后先执行 ApolloLite
+                                仿真验证。
+                            </p>
                         </div>
                         <div className="help-doc-step">
                             <span>5</span>
@@ -593,9 +596,10 @@ export default function Index(prop: ToolbarProps) {
                         </div>
                     </section>
                     <section>
-                        <h3>采图包规则</h3>
+                        <h3>入口区别</h3>
                         <p>
-                            采集目录内优先识别 ResultOut 中的 LAS 文件。同一采集段重复采集时，自动拼图会优先使用最新包。
+                            新建标注任务只选择底图，适合从零开始；继续编辑标注选择已有 Apollo
+                            标注成果，并自动带出对应底图。
                         </p>
                     </section>
                     <section>
@@ -610,11 +614,11 @@ export default function Index(prop: ToolbarProps) {
     const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
         switch (key) {
             case '1':
-                setDialogTitle('打开底图');
+                setDialogTitle('新建标注任务');
                 setVisibleVal({ ...visibleVal, map: true });
                 break;
             case '2':
-                setDialogTitle('打开标注地图');
+                setDialogTitle('继续编辑标注');
                 if (viewstate.onsave) {
                     changeShowSaveDataRemind(true);
                 } else {
@@ -623,11 +627,11 @@ export default function Index(prop: ToolbarProps) {
                 }
                 break;
             case '3':
-                setDialogTitle('保存标注地图');
+                setDialogTitle('保存标注');
                 setVisibleVal({ ...visibleVal, operate: true });
                 break;
             case '4':
-                setDialogTitle('发布地图');
+                setDialogTitle('发布地图包');
                 setVisibleVal({ ...visibleVal, operate: true });
                 break;
             case 'asset-manager':
@@ -691,27 +695,20 @@ export default function Index(prop: ToolbarProps) {
     const productionMenus = [
         {
             key: 'data',
-            label: '数据',
+            label: '采图数据',
             items: [
                 {
                     type: 'group' as const,
-                    label: '数据准备',
+                    label: '采图数据准备',
                     children: [
                         {
                             label: (
                                 <FileMenuLabel
                                     title="采图包工作台"
-                                    description="上传、预检、管理、生成底图、合并拼图"
+                                    description="同步 NAS、上传、预检、生成底图、合并多段底图"
                                 />
                             ),
                             key: 'asset-manager',
-                        },
-                        {
-                            label: (
-                                <FileMenuLabel title="打开点云底图" description="选择已生成底图，进入图层辅助标注" />
-                            ),
-                            key: '1',
-                            icon: <RenderIcon url={LeadIcon} />,
                         },
                     ],
                 },
@@ -719,19 +716,31 @@ export default function Index(prop: ToolbarProps) {
         },
         {
             key: 'map',
-            label: '标注',
+            label: '标注生产',
             items: [
                 {
                     type: 'group' as const,
                     label: '标注生产',
                     children: [
                         {
-                            label: <FileMenuLabel title="打开标注地图" description="载入已有 Apollo 地图继续编辑" />,
+                            label: (
+                                <FileMenuLabel title="新建标注任务" description="选择已生成底图，从空标注开始绘制" />
+                            ),
+                            key: '1',
+                            icon: <RenderIcon url={LeadIcon} />,
+                        },
+                        {
+                            label: (
+                                <FileMenuLabel
+                                    title="继续编辑标注"
+                                    description="打开已有 Apollo 标注地图，并自动加载关联底图"
+                                />
+                            ),
                             key: '2',
                             icon: <RenderIcon url={LabelIcon} />,
                         },
                         {
-                            label: <FileMenuLabel title="保存标注地图" description="保存当前编辑结果" />,
+                            label: <FileMenuLabel title="保存标注" description="保存当前编辑成果" />,
                             key: '3',
                             icon: <RenderIcon url={SaveIcon} />,
                         },
@@ -748,7 +757,9 @@ export default function Index(prop: ToolbarProps) {
                     label: '发布仿真',
                     children: [
                         {
-                            label: <FileMenuLabel title="发布地图包" description="生成可部署的 Apollo 地图产物" />,
+                            label: (
+                                <FileMenuLabel title="发布地图包" description="把已保存标注生成 Apollo 可部署产物" />
+                            ),
                             key: '4',
                             icon: <RenderIcon url={IssueIcon} />,
                         },
@@ -776,7 +787,7 @@ export default function Index(prop: ToolbarProps) {
         },
         {
             key: 'device',
-            label: '设备',
+            label: '设备部署',
             items: [
                 {
                     type: 'group' as const,
@@ -789,13 +800,11 @@ export default function Index(prop: ToolbarProps) {
                             key: 'edge-device',
                         },
                         {
-                            label: <FileMenuLabel title="部署预检" description="检查本地服务器到边缘设备的部署条件" />,
+                            label: <FileMenuLabel title="部署预检" description="检查服务器到边缘设备的部署条件" />,
                             key: 'preflight-deploy',
                         },
                         {
-                            label: (
-                                <FileMenuLabel title="一键部署最新地图" description="把最新发布地图推送到边缘设备" />
-                            ),
+                            label: <FileMenuLabel title="部署最新地图" description="把最新发布地图包推送到边缘设备" />,
                             key: 'deploy-latest',
                         },
                         {
@@ -808,7 +817,7 @@ export default function Index(prop: ToolbarProps) {
         },
         {
             key: 'system',
-            label: '系统',
+            label: '系统诊断',
             items: [
                 {
                     type: 'group' as const,
@@ -816,15 +825,18 @@ export default function Index(prop: ToolbarProps) {
                     children: [
                         {
                             label: (
-                                <FileMenuLabel title="运行状态" description="查看导入、转换、底图生成、部署环境状态" />
+                                <FileMenuLabel
+                                    title="运行状态"
+                                    description="查看导入、转换、底图生成、仿真和部署状态"
+                                />
                             ),
                             key: 'runtime-status',
                         },
                         {
                             label: (
                                 <FileMenuLabel
-                                    title="生产帮助文档"
-                                    description="采图、底图、标注、仿真、部署标准流程"
+                                    title="生产工作流"
+                                    description="查看采图、标注、发布、仿真、部署的标准步骤"
                                 />
                             ),
                             key: 'help-doc',
