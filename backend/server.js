@@ -158,20 +158,22 @@ function getAuthUserFromRequest(req) {
   };
 }
 
+function buildPermissionsForRole(role) {
+  return {
+    canView: true,
+    canEdit: ['admin', 'operator'].includes(role),
+    canDeploy: role === 'admin',
+    canAdmin: role === 'admin',
+  };
+}
+
 function buildAuthSessionPayload(req) {
   const user = getAuthUserFromRequest(req);
   return {
     authEnabled: config.auth?.enabled === true,
     authenticated: Boolean(user),
     user,
-    permissions: user
-      ? {
-          canView: true,
-          canEdit: ['admin', 'operator'].includes(user.role),
-          canDeploy: user.role === 'admin',
-          canAdmin: user.role === 'admin',
-        }
-      : null,
+    permissions: user ? buildPermissionsForRole(user.role) : null,
   };
 }
 
@@ -203,6 +205,22 @@ function requireAuth(req, res, next) {
     code: 401,
     message: 'Authentication required',
   });
+}
+
+function requirePermission(permission) {
+  return (req, res, next) => {
+    if (!config.auth?.enabled) {
+      next();
+      return;
+    }
+    const user = getAuthUserFromRequest(req);
+    const permissions = user ? buildPermissionsForRole(user.role) : null;
+    if (permissions?.[permission]) {
+      next();
+      return;
+    }
+    sendError(res, 403, 403, 'Permission denied');
+  };
 }
 
 function getDreamviewProxyTarget() {
@@ -1680,7 +1698,7 @@ app.get('/runtime/deploy-config', (_req, res) => {
   });
 });
 
-app.post('/runtime/discover-edge-map-root', async (req, res) => {
+app.post('/runtime/discover-edge-map-root', requirePermission('canDeploy'), async (req, res) => {
   try {
     const result = await runtime.discoverEdgeMapRoot(config, req.body || {});
     res.json({
@@ -1696,7 +1714,7 @@ app.post('/runtime/discover-edge-map-root', async (req, res) => {
   }
 });
 
-app.post('/runtime/configure-edge-deploy', async (req, res) => {
+app.post('/runtime/configure-edge-deploy', requirePermission('canDeploy'), async (req, res) => {
   try {
     const result = await runtime.configureEdgeDeploy(config, req.body || {});
     const preflight = await runtime.preflightEdgeDeploy(config);
@@ -1748,7 +1766,7 @@ app.get('/runtime/apollolite/status', async (_req, res) => {
   }
 });
 
-app.post('/runtime/apollolite-stage-map-job', async (req, res) => {
+app.post('/runtime/apollolite-stage-map-job', requirePermission('canDeploy'), async (req, res) => {
   try {
     const activeJob = findActiveHeavyRuntimeJob();
     if (activeJob) {
@@ -1767,22 +1785,13 @@ app.post('/runtime/apollolite-stage-map-job', async (req, res) => {
         mapName: body.mapName || '',
       }
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
-    res.status(500).json({
-      code: 15053,
-      message: error.message,
-    });
+    sendError(res, 500, 15053, error.message);
   }
 });
 
-app.post('/runtime/apollolite-stage-latest-job', async (_req, res) => {
+app.post('/runtime/apollolite-stage-latest-job', requirePermission('canDeploy'), async (_req, res) => {
   try {
     const activeJob = findActiveHeavyRuntimeJob();
     if (activeJob) {
@@ -1797,22 +1806,13 @@ app.post('/runtime/apollolite-stage-latest-job', async (_req, res) => {
         }),
       {}
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
-    res.status(500).json({
-      code: 15054,
-      message: error.message,
-    });
+    sendError(res, 500, 15054, error.message);
   }
 });
 
-app.post('/runtime/apollolite-sim-smoke-test-job', async (req, res) => {
+app.post('/runtime/apollolite-sim-smoke-test-job', requirePermission('canEdit'), async (req, res) => {
   try {
     const body = req.body || {};
     const job = startRuntimeJob(
@@ -1826,22 +1826,13 @@ app.post('/runtime/apollolite-sim-smoke-test-job', async (req, res) => {
         mapName: body.mapName || '',
       }
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
-    res.status(500).json({
-      code: 15055,
-      message: error.message,
-    });
+    sendError(res, 500, 15055, error.message);
   }
 });
 
-app.post('/runtime/preflight-deploy', async (_req, res) => {
+app.post('/runtime/preflight-deploy', requirePermission('canDeploy'), async (_req, res) => {
   try {
     const result = await runtime.preflightEdgeDeploy(config);
     res.status(result.ready ? 200 : 500).json({
@@ -1878,7 +1869,7 @@ app.post('/runtime/create-base-map', async (req, res) => {
   }
 });
 
-app.post('/runtime/deploy-map-job', async (req, res) => {
+app.post('/runtime/deploy-map-job', requirePermission('canDeploy'), async (req, res) => {
   try {
     const body = req.body || {};
     const job = startRuntimeJob('deploy-map', (runtimeJob) =>
@@ -1890,22 +1881,13 @@ app.post('/runtime/deploy-map-job', async (req, res) => {
         mapName: body.mapName || '',
       }
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
-    res.status(500).json({
-      code: 15047,
-      message: error.message,
-    });
+    sendError(res, 500, 15047, error.message);
   }
 });
 
-app.post('/runtime/deploy-latest-job', async (_req, res) => {
+app.post('/runtime/deploy-latest-job', requirePermission('canDeploy'), async (_req, res) => {
   try {
     const job = startRuntimeJob('deploy-latest', (runtimeJob) =>
       runtime.deployLatestReleasedMap(config, {
@@ -1913,74 +1895,40 @@ app.post('/runtime/deploy-latest-job', async (_req, res) => {
       }),
       {}
     );
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
-    res.status(500).json({
-      code: 15048,
-      message: error.message,
-    });
+    sendError(res, 500, 15048, error.message);
   }
 });
 
-app.post('/runtime/rollback-deployment-job', async (req, res) => {
+app.post('/runtime/rollback-deployment-job', requirePermission('canDeploy'), async (req, res) => {
   try {
     const body = req.body || {};
     const job = startRuntimeJob('rollback-deployment', () => runtime.rollbackDeployment(config, body), {
       deploymentId: body.deploymentId || '',
       mapName: body.mapName || '',
     });
-    res.status(202).json({
-      code: 0,
-      message: 'Accepted',
-      data: {
-        job: serializeRuntimeJob(job),
-      },
-    });
+    sendAcceptedJob(res, job);
   } catch (error) {
-    res.status(500).json({
-      code: 15049,
-      message: error.message,
-    });
+    sendError(res, 500, 15049, error.message);
   }
 });
 
-app.post('/runtime/deploy-map', async (req, res) => {
+app.post('/runtime/deploy-map', requirePermission('canDeploy'), async (req, res) => {
   try {
     const result = await runtime.deployReleasedMap(config, req.body || {});
-    res.json({
-      code: 0,
-      message: 'Success',
-      data: result,
-    });
+    sendSuccess(res, result);
   } catch (error) {
-    res.status(500).json({
-      code: 15040,
-      message: error.message,
-      data: error.result || null,
-    });
+    sendError(res, 500, 15040, error.message, error.result || null);
   }
 });
 
-app.post('/runtime/deploy-latest', async (_req, res) => {
+app.post('/runtime/deploy-latest', requirePermission('canDeploy'), async (_req, res) => {
   try {
     const result = await runtime.deployLatestReleasedMap(config);
-    res.json({
-      code: 0,
-      message: 'Success',
-      data: result,
-    });
+    sendSuccess(res, result);
   } catch (error) {
-    res.status(500).json({
-      code: 15041,
-      message: error.message,
-      data: error.result || null,
-    });
+    sendError(res, 500, 15041, error.message, error.result || null);
   }
 });
 
