@@ -563,7 +563,7 @@ export default function Index(prop: ToolbarProps) {
     const showHelpDocs = () => {
         Modal.info({
             title: '地图生产工作流',
-            width: 760,
+            width: 860,
             icon: null,
             okText: '关闭',
             className: 'help-doc-dialog',
@@ -600,6 +600,62 @@ export default function Index(prop: ToolbarProps) {
                         <p>
                             新建标注任务只选择底图，适合从零开始；继续编辑标注选择已有 Apollo
                             标注成果，并自动带出对应底图。
+                        </p>
+                    </section>
+                    <section>
+                        <h3>标注作业顺序</h3>
+                        <div className="help-doc-step">
+                            <span>1</span>
+                            <p>先确认底图瓦片完整、道路边缘清楚、车道线和停止线可辨认；底图错位时先回采图包处理。</p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>2</span>
+                            <p>先画道路边界，圈定车辆真实可行驶范围；边界要连续，不要把人行区、绿化带画进车道区域。</p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>3</span>
+                            <p>
+                                再画大车道骨架，从入口到出口建立主通行路径，路口内左转、直行、右转和掉头路径都要自然连通。
+                            </p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>4</span>
+                            <p>使用自动连接形成拓扑闭环，先处理断头、误连和反向连接；不要用后续属性去弥补错误几何。</p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>5</span>
+                            <p>
+                                拓扑稳定后拆分车道：按物理车道线、转向功能、分流和合流关系拆；同向多车道保持平行和间距稳定。
+                            </p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>6</span>
+                            <p>设置车道方向和前后继关系，单行、双向、左转、右转、掉头都必须和真实行驶规则一致。</p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>7</span>
+                            <p>
+                                补车道边界和线型，实线表示不可跨越，虚线表示可按规则变道；中央隔离和道路边缘不要误设为可变道。
+                            </p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>8</span>
+                            <p>
+                                画路口区域、停止线和人行横道。路口只覆盖冲突区；停止线要落在车辆真实停车位置并横跨受控车道。
+                            </p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>9</span>
+                            <p>
+                                最后补交通灯、标志、方向箭头、减速带、闸机、停车位和区域，并确认它们关联到正确车道或控制点。
+                            </p>
+                        </div>
+                    </section>
+                    <section>
+                        <h3>发布前检查</h3>
+                        <p>
+                            检查每条车道是否有方向、前后继是否连续、路口转向是否符合规则、信号灯是否关联正确停止线和车道。
+                            禁止转向处不能残留可通行连接；发布后先仿真预检，再部署到边缘设备。
                         </p>
                     </section>
                     <section>
