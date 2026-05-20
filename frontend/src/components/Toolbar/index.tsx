@@ -656,18 +656,44 @@ export default function Index(prop: { messageApi: any }) {
         Modal.info({
             title: '地图生产帮助文档',
             width: 760,
+            icon: null,
+            okText: '关闭',
+            className: 'help-doc-dialog',
             content: (
-                <div className="runtime-status-modal help-doc-modal">
-                    <h3>标准流程</h3>
-                    <p>1. 采图数据进入采图包工作台，系统自动预检、生成单包底图，并维护一张合并底图。</p>
-                    <p>2. 打开合并底图开始标注；需要局部返工时，可打开单包底图核对点云质量。</p>
-                    <p>3. 标注完成后先保存，再发布地图包，系统会生成 Apollo 可部署文件。</p>
-                    <p>4. 发布后先执行 ApolloLite 仿真跑图，确认车辆可起步、Routing / Planning / Control 正常。</p>
-                    <p>5. 仿真通过后执行边缘设备部署，必要时从部署历史中回滚。</p>
-                    <h3>采图包规则</h3>
-                    <p>采集目录内优先识别 ResultOut 中的 LAS 文件。同一采集段重复采集时，自动拼图会优先使用最新包。</p>
-                    <h3>后台任务</h3>
-                    <p>底图生成和合并会在后台执行；标注和仿真可以继续操作，但大合并期间瓦片加载会变慢。</p>
+                <div className="help-doc-modal">
+                    <section>
+                        <h3>标准流程</h3>
+                        <div className="help-doc-step">
+                            <span>1</span>
+                            <p>采图数据进入采图包工作台，系统自动预检、生成单包底图，并维护一张合并底图。</p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>2</span>
+                            <p>打开合并底图开始标注；需要局部返工时，可打开单包底图核对点云质量。</p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>3</span>
+                            <p>标注完成后保存并发布地图包，系统会生成 Apollo 可部署文件。</p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>4</span>
+                            <p>发布后先执行 ApolloLite 仿真跑图，确认车辆可起步，Routing / Planning / Control 正常。</p>
+                        </div>
+                        <div className="help-doc-step">
+                            <span>5</span>
+                            <p>仿真通过后执行边缘设备部署，必要时从部署历史中回滚。</p>
+                        </div>
+                    </section>
+                    <section>
+                        <h3>采图包规则</h3>
+                        <p>
+                            采集目录内优先识别 ResultOut 中的 LAS 文件。同一采集段重复采集时，自动拼图会优先使用最新包。
+                        </p>
+                    </section>
+                    <section>
+                        <h3>后台任务</h3>
+                        <p>底图生成和合并会在后台执行；大合并会占用 CPU 和磁盘 I/O，系统会跳过仍在写入的采图目录。</p>
+                    </section>
                 </div>
             ),
         });

@@ -35,13 +35,10 @@
 
         img {
             display: inline-block;
-            width: 140px;
-            max-height: 32px;
-            padding: 5px 8px;
+            width: 142px;
+            max-height: 34px;
             vertical-align: middle;
             object-fit: contain;
-            background: #ffffff;
-            border-radius: 4px;
         }
     }
 
@@ -118,17 +115,85 @@
     }
 }
 
-.help-doc-modal {
-    h3 {
-        margin: 12px 0 8px;
-        color: #ffffff;
-        font-size: 16px;
+.help-doc-dialog {
+    .ant-modal-content {
+        background: #282b36;
+        border: 1px solid #3a4354;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
     }
 
-    p {
-        margin: 6px 0;
-        color: #c9d6eb;
-        line-height: 1.7;
+    .ant-modal-confirm-title {
+        color: #ffffff;
+        font-size: 17px;
+        font-weight: 600;
+    }
+
+    .ant-modal-confirm-content {
+        margin-left: 0 !important;
+        color: #a6b5cc;
+    }
+
+    .ant-modal-confirm-btns {
+        .ant-btn {
+            border-color: #53627a;
+            background: #263142;
+            color: #d7e2f2;
+        }
+
+        .ant-btn-primary {
+            border-color: #3288fa;
+            background: #3288fa;
+            color: #ffffff;
+        }
+    }
+
+    .help-doc-modal {
+        margin-top: 16px;
+
+        section {
+            padding: 14px 0;
+            border-top: 1px solid #3a4354;
+        }
+
+        section:first-child {
+            padding-top: 0;
+            border-top: 0;
+        }
+
+        h3 {
+            margin: 0 0 10px;
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        p {
+            margin: 0;
+            color: #c9d6eb;
+            line-height: 1.7;
+        }
+
+        .help-doc-step {
+            display: grid;
+            grid-template-columns: 24px minmax(0, 1fr);
+            gap: 10px;
+            align-items: start;
+            margin-top: 8px;
+        }
+
+        .help-doc-step span {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 22px;
+            height: 22px;
+            border: 1px solid #48607f;
+            border-radius: 50%;
+            background: #1f2633;
+            color: #8fb9ff;
+            font-size: 12px;
+            font-weight: 600;
+        }
     }
 }
 
