@@ -27,6 +27,24 @@
         margin-left: 24px;
     }
 
+    .brand-logo {
+        width: 156px;
+        height: 78px;
+        line-height: 78px;
+        vertical-align: top;
+
+        img {
+            display: inline-block;
+            width: 140px;
+            max-height: 32px;
+            padding: 5px 8px;
+            vertical-align: middle;
+            object-fit: contain;
+            background: #ffffff;
+            border-radius: 4px;
+        }
+    }
+
     .tool-item {
         display: inline-block;
         background: #343c4d;
@@ -54,7 +72,7 @@
         }
 
         &.file {
-            margin-left: 100px;
+            margin-left: 40px;
             img.arrow{
                 margin-left: 6px;
             }
@@ -97,6 +115,20 @@
     }
     .more.active{
         background: #3288FA;
+    }
+}
+
+.help-doc-modal {
+    h3 {
+        margin: 12px 0 8px;
+        color: #ffffff;
+        font-size: 16px;
+    }
+
+    p {
+        margin: 6px 0;
+        color: #c9d6eb;
+        line-height: 1.7;
     }
 }
 
@@ -883,6 +915,19 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+
+    .asset-manager-name-meta {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 6px;
+        color: #9eadc5;
+        font-size: 12px;
+
+        .ant-tag {
+            margin-right: 0;
+        }
     }
 
     .asset-manager-tag-line {

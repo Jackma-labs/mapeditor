@@ -205,8 +205,9 @@ class FileService {
         }));
     }
 
-    async getDataPackages() {
-        return this.requestJson('/runtime/data-packages');
+    async getDataPackages(options: { detail?: 'summary' | 'full' } = { detail: 'summary' }) {
+        const detail = options.detail || 'summary';
+        return this.requestJson(`/runtime/data-packages?detail=${encodeURIComponent(detail)}`);
     }
 
     async getCaptureSourcePackages() {

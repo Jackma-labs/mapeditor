@@ -957,6 +957,12 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             render: (_value: string, record: any) => (
                 <div className="asset-manager-name-cell" title={record.packageId}>
                     <div className="asset-manager-name">{getPackageTitle(record)}</div>
+                    {record.supersededByPackageId && (
+                        <div className="asset-manager-name-meta">
+                            <Tag color="gold">旧采集</Tag>
+                            <span>自动拼图使用最新采集</span>
+                        </div>
+                    )}
                 </div>
             ),
         },

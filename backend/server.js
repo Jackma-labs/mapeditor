@@ -1118,13 +1118,16 @@ app.post('/runtime/analyze-data-package-job', upload.any(), async (req, res) => 
   }
 });
 
-app.get('/runtime/data-packages', async (_req, res) => {
+app.get('/runtime/data-packages', async (req, res) => {
   try {
+    const detail = String(req.query.detail || '').toLowerCase();
     res.json({
       code: 0,
       message: 'Success',
       data: {
-        packages: await runtime.listDataPackages(config),
+        packages: await runtime.listDataPackages(config, {
+          includeAnalyses: detail !== 'summary',
+        }),
       },
     });
   } catch (error) {

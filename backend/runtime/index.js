@@ -4360,7 +4360,7 @@ async function syncCaptureSourcePackages(config, params = {}) {
   if (autoMerge) {
     const packages = await listDataPackages(config);
     const groups = new Map();
-    for (const item of packages) {
+    for (const item of selectLatestMergeCandidates(packages)) {
       if (item.sourceManifest?.sourceRoot !== scan.sourceRoot || !item.workflowStatus?.canMerge || !item.coordinateGroup) {
         continue;
       }
@@ -4448,7 +4448,7 @@ async function prebuildDataPackageBaseMaps(config, params = {}) {
     } else {
       const latestPackages = await listDataPackages(config);
       const groups = new Map();
-      for (const item of latestPackages) {
+      for (const item of selectLatestMergeCandidates(latestPackages)) {
         if (!item.workflowStatus?.canMerge || !item.coordinateGroup) {
           continue;
         }
@@ -4641,6 +4641,59 @@ async function baseMapExistsForPackage(config, displayName) {
   return pathExists(path.join(config.baseMapRoot, mapName, 'map_images', 'tiles.json'));
 }
 
+function normalizeCaptureReplacementKey(packageInfo) {
+  const sourceName =
+    packageInfo?.sourceManifest?.displayName ||
+    packageInfo?.displayName ||
+    packageInfo?.defaultMapName ||
+    packageInfo?.packageId ||
+    '';
+  const withoutPrefix = String(sourceName).replace(/^sync[-_]/i, '');
+  const withoutNotes = withoutPrefix
+    .replace(/（[^）]*）/g, '')
+    .replace(/\([^)]*\)/g, '')
+    .replace(/\[[^\]]*\]/g, '')
+    .replace(/【[^】]*】/g, '');
+  return sanitizePackageName(withoutNotes).toLowerCase();
+}
+
+function getPackageFreshnessTime(packageInfo) {
+  return Math.max(
+    Date.parse(packageInfo?.sourceManifest?.newestLastWriteUtc || '') || 0,
+    Date.parse(packageInfo?.sourceManifest?.syncedAt || '') || 0,
+    Date.parse(packageInfo?.modifiedAt || '') || 0,
+    Date.parse(packageInfo?.createdAt || '') || 0
+  );
+}
+
+function annotateLatestCapturePackages(packages) {
+  const latestByKey = new Map();
+  for (const item of packages) {
+    const key = normalizeCaptureReplacementKey(item);
+    if (!key) {
+      continue;
+    }
+    const current = latestByKey.get(key);
+    if (!current || getPackageFreshnessTime(item) >= getPackageFreshnessTime(current)) {
+      latestByKey.set(key, item);
+    }
+  }
+  return packages.map((item) => {
+    const key = normalizeCaptureReplacementKey(item);
+    const latest = key ? latestByKey.get(key) : null;
+    return {
+      ...item,
+      captureReplacementKey: key || null,
+      isLatestCapturePackage: !latest || latest.packageId === item.packageId,
+      supersededByPackageId: latest && latest.packageId !== item.packageId ? latest.packageId : null,
+    };
+  });
+}
+
+function selectLatestMergeCandidates(packages) {
+  return annotateLatestCapturePackages(packages).filter((item) => item.isLatestCapturePackage);
+}
+
 function buildPackageWorkflowStatus({ summary, analyses, quality, sourceManifest, baseMapExists }) {
   const pointCloudFiles = Number(summary?.pointCloudFiles || 0);
   const hasAnalysis = Array.isArray(analyses) && analyses.length > 0;
@@ -4716,7 +4769,8 @@ function buildPackageWorkflowStatus({ summary, analyses, quality, sourceManifest
   };
 }
 
-async function listDataPackages(config) {
+async function listDataPackages(config, options = {}) {
+  const includeAnalyses = options.includeAnalyses !== false;
   const packageRoot = getImportPackageRoot(config);
   if (!(await pathExists(packageRoot))) {
     return [];
@@ -4754,7 +4808,8 @@ async function listDataPackages(config) {
       defaultMapName: displayName,
       sourceManifest,
       summary,
-      analyses,
+      analyses: includeAnalyses ? analyses : undefined,
+      analysisCount: analyses.length,
       quality,
       coordinateGroup: quality.coordinateGroup,
       workflowStatus,
@@ -4763,8 +4818,9 @@ async function listDataPackages(config) {
       sizeBytes: await getDirectorySize(packageDir),
     });
   }
-  packages.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
-  return packages;
+  const annotatedPackages = annotateLatestCapturePackages(packages);
+  annotatedPackages.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
+  return annotatedPackages;
 }
 
 async function updateDataPackage(config, params) {

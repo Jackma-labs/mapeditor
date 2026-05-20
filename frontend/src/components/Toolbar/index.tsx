@@ -33,6 +33,7 @@ import LeadDisabledIcon from '../../assets/images/ic_lead_disabled.svg';
 import LabelIcon from '../../assets/images/ic_map_editor.svg';
 import SaveIcon from '../../assets/images/ic_save.svg';
 import IssueIcon from '../../assets/images/ic_sissue.svg';
+import LandingLogo from '../../assets/images/landing-logo.png';
 
 import rangingDefault from '../../assets/images/ic_ranging.svg';
 import rangingDisable from '../../assets/images/ic_ranging_forbidden.svg';
@@ -315,6 +316,10 @@ export default function Index(prop: { messageApi: any }) {
                 {
                     label: <FileMenuLabel title="运行状态" description="查看导入、转换、底图生成、部署环境状态" />,
                     key: 'runtime-status',
+                },
+                {
+                    label: <FileMenuLabel title="生产帮助文档" description="采图、底图、标注、仿真、部署标准流程" />,
+                    key: 'help-doc',
                 },
             ],
         },
@@ -647,6 +652,27 @@ export default function Index(prop: { messageApi: any }) {
         }
     };
 
+    const showHelpDocs = () => {
+        Modal.info({
+            title: '地图生产帮助文档',
+            width: 760,
+            content: (
+                <div className="runtime-status-modal help-doc-modal">
+                    <h3>标准流程</h3>
+                    <p>1. 采图数据进入采图包工作台，系统自动预检、生成单包底图，并维护一张合并底图。</p>
+                    <p>2. 打开合并底图开始标注；需要局部返工时，可打开单包底图核对点云质量。</p>
+                    <p>3. 标注完成后先保存，再发布地图包，系统会生成 Apollo 可部署文件。</p>
+                    <p>4. 发布后先执行 ApolloLite 仿真跑图，确认车辆可起步、Routing / Planning / Control 正常。</p>
+                    <p>5. 仿真通过后执行边缘设备部署，必要时从部署历史中回滚。</p>
+                    <h3>采图包规则</h3>
+                    <p>采集目录内优先识别 ResultOut 中的 LAS 文件。同一采集段重复采集时，自动拼图会优先使用最新包。</p>
+                    <h3>后台任务</h3>
+                    <p>底图生成和合并会在后台执行；标注和仿真可以继续操作，但大合并期间瓦片加载会变慢。</p>
+                </div>
+            ),
+        });
+    };
+
     const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
         switch (key) {
             case '1':
@@ -693,6 +719,9 @@ export default function Index(prop: { messageApi: any }) {
                 break;
             case 'deploy-history':
                 showDeploymentHistory();
+                break;
+            case 'help-doc':
+                showHelpDocs();
                 break;
             default:
                 break;
@@ -757,7 +786,9 @@ export default function Index(prop: { messageApi: any }) {
     }, [viewstate.currentPickElement, viewstate.operationType, viewstate.currentPickElement.length]);
     return (
         <div id="toolbar-container">
-            <div className="title">Map Editing</div>
+            <div className="title brand-logo">
+                <img src={LandingLogo} alt="LANDING" />
+            </div>
             <ConfigProvider
                 autoInsertSpaceInButton={false}
                 theme={{
