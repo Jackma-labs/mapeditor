@@ -6,9 +6,17 @@ import { mapElementZ } from 'src/constant/mapElementZ';
 import { MapState } from 'src/interface/mapStateInterface';
 import { ThreeElementType } from 'src/interface/commonInterFace';
 import { useManagerStore } from 'src/store';
-import { inspectMapQuality, MapQualityIssue, pickElementFromIssue } from 'src/quality/mapQuality';
+import { inspectMapQuality, MapQualityIssue, MapQualityReport, pickElementFromIssue } from 'src/quality/mapQuality';
 
 const OVERLAY_GROUP_NAME = '__map_quality_overlay__';
+
+type WorkflowStepStatus = 'pass' | 'warning' | 'error';
+
+interface WorkflowStep {
+    label: string;
+    status: WorkflowStepStatus;
+    text: string;
+}
 
 function getPointPosition(mapState: MapState, pointId: string) {
     return mapState.points[pointId]?.position;
@@ -167,6 +175,56 @@ function getStatusClass(errors: number, warnings: number) {
     return 'is-pass';
 }
 
+function getPreflightStatus(errors: number, warnings: number): WorkflowStepStatus {
+    if (errors > 0) {
+        return 'error';
+    }
+    if (warnings > 0) {
+        return 'warning';
+    }
+    return 'pass';
+}
+
+function getTopologyStatus(hasLanes: boolean, topologyBlocked: boolean): WorkflowStepStatus {
+    if (topologyBlocked) {
+        return 'error';
+    }
+    if (hasLanes) {
+        return 'pass';
+    }
+    return 'warning';
+}
+
+function getWorkflowSteps(report: MapQualityReport): WorkflowStep[] {
+    const { lanes, laneEdges, laneComponents, errors, warnings } = report.summary;
+    const hasLanes = lanes > 0;
+    const topologyBlocked = hasLanes && lanes > 1 && (laneEdges < lanes - 1 || laneComponents > 1);
+    const preflightStatus = getPreflightStatus(errors, warnings);
+
+    return [
+        {
+            label: '绘制',
+            status: hasLanes ? 'pass' : 'warning',
+            text: hasLanes ? `${lanes} 条车道` : '未画车道',
+        },
+        {
+            label: '拓扑',
+            status: getTopologyStatus(hasLanes, topologyBlocked),
+            text: hasLanes ? `${laneEdges} 条连接 / ${laneComponents || 0} 区域` : '等待车道',
+        },
+        {
+            label: '预检',
+            status: preflightStatus,
+            text: errors > 0 ? `${errors} 个错误` : `${warnings} 个警告`,
+        },
+        {
+            label: '发布',
+            status: errors > 0 ? 'error' : 'pass',
+            text: errors > 0 ? '禁止发布' : '可发布',
+        },
+    ];
+}
+
 export default function MapQualityPanel() {
     const [collapsed, setCollapsed] = useState(false);
     const [selectedIssueId, setSelectedIssueId] = useState('');
@@ -210,6 +268,7 @@ export default function MapQualityPanel() {
 
     const topIssues = issues.slice(0, 18);
     const statusClass = getStatusClass(report.summary.errors, report.summary.warnings);
+    const workflowSteps = getWorkflowSteps(report);
 
     return (
         <div className={`quality-panel ${statusClass} ${collapsed ? 'is-collapsed' : ''}`}>
@@ -225,35 +284,47 @@ export default function MapQualityPanel() {
                 </Button>
             </div>
             {!collapsed && (
-                <div className="quality-panel-body">
-                    {issues.length === 0 && <div className="quality-panel-empty">当前未发现阻塞发布的问题。</div>}
-                    {topIssues.map((issue) => (
-                        <button
-                            type="button"
-                            key={issue.id}
-                            className={`quality-issue ${issue.severity} ${
-                                selectedIssueId === issue.id ? 'active' : ''
-                            }`}
-                            onClick={() => handleIssueClick(issue)}
-                        >
-                            <span className="quality-issue-level">{issue.severity === 'error' ? '错误' : '警告'}</span>
-                            <span className="quality-issue-main">
-                                <strong>{issue.title}</strong>
-                                <span>{issue.suggestion}</span>
-                                {selectedIssueId === issue.id && issue.details && issue.details.length > 0 && (
-                                    <span className="quality-issue-details">
-                                        {issue.details.map((detail) => (
-                                            <em key={detail}>{detail}</em>
-                                        ))}
-                                    </span>
-                                )}
-                            </span>
-                        </button>
-                    ))}
-                    {issues.length > topIssues.length && (
-                        <div className="quality-panel-more">{`还有 ${issues.length - topIssues.length} 个问题，优先处理红色错误。`}</div>
-                    )}
-                </div>
+                <>
+                    <div className="quality-workflow">
+                        {workflowSteps.map((step) => (
+                            <div key={step.label} className={`quality-workflow-step ${step.status}`}>
+                                <strong>{step.label}</strong>
+                                <span>{step.text}</span>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="quality-panel-body">
+                        {issues.length === 0 && <div className="quality-panel-empty">当前未发现阻塞发布的问题。</div>}
+                        {topIssues.map((issue) => (
+                            <button
+                                type="button"
+                                key={issue.id}
+                                className={`quality-issue ${issue.severity} ${
+                                    selectedIssueId === issue.id ? 'active' : ''
+                                }`}
+                                onClick={() => handleIssueClick(issue)}
+                            >
+                                <span className="quality-issue-level">
+                                    {issue.severity === 'error' ? '错误' : '警告'}
+                                </span>
+                                <span className="quality-issue-main">
+                                    <strong>{issue.title}</strong>
+                                    <span>{issue.suggestion}</span>
+                                    {selectedIssueId === issue.id && issue.details && issue.details.length > 0 && (
+                                        <span className="quality-issue-details">
+                                            {issue.details.map((detail) => (
+                                                <em key={detail}>{detail}</em>
+                                            ))}
+                                        </span>
+                                    )}
+                                </span>
+                            </button>
+                        ))}
+                        {issues.length > topIssues.length && (
+                            <div className="quality-panel-more">{`还有 ${issues.length - topIssues.length} 个问题，优先处理红色错误。`}</div>
+                        )}
+                    </div>
+                </>
             )}
         </div>
     );
