@@ -61,7 +61,6 @@ const HEAVY_RUNTIME_JOB_TYPES = new Set([
   'sync-capture-source-packages',
   'prebuild-data-package-base-maps',
   'stage-apollolite-map',
-  'apollolite-sim-smoke-test',
 ]);
 
 function log(...args) {
@@ -1715,11 +1714,6 @@ app.post('/runtime/apollolite-stage-latest-job', async (_req, res) => {
 
 app.post('/runtime/apollolite-sim-smoke-test-job', async (req, res) => {
   try {
-    const activeJob = findActiveHeavyRuntimeJob();
-    if (activeJob) {
-      sendRuntimeJobBusy(res, activeJob);
-      return;
-    }
     const body = req.body || {};
     const job = startRuntimeJob(
       'apollolite-sim-smoke-test',
