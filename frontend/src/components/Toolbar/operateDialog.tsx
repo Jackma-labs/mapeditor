@@ -49,7 +49,8 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
     const [fileNameDuplicate, setFileNameDuplicate] = useState(false);
     const closeNode = <img src={CloseIcon} alt="close" />;
     const [form] = Form.useForm();
-    const name = title === '发布地图' ? '/apollo/modules/map/data' : '/apollo/data/editor_map';
+    const isPublish = title === '发布地图' || title === '发布地图包';
+    const name = isPublish ? '/apollo/modules/map/data' : '/apollo/data/editor_map';
     const [fields, setFields] = useState<FieldData[]>([
         { name: 'name', value: '' },
         { name: 'address', value: name },
@@ -91,7 +92,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         // 处理提交逻辑
         let response: any;
         const params = mapExport();
-        if (title === '发布地图') {
+        if (isPublish) {
             setLoading(true);
             response = await FileService.publish(values.name, params, !fileNameDuplicate);
         } else {
