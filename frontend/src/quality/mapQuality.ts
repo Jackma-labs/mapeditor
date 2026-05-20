@@ -20,6 +20,7 @@ export interface MapQualityIssue {
     title: string;
     description: string;
     suggestion: string;
+    details?: string[];
     target: MapQualityTarget;
 }
 
@@ -43,6 +44,11 @@ export interface MapQualityReport {
         laneComponents: number;
     };
     laneRelations: Record<string, LaneRelation>;
+}
+
+interface LaneComponent {
+    id: number;
+    laneIds: string[];
 }
 
 const validLaneDirections = new Set<number>([
@@ -134,26 +140,22 @@ export function buildLaneRelations(mapState: MapState): Record<string, LaneRelat
     return relations;
 }
 
-function countLaneComponents(relations: Record<string, LaneRelation>) {
+function buildLaneComponents(relations: Record<string, LaneRelation>): LaneComponent[] {
     const laneIds = Object.keys(relations);
     const visited = new Set<string>();
-    let components = 0;
+    const components: LaneComponent[] = [];
     laneIds.forEach((laneId) => {
         if (visited.has(laneId)) {
             return;
         }
-        components += 1;
+        const laneIdsInComponent: string[] = [];
         const queue = [laneId];
         visited.add(laneId);
         while (queue.length > 0) {
             const current = queue.shift();
+            laneIdsInComponent.push(current);
             const relation = relations[current];
-            const nextLaneIds = [
-                ...relation.predecessors,
-                ...relation.successors,
-                ...relation.leftNeighbors,
-                ...relation.rightNeighbors,
-            ];
+            const nextLaneIds = [...relation.predecessors, ...relation.successors];
             nextLaneIds.forEach((nextLaneId) => {
                 if (!visited.has(nextLaneId) && relations[nextLaneId]) {
                     visited.add(nextLaneId);
@@ -161,8 +163,36 @@ function countLaneComponents(relations: Record<string, LaneRelation>) {
                 }
             });
         }
+        components.push({
+            id: components.length + 1,
+            laneIds: laneIdsInComponent,
+        });
     });
     return components;
+}
+
+function formatLaneIds(laneIds: string[]) {
+    if (laneIds.length === 0) {
+        return '无';
+    }
+    const visibleLaneIds = laneIds.slice(0, 5).join('、');
+    if (laneIds.length > 5) {
+        return `${visibleLaneIds} 等 ${laneIds.length} 条`;
+    }
+    return visibleLaneIds;
+}
+
+function buildLaneRelationDetails(
+    relation: LaneRelation,
+    laneComponentIndex: Record<string, number>,
+    extraDetails: string[] = [],
+) {
+    return [
+        `前驱：${formatLaneIds(relation.predecessors)}`,
+        `后继：${formatLaneIds(relation.successors)}`,
+        `拓扑区域：${laneComponentIndex[relation.laneId] || 1}`,
+        ...extraDetails,
+    ];
 }
 
 function getLaneTarget(mapState: MapState, lane: Lane): MapQualityTarget {
@@ -179,6 +209,13 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
     const lanes = Object.values(mapState.lanes);
     const relations = buildLaneRelations(mapState);
     const laneEdges = Object.values(relations).reduce((sum, relation) => sum + relation.successors.length, 0);
+    const laneComponents = buildLaneComponents(relations);
+    const laneComponentIndex: Record<string, number> = {};
+    laneComponents.forEach((component) => {
+        component.laneIds.forEach((laneId) => {
+            laneComponentIndex[laneId] = component.id;
+        });
+    });
     const hasDraftGeometry =
         lanes.length > 0 ||
         Object.keys(mapState.boundarys).length > 0 ||
@@ -243,6 +280,7 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 title: `车道 ${lane.id} 缺少左右边界`,
                 description: '车道必须同时拥有左边界和右边界，否则无法生成稳定的 Apollo lane。',
                 suggestion: '重新绘制车道，或修复车道属性中的左右边界引用。',
+                details: [`左边界：${lane.leftBoundaryId || '无'}`, `右边界：${lane.rightBoundaryId || '无'}`],
                 target,
             });
             return;
@@ -253,6 +291,7 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 title: `车道 ${lane.id} 缺少面对象`,
                 description: '车道缺少可选择和高亮的面对象，可能由异常拆分或导入造成。',
                 suggestion: '重新生成车道或撤销异常操作后再保存。',
+                details: buildLaneRelationDetails(relation, laneComponentIndex, [`面对象：${lane.groudId || '无'}`]),
                 target,
             });
         }
@@ -262,6 +301,7 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 title: `车道 ${lane.id} 行驶方向未设置`,
                 description: '发布和仿真需要明确直行、左转、右转或掉头方向。',
                 suggestion: '选中该车道，在属性面板设置正确方向。',
+                details: buildLaneRelationDetails(relation, laneComponentIndex),
                 target,
             });
         }
@@ -271,6 +311,7 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 title: `车道 ${lane.id} 相对方向未设置`,
                 description: '相邻车道关系缺少同向、反向或双向语义，后续自动连接可能误判。',
                 suggestion: '选中该车道，在属性面板确认相对方向。',
+                details: buildLaneRelationDetails(relation, laneComponentIndex),
                 target,
             });
         }
@@ -285,6 +326,10 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 title: `车道 ${lane.id} 起终点不完整`,
                 description: '左右边界起点或终点缺失，车道方向和前后继无法可靠判断。',
                 suggestion: '检查左右边界点，确保每条边界至少有两个有效点。',
+                details: [
+                    `起点：${formatLaneIds(relation.startPointIds.filter(Boolean) as string[])}`,
+                    `终点：${formatLaneIds(relation.endPointIds.filter(Boolean) as string[])}`,
+                ],
                 target,
             });
         }
@@ -294,6 +339,9 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 title: `车道 ${lane.id} 是孤立车道`,
                 description: '该车道没有任何前驱或后继，车辆无法从路网中进入或离开。',
                 suggestion: '使用自动连接或手动连接，把该车道接入正确的前后车道。',
+                details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                    '选中该车道和相邻目标车道后使用直道连接或弯道连接。',
+                ]),
                 target,
             });
         } else {
@@ -303,6 +351,7 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                     title: `车道 ${lane.id} 没有前驱`,
                     description: '该车道可能是合法入口，也可能是断头；发布前需要确认。',
                     suggestion: '如果不是地图入口，请连接到上一段车道。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex),
                     target,
                 });
             }
@@ -312,6 +361,7 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                     title: `车道 ${lane.id} 没有后继`,
                     description: '该车道可能是合法出口，也可能是断头；仿真路线可能无法继续。',
                     suggestion: '如果不是地图出口，请连接到下一段车道。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex),
                     target,
                 });
             }
@@ -324,19 +374,22 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
             title: '车道拓扑连接不足',
             description: `当前 ${lanes.length} 条车道只有 ${laneEdges} 条前后继连接，路网没有形成可连续导航的拓扑。`,
             suggestion: '先用自动连接检查断点，再逐段补齐前驱和后继。',
+            details: [`车道总数：${lanes.length}`, `前后继连接：${laneEdges}`, `拓扑区域：${laneComponents.length}`],
             target: {
                 type: 'map',
             },
         });
     }
 
-    const laneComponents = countLaneComponents(relations);
-    if (lanes.length > 1 && laneComponents > 1) {
+    if (lanes.length > 1 && laneComponents.length > 1) {
         buildIssue(issues, {
             severity: 'warning',
             title: '车道网络不连通',
-            description: `当前车道网络被分成 ${laneComponents} 个连通块，可能存在分离路段或漏连。`,
+            description: `当前车道网络被分成 ${laneComponents.length} 个连通块，可能存在分离路段或漏连。`,
             suggestion: '逐个检查孤立区域；如果是同一张运营地图，应补齐连接关系。',
+            details: laneComponents
+                .slice(0, 6)
+                .map((component) => `区域 ${component.id}：${formatLaneIds(component.laneIds)}`),
             target: {
                 type: 'map',
             },
@@ -396,7 +449,7 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
             warnings: issues.filter((item) => item.severity === 'warning').length,
             lanes: lanes.length,
             laneEdges,
-            laneComponents,
+            laneComponents: laneComponents.length,
         },
         laneRelations: relations,
     };

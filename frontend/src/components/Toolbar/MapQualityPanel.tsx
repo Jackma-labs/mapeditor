@@ -240,6 +240,13 @@ export default function MapQualityPanel() {
                             <span className="quality-issue-main">
                                 <strong>{issue.title}</strong>
                                 <span>{issue.suggestion}</span>
+                                {selectedIssueId === issue.id && issue.details && issue.details.length > 0 && (
+                                    <span className="quality-issue-details">
+                                        {issue.details.map((detail) => (
+                                            <em key={detail}>{detail}</em>
+                                        ))}
+                                    </span>
+                                )}
                             </span>
                         </button>
                     ))}
