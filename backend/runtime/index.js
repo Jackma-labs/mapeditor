@@ -4153,6 +4153,23 @@ async function listLasFilesRecursive(rootDir) {
   return results;
 }
 
+function getCapturePackageNewestTime(files, packageStat) {
+  const newestFileTime = files.reduce((maxTime, item) => {
+    const time = Date.parse(item.modifiedAt || '') || 0;
+    return Math.max(maxTime, time);
+  }, 0);
+  return Math.max(newestFileTime, packageStat?.mtime?.getTime?.() || 0);
+}
+
+function isCapturePackageStable(files, packageStat, minAgeMinutes) {
+  const minAgeMs = Math.max(0, Number(minAgeMinutes) || 0) * 60 * 1000;
+  if (minAgeMs <= 0) {
+    return true;
+  }
+  const newestTime = getCapturePackageNewestTime(files, packageStat);
+  return newestTime > 0 && Date.now() - newestTime >= minAgeMs;
+}
+
 function assertPathInside(parent, child, label) {
   const parentPath = path.resolve(parent);
   const childPath = path.resolve(child);
@@ -4162,7 +4179,7 @@ function assertPathInside(parent, child, label) {
   return childPath;
 }
 
-async function scanCaptureSourcePackages(config) {
+async function scanCaptureSourcePackages(config, options = {}) {
   const sourceRoot = getCaptureSourceRoot(config);
   if (!sourceRoot) {
     throw new Error('MAP_CAPTURE_SOURCE_ROOT is not configured');
@@ -4190,6 +4207,8 @@ async function scanCaptureSourcePackages(config) {
       continue;
     }
     const stat = await fsp.stat(sourcePath);
+    const minAgeMinutes = Number(options.minAgeMinutes || 0);
+    const newestTime = getCapturePackageNewestTime(files, stat);
     const packageId = `sync-${sanitizePackageName(sourcePackage)}`;
     packages.push({
       sourcePackage,
@@ -4200,6 +4219,9 @@ async function scanCaptureSourcePackages(config) {
       fileCount: files.length,
       totalBytes: files.reduce((sum, item) => sum + Number(item.size || 0), 0),
       modifiedAt: stat.mtime.toISOString(),
+      newestLastWriteUtc: newestTime ? new Date(newestTime).toISOString() : stat.mtime.toISOString(),
+      stable: isCapturePackageStable(files, stat, minAgeMinutes),
+      minAgeMinutes,
       imported: await pathExists(path.join(packageRoot, packageId, 'analysis.json')),
     });
   }
@@ -4232,6 +4254,15 @@ async function importCaptureSourcePackage(config, params = {}) {
   const files = await listLasFilesRecursive(resultDir);
   if (files.length === 0) {
     throw new Error(`no LAS files found under ${resultDir}`);
+  }
+  if (params.skipStabilityCheck !== true) {
+    const sourceStat = await fsp.stat(sourcePath);
+    const minAgeMinutes = Number(params.minAgeMinutes || 0);
+    if (!isCapturePackageStable(files, sourceStat, minAgeMinutes)) {
+      throw new Error(
+        `capture package is still changing; wait at least ${minAgeMinutes} minute(s): ${sourcePackage}`
+      );
+    }
   }
   const packageRoot = getImportPackageRoot(config);
   await fsp.mkdir(packageRoot, { recursive: true });
@@ -4309,7 +4340,8 @@ async function importCaptureSourcePackage(config, params = {}) {
 
 async function syncCaptureSourcePackages(config, params = {}) {
   const progress = typeof params.progress === 'function' ? params.progress : async () => {};
-  const scan = await scanCaptureSourcePackages(config);
+  const minAgeMinutes = Math.max(0, Number(params.minAgeMinutes || 0));
+  const scan = await scanCaptureSourcePackages(config, { minAgeMinutes });
   const overwrite = params.overwrite === true;
   const onlyNew = params.onlyNew !== false;
   const limit = Math.max(1, Math.min(Number(params.limit) || 50, 200));
@@ -4318,10 +4350,14 @@ async function syncCaptureSourcePackages(config, params = {}) {
   const maxBaseMapJobs = Math.max(1, Math.min(Number(params.maxBaseMapJobs) || 20, 100));
   const mergedMapName = sanitizePackageName(params.mergedMapName || 'capture_source_merged');
   const targets = scan.packages
+    .filter((item) => item.stable !== false)
     .filter((item) => overwrite || !onlyNew || !item.imported)
     .slice(0, limit);
   const results = [];
-  await progress(`Capture source scan: ${scan.packages.length} package(s), ${targets.length} to sync`);
+  const unstableCount = scan.packages.filter((item) => item.stable === false).length;
+  await progress(
+    `Capture source scan: ${scan.packages.length} package(s), ${targets.length} to sync, ${unstableCount} waiting for stability`
+  );
   for (let index = 0; index < targets.length; index += 1) {
     const item = targets[index];
     await progress(`Syncing capture package ${index + 1}/${targets.length}: ${item.sourcePackage}`);
@@ -4329,6 +4365,7 @@ async function syncCaptureSourcePackages(config, params = {}) {
       await importCaptureSourcePackage(config, {
         sourcePackage: item.sourcePackage,
         overwrite,
+        minAgeMinutes,
         progress,
       })
     );

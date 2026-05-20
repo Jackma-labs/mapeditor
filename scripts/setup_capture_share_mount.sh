@@ -55,6 +55,7 @@ touch "${APP_ENV_FILE}"
 grep -v '^MAP_CAPTURE_SOURCE_ROOT=' "${APP_ENV_FILE}" \
   | grep -v '^MAP_CAPTURE_AUTO_SYNC=' \
   | grep -v '^MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES=' \
+  | grep -v '^MAP_CAPTURE_AUTO_MIN_AGE_MINUTES=' \
   | grep -v '^MAP_CAPTURE_AUTO_GENERATE_BASE_MAPS=' \
   | grep -v '^MAP_CAPTURE_AUTO_MERGE=' \
   | grep -v '^MAP_INBOX_AUTO_PREBUILD=' \
@@ -62,6 +63,7 @@ grep -v '^MAP_CAPTURE_SOURCE_ROOT=' "${APP_ENV_FILE}" \
 printf 'MAP_CAPTURE_SOURCE_ROOT=%s\n' "${MOUNT_POINT}/${CAPTURE_SUBDIR}" >> /tmp/mapeditor-env
 printf 'MAP_CAPTURE_AUTO_SYNC=true\n' >> /tmp/mapeditor-env
 printf 'MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES=10\n' >> /tmp/mapeditor-env
+printf 'MAP_CAPTURE_AUTO_MIN_AGE_MINUTES=15\n' >> /tmp/mapeditor-env
 printf 'MAP_CAPTURE_AUTO_GENERATE_BASE_MAPS=true\n' >> /tmp/mapeditor-env
 printf 'MAP_CAPTURE_AUTO_MERGE=true\n' >> /tmp/mapeditor-env
 printf 'MAP_INBOX_AUTO_PREBUILD=true\n' >> /tmp/mapeditor-env

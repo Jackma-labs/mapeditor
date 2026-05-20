@@ -324,6 +324,7 @@ function buildCaptureAutoSyncRequest(trigger = 'auto') {
     onlyNew: true,
     overwrite: false,
     limit: Number(options.limit) || 50,
+    minAgeMinutes: Number(options.minAgeMinutes) || 15,
     autoGenerateBaseMaps: options.autoGenerateBaseMaps !== false,
     maxBaseMapJobs: Number(options.maxBaseMapJobs) || 20,
     autoMerge: options.autoMerge !== false,

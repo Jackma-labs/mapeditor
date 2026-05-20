@@ -20,6 +20,7 @@ const defaults = {
   captureAutoSync: {
     enabled: process.env.MAP_CAPTURE_AUTO_SYNC === 'true',
     intervalMinutes: Number(process.env.MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES || 10),
+    minAgeMinutes: Number(process.env.MAP_CAPTURE_AUTO_MIN_AGE_MINUTES || 15),
     limit: Number(process.env.MAP_CAPTURE_AUTO_SYNC_LIMIT || 50),
     autoGenerateBaseMaps: process.env.MAP_CAPTURE_AUTO_GENERATE_BASE_MAPS !== 'false',
     maxBaseMapJobs: Number(process.env.MAP_CAPTURE_AUTO_MAX_BASE_MAP_JOBS || 20),
@@ -136,6 +137,9 @@ if (process.env.MAP_CAPTURE_AUTO_SYNC) {
 }
 if (process.env.MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES) {
   merged.captureAutoSync.intervalMinutes = Number(process.env.MAP_CAPTURE_AUTO_SYNC_INTERVAL_MINUTES);
+}
+if (process.env.MAP_CAPTURE_AUTO_MIN_AGE_MINUTES) {
+  merged.captureAutoSync.minAgeMinutes = Number(process.env.MAP_CAPTURE_AUTO_MIN_AGE_MINUTES);
 }
 if (process.env.MAP_CAPTURE_AUTO_SYNC_LIMIT) {
   merged.captureAutoSync.limit = Number(process.env.MAP_CAPTURE_AUTO_SYNC_LIMIT);
