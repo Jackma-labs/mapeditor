@@ -754,6 +754,8 @@ export default function Index(prop: ToolbarProps) {
             PubSub.publish('render');
         }
     };
+    const canEdit = account?.authEnabled ? account?.permissions?.canEdit === true : true;
+    const canDeploy = account?.authEnabled ? account?.permissions?.canDeploy === true : true;
     const productionMenus = [
         {
             key: 'data',
@@ -802,9 +804,15 @@ export default function Index(prop: ToolbarProps) {
                             icon: <RenderIcon url={LabelIcon} />,
                         },
                         {
-                            label: <FileMenuLabel title="保存标注" description="保存当前编辑成果" />,
+                            label: (
+                                <FileMenuLabel
+                                    title="保存标注"
+                                    description={canEdit ? '保存当前编辑成果' : '需要编辑权限'}
+                                />
+                            ),
                             key: '3',
                             icon: <RenderIcon url={SaveIcon} />,
+                            disabled: !canEdit,
                         },
                     ],
                 },
@@ -820,28 +828,36 @@ export default function Index(prop: ToolbarProps) {
                     children: [
                         {
                             label: (
-                                <FileMenuLabel title="发布地图包" description="把已保存标注生成 Apollo 可部署产物" />
+                                <FileMenuLabel
+                                    title="发布地图包"
+                                    description={canEdit ? '把已保存标注生成 Apollo 可部署产物' : '需要编辑权限'}
+                                />
                             ),
                             key: '4',
                             icon: <RenderIcon url={IssueIcon} />,
+                            disabled: !canEdit,
                         },
                         {
                             label: (
                                 <FileMenuLabel
                                     title="ApolloLite 仿真预检"
-                                    description="检查并同步最新发布地图到本机仿真目录"
+                                    description={canDeploy ? '检查并同步最新发布地图到本机仿真目录' : '需要管理员权限'}
                                 />
                             ),
                             key: 'apollolite-stage-latest',
+                            disabled: !canDeploy,
                         },
                         {
                             label: (
                                 <FileMenuLabel
                                     title="一键仿真跑图"
-                                    description="启动仿真模块、下发测试路线、检查车辆是否起步"
+                                    description={
+                                        canEdit ? '启动仿真模块、下发测试路线、检查车辆是否起步' : '需要编辑权限'
+                                    }
                                 />
                             ),
                             key: 'apollolite-sim-smoke-test',
+                            disabled: !canEdit,
                         },
                     ],
                 },
@@ -857,21 +873,45 @@ export default function Index(prop: ToolbarProps) {
                     children: [
                         {
                             label: (
-                                <FileMenuLabel title="边缘设备" description="添加 IP、自动发现 Apollo 地图目录并部署" />
+                                <FileMenuLabel
+                                    title="边缘设备"
+                                    description={
+                                        canDeploy ? '添加 IP、自动发现 Apollo 地图目录并部署' : '需要管理员权限'
+                                    }
+                                />
                             ),
                             key: 'edge-device',
+                            disabled: !canDeploy,
                         },
                         {
-                            label: <FileMenuLabel title="部署预检" description="检查服务器到边缘设备的部署条件" />,
+                            label: (
+                                <FileMenuLabel
+                                    title="部署预检"
+                                    description={canDeploy ? '检查服务器到边缘设备的部署条件' : '需要管理员权限'}
+                                />
+                            ),
                             key: 'preflight-deploy',
+                            disabled: !canDeploy,
                         },
                         {
-                            label: <FileMenuLabel title="部署最新地图" description="把最新发布地图包推送到边缘设备" />,
+                            label: (
+                                <FileMenuLabel
+                                    title="部署最新地图"
+                                    description={canDeploy ? '把最新发布地图包推送到边缘设备' : '需要管理员权限'}
+                                />
+                            ),
                             key: 'deploy-latest',
+                            disabled: !canDeploy,
                         },
                         {
-                            label: <FileMenuLabel title="部署历史 / 回滚" description="查看部署记录，必要时回滚" />,
+                            label: (
+                                <FileMenuLabel
+                                    title="部署历史 / 回滚"
+                                    description={canDeploy ? '查看部署记录，必要时回滚' : '需要管理员权限'}
+                                />
+                            ),
                             key: 'deploy-history',
+                            disabled: !canDeploy,
                         },
                     ],
                 },
