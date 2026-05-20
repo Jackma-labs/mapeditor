@@ -27,6 +27,13 @@ const defaults = {
     autoMerge: process.env.MAP_CAPTURE_AUTO_MERGE !== 'false',
     mergedMapName: process.env.MAP_CAPTURE_AUTO_MERGED_MAP_NAME || 'capture_source_merged',
   },
+  auth: {
+    enabled: process.env.MAP_AUTH_ENABLED === 'true',
+    username: process.env.MAP_AUTH_USERNAME || 'admin',
+    password: process.env.MAP_AUTH_PASSWORD || '',
+    role: process.env.MAP_AUTH_ROLE || 'admin',
+    sessionTtlHours: Number(process.env.MAP_AUTH_SESSION_TTL_HOURS || 12),
+  },
   inboxAutoPrebuild: {
     enabled: process.env.MAP_INBOX_AUTO_PREBUILD === 'true',
     intervalMinutes: Number(process.env.MAP_INBOX_AUTO_PREBUILD_INTERVAL_MINUTES || 10),
@@ -155,6 +162,21 @@ if (process.env.MAP_CAPTURE_AUTO_MERGE) {
 }
 if (process.env.MAP_CAPTURE_AUTO_MERGED_MAP_NAME) {
   merged.captureAutoSync.mergedMapName = process.env.MAP_CAPTURE_AUTO_MERGED_MAP_NAME;
+}
+if (process.env.MAP_AUTH_ENABLED) {
+  merged.auth.enabled = process.env.MAP_AUTH_ENABLED === 'true';
+}
+if (process.env.MAP_AUTH_USERNAME) {
+  merged.auth.username = process.env.MAP_AUTH_USERNAME;
+}
+if (process.env.MAP_AUTH_PASSWORD) {
+  merged.auth.password = process.env.MAP_AUTH_PASSWORD;
+}
+if (process.env.MAP_AUTH_ROLE) {
+  merged.auth.role = process.env.MAP_AUTH_ROLE;
+}
+if (process.env.MAP_AUTH_SESSION_TTL_HOURS) {
+  merged.auth.sessionTtlHours = Number(process.env.MAP_AUTH_SESSION_TTL_HOURS);
 }
 if (process.env.MAP_INBOX_AUTO_PREBUILD) {
   merged.inboxAutoPrebuild.enabled = process.env.MAP_INBOX_AUTO_PREBUILD === 'true';

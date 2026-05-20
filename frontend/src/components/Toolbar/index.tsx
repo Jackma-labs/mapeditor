@@ -169,7 +169,13 @@ enum HoverTool {
     OpenImg,
 }
 
-export default function Index(prop: { messageApi: any }) {
+interface ToolbarProps {
+    messageApi: any;
+    account?: any;
+    onLogout?: () => void;
+}
+
+export default function Index(prop: ToolbarProps) {
     const [viewstate, setMapState, canUndo, canRedo, undo, redo] = useManagerStore((state) => [
         state.mapState,
         state.setMapState,
@@ -178,7 +184,7 @@ export default function Index(prop: { messageApi: any }) {
         state.undo,
         state.redo,
     ]);
-    const { messageApi } = prop;
+    const { messageApi, account, onLogout } = prop;
     const [rotateStatus, setRotateStatus] = useState(RotateStatus.Disable);
     const [dialogTitle, setDialogTitle] = useState('');
     const [curHoverTool, setCurHoverTool] = useState<HoverTool>(null);
@@ -226,104 +232,6 @@ export default function Index(prop: { messageApi: any }) {
     const handleCloseDialog = () => {
         setVisibleVal({ map: false, operate: false, message: false, assets: false, edge: false });
     };
-
-    const items: MenuProps['items'] = [
-        {
-            type: 'group',
-            label: '1 数据准备',
-            children: [
-                {
-                    label: <FileMenuLabel title="采图包工作台" description="上传、预检、管理、生成底图、合并拼图" />,
-                    key: 'asset-manager',
-                },
-                {
-                    label: (
-                        <span
-                            onFocus={() => false}
-                            onMouseOver={() => setCurHoverTool(HoverTool.OpenImg)}
-                            onMouseLeave={() => setCurHoverTool(null)}
-                        >
-                            <FileMenuLabel title="打开点云底图" description="选择已生成底图，进入图层辅助标注" />
-                        </span>
-                    ),
-                    key: '1',
-                    icon: <RenderIcon url={LeadIcon} />,
-                },
-            ],
-        },
-        {
-            type: 'group',
-            label: '2 标注生产',
-            children: [
-                {
-                    label: <FileMenuLabel title="打开标注地图" description="载入已有 Apollo 地图继续编辑" />,
-                    key: '2',
-                    icon: <RenderIcon url={LabelIcon} />,
-                },
-                {
-                    label: <FileMenuLabel title="保存标注地图" description="保存当前编辑结果" />,
-                    key: '3',
-                    icon: <RenderIcon url={SaveIcon} />,
-                },
-                {
-                    label: <FileMenuLabel title="发布地图包" description="生成可部署的 Apollo 地图产物" />,
-                    key: '4',
-                    icon: <RenderIcon url={IssueIcon} />,
-                },
-            ],
-        },
-        {
-            type: 'group',
-            label: '3 部署运维',
-            children: [
-                {
-                    label: <FileMenuLabel title="边缘设备" description="添加 IP、自动发现 Apollo 地图目录并部署" />,
-                    key: 'edge-device',
-                },
-                {
-                    label: <FileMenuLabel title="部署预检" description="检查本地服务器到边缘设备的部署条件" />,
-                    key: 'preflight-deploy',
-                },
-                {
-                    label: <FileMenuLabel title="一键部署最新地图" description="把最新发布地图推送到边缘设备" />,
-                    key: 'deploy-latest',
-                },
-                {
-                    label: (
-                        <FileMenuLabel title="ApolloLite 仿真预检" description="检查并同步最新发布地图到本机仿真目录" />
-                    ),
-                    key: 'apollolite-stage-latest',
-                },
-                {
-                    label: (
-                        <FileMenuLabel
-                            title="一键仿真跑图"
-                            description="启动仿真模块、下发测试路线、检查车辆是否起步"
-                        />
-                    ),
-                    key: 'apollolite-sim-smoke-test',
-                },
-                {
-                    label: <FileMenuLabel title="部署历史 / 回滚" description="查看部署记录，必要时回滚" />,
-                    key: 'deploy-history',
-                },
-            ],
-        },
-        {
-            type: 'group',
-            label: '4 系统诊断',
-            children: [
-                {
-                    label: <FileMenuLabel title="运行状态" description="查看导入、转换、底图生成、部署环境状态" />,
-                    key: 'runtime-status',
-                },
-                {
-                    label: <FileMenuLabel title="生产帮助文档" description="采图、底图、标注、仿真、部署标准流程" />,
-                    key: 'help-doc',
-                },
-            ],
-        },
-    ];
 
     const waitForRuntimeJob = async (jobId: string, label: string, attempt = 0): Promise<any> => {
         if (attempt >= 600) {
@@ -780,10 +688,152 @@ export default function Index(prop: { messageApi: any }) {
             PubSub.publish('render');
         }
     };
-    const menuProps = {
-        items,
-        onClick: handleMenuClick,
-    };
+    const productionMenus = [
+        {
+            key: 'data',
+            label: '数据',
+            items: [
+                {
+                    type: 'group' as const,
+                    label: '数据准备',
+                    children: [
+                        {
+                            label: (
+                                <FileMenuLabel
+                                    title="采图包工作台"
+                                    description="上传、预检、管理、生成底图、合并拼图"
+                                />
+                            ),
+                            key: 'asset-manager',
+                        },
+                        {
+                            label: (
+                                <FileMenuLabel title="打开点云底图" description="选择已生成底图，进入图层辅助标注" />
+                            ),
+                            key: '1',
+                            icon: <RenderIcon url={LeadIcon} />,
+                        },
+                    ],
+                },
+            ],
+        },
+        {
+            key: 'map',
+            label: '标注',
+            items: [
+                {
+                    type: 'group' as const,
+                    label: '标注生产',
+                    children: [
+                        {
+                            label: <FileMenuLabel title="打开标注地图" description="载入已有 Apollo 地图继续编辑" />,
+                            key: '2',
+                            icon: <RenderIcon url={LabelIcon} />,
+                        },
+                        {
+                            label: <FileMenuLabel title="保存标注地图" description="保存当前编辑结果" />,
+                            key: '3',
+                            icon: <RenderIcon url={SaveIcon} />,
+                        },
+                    ],
+                },
+            ],
+        },
+        {
+            key: 'delivery',
+            label: '发布仿真',
+            items: [
+                {
+                    type: 'group' as const,
+                    label: '发布仿真',
+                    children: [
+                        {
+                            label: <FileMenuLabel title="发布地图包" description="生成可部署的 Apollo 地图产物" />,
+                            key: '4',
+                            icon: <RenderIcon url={IssueIcon} />,
+                        },
+                        {
+                            label: (
+                                <FileMenuLabel
+                                    title="ApolloLite 仿真预检"
+                                    description="检查并同步最新发布地图到本机仿真目录"
+                                />
+                            ),
+                            key: 'apollolite-stage-latest',
+                        },
+                        {
+                            label: (
+                                <FileMenuLabel
+                                    title="一键仿真跑图"
+                                    description="启动仿真模块、下发测试路线、检查车辆是否起步"
+                                />
+                            ),
+                            key: 'apollolite-sim-smoke-test',
+                        },
+                    ],
+                },
+            ],
+        },
+        {
+            key: 'device',
+            label: '设备',
+            items: [
+                {
+                    type: 'group' as const,
+                    label: '边缘设备',
+                    children: [
+                        {
+                            label: (
+                                <FileMenuLabel title="边缘设备" description="添加 IP、自动发现 Apollo 地图目录并部署" />
+                            ),
+                            key: 'edge-device',
+                        },
+                        {
+                            label: <FileMenuLabel title="部署预检" description="检查本地服务器到边缘设备的部署条件" />,
+                            key: 'preflight-deploy',
+                        },
+                        {
+                            label: (
+                                <FileMenuLabel title="一键部署最新地图" description="把最新发布地图推送到边缘设备" />
+                            ),
+                            key: 'deploy-latest',
+                        },
+                        {
+                            label: <FileMenuLabel title="部署历史 / 回滚" description="查看部署记录，必要时回滚" />,
+                            key: 'deploy-history',
+                        },
+                    ],
+                },
+            ],
+        },
+        {
+            key: 'system',
+            label: '系统',
+            items: [
+                {
+                    type: 'group' as const,
+                    label: '系统',
+                    children: [
+                        {
+                            label: (
+                                <FileMenuLabel title="运行状态" description="查看导入、转换、底图生成、部署环境状态" />
+                            ),
+                            key: 'runtime-status',
+                        },
+                        {
+                            label: (
+                                <FileMenuLabel
+                                    title="生产帮助文档"
+                                    description="采图、底图、标注、仿真、部署标准流程"
+                                />
+                            ),
+                            key: 'help-doc',
+                        },
+                    ],
+                },
+            ],
+        },
+    ];
     useEffect(() => {
         if (!viewstate.currentPickElement || viewstate.currentPickElement.length === 0) {
             setRotateStatus(RotateStatus.Disable);
@@ -814,6 +864,8 @@ export default function Index(prop: { messageApi: any }) {
         <div id="toolbar-container">
             <div className="title brand-logo">
                 <img src={LandingLogo} alt="LANDING" />
+                <span className="brand-divider" />
+                <span className="brand-title">高清地图编辑器</span>
             </div>
             <ConfigProvider
                 autoInsertSpaceInButton={false}
@@ -831,17 +883,22 @@ export default function Index(prop: { messageApi: any }) {
                     },
                 }}
             >
-                <Dropdown
-                    menu={menuProps}
-                    placement="bottomLeft"
-                    overlayClassName="file-select"
-                    onOpenChange={() => PubSub.publish('closeRemind')}
-                >
-                    <div className="tool-item file">
-                        文件
-                        <img src={arrowsDown} alt="" className="arrow" />
-                    </div>
-                </Dropdown>
+                <div className="production-menu-bar">
+                    {productionMenus.map((menu) => (
+                        <Dropdown
+                            key={menu.key}
+                            menu={{ items: menu.items, onClick: handleMenuClick }}
+                            placement="bottomLeft"
+                            overlayClassName="file-select"
+                            onOpenChange={() => PubSub.publish('closeRemind')}
+                        >
+                            <button type="button" className="production-menu-trigger">
+                                {menu.label}
+                                <img src={arrowsDown} alt="" className="arrow" />
+                            </button>
+                        </Dropdown>
+                    ))}
+                </div>
 
                 {visibleVal.map && <DialogMap title={dialogTitle} open={visibleVal.map} onCancel={handleCloseDialog} />}
                 {visibleVal.operate && (
@@ -858,6 +915,16 @@ export default function Index(prop: { messageApi: any }) {
                 {visibleVal.assets && <AssetManagerDialog open={visibleVal.assets} onCancel={handleCloseDialog} />}
                 {visibleVal.edge && <EdgeDeployDialog open={visibleVal.edge} onCancel={handleCloseDialog} />}
             </ConfigProvider>
+            {account?.authenticated && (
+                <div className="account-chip">
+                    <span>{account.user?.username || 'admin'}</span>
+                    {onLogout && (
+                        <button type="button" onClick={onLogout}>
+                            退出
+                        </button>
+                    )}
+                </div>
+            )}
             <Tooltip
                 title="还没有编辑内容!"
                 trigger="hover"

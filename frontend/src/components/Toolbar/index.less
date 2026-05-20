@@ -28,7 +28,7 @@
     }
 
     .brand-logo {
-        width: 156px;
+        width: 306px;
         height: 78px;
         line-height: 78px;
         vertical-align: top;
@@ -39,6 +39,80 @@
             max-height: 34px;
             vertical-align: middle;
             object-fit: contain;
+        }
+    }
+
+    .brand-divider {
+        display: inline-block;
+        width: 1px;
+        height: 18px;
+        margin: 0 12px;
+        vertical-align: middle;
+        background: #485165;
+    }
+
+    .brand-title {
+        color: #dbe6f5;
+        font-size: 17px;
+        font-weight: 600;
+        vertical-align: middle;
+    }
+
+    .production-menu-bar {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 78px;
+        margin-left: 18px;
+        vertical-align: top;
+    }
+
+    .production-menu-trigger {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        height: 32px;
+        padding: 0 14px;
+        border: 1px solid #3f485b;
+        border-radius: 6px;
+        background: #2b3342;
+        color: #c7d5ea;
+        font-size: 14px;
+        line-height: 32px;
+        cursor: pointer;
+
+        &:hover {
+            border-color: #53698a;
+            background: #344057;
+            color: #ffffff;
+        }
+
+        .arrow {
+            width: 10px;
+        }
+    }
+
+    .account-chip {
+        position: absolute;
+        top: 23px;
+        right: 64px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 32px;
+        padding: 0 10px;
+        border: 1px solid #3f485b;
+        border-radius: 16px;
+        background: #222a38;
+        color: #c7d5ea;
+        line-height: 32px;
+
+        button {
+            border: 0;
+            background: transparent;
+            color: #8fb9ff;
+            cursor: pointer;
         }
     }
 
@@ -57,11 +131,11 @@
             background: #3288fa;
             color: #ffffff;
         }
-        &.hover{
-            background: #343C4D;
+        &.hover {
+            background: #343c4d;
         }
-        &.disable{
-            background: #383D47;
+        &.disable {
+            background: #383d47;
             cursor: not-allowed;
         }
         img.arrow {
@@ -69,8 +143,8 @@
         }
 
         &.file {
-            margin-left: 40px;
-            img.arrow{
+            margin-left: 16px;
+            img.arrow {
                 margin-left: 6px;
             }
         }
@@ -79,7 +153,7 @@
         &.next,
         &.rotate {
             width: 32px;
-            &.disable{
+            &.disable {
                 cursor: not-allowed;
             }
         }
@@ -96,7 +170,7 @@
         background: #383c4d;
         margin-right: 16px;
     }
-    .more{
+    .more {
         width: 32px;
         height: 32px;
         background: #343c4d;
@@ -110,8 +184,8 @@
         justify-content: center;
         align-items: center;
     }
-    .more.active{
-        background: #3288FA;
+    .more.active {
+        background: #3288fa;
     }
 }
 
@@ -318,8 +392,8 @@
             line-height: 18px;
             white-space: normal;
         }
-        .ant-dropdown-menu-item-disabled{
-            color: #717A8C;
+        .ant-dropdown-menu-item-disabled {
+            color: #717a8c;
         }
 
         .ant-dropdown-menu-item-divider {
@@ -431,10 +505,10 @@
                     animation: spin 1s linear infinite;
                     @keyframes spin {
                         0% {
-                          transform: rotate(0deg); /* 起始位置为0度 */
+                            transform: rotate(0deg); /* 起始位置为0度 */
                         }
                         100% {
-                          transform: rotate(360deg); /* 结束位置为360度，实现持续旋转 */
+                            transform: rotate(360deg); /* 结束位置为360度，实现持续旋转 */
                         }
                     }
                 }
@@ -551,7 +625,7 @@
                         }
                         .ant-menu-title-content {
                             span {
-                                color: #FFFFFF;
+                                color: #ffffff;
                             }
                         }
                     }
@@ -627,7 +701,7 @@
         .ant-form-item-has-warning {
             .ant-form-item-control-input {
                 input:focus {
-                        box-shadow: 0 0 0 2px rgba(255, 215, 5, 1);
+                    box-shadow: 0 0 0 2px rgba(255, 215, 5, 1);
                 }
             }
         }
@@ -659,8 +733,8 @@
         }
     }
 }
-.ant-dropdown-menu-item-selected{
-    color: #3288FA !important;
+.ant-dropdown-menu-item-selected {
+    color: #3288fa !important;
     background: rgba(115, 193, 250, 0.08) !important;
 }
 

@@ -123,6 +123,7 @@ class FileService {
                 'Content-Type': 'application/json',
                 ...(options.headers || {}),
             },
+            credentials: 'include',
             ...options,
         });
         const payload = await response.json().catch(() => ({
@@ -130,6 +131,27 @@ class FileService {
             message: response.statusText,
         }));
         return payload;
+    }
+
+    async getAuthSession() {
+        return this.requestJson('/runtime/auth/session');
+    }
+
+    async login(username: string, password: string) {
+        return this.requestJson('/runtime/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({
+                username,
+                password,
+            }),
+        });
+    }
+
+    async logout() {
+        return this.requestJson('/runtime/auth/logout', {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
     }
 
     async getRuntimeDoctor() {
@@ -151,6 +173,7 @@ class FileService {
         formData.append('overwrite', overwrite ? 'true' : 'false');
         const response = await fetch(`http://${baseHttpURL}/runtime/import-base-map`, {
             method: 'POST',
+            credentials: 'include',
             body: formData,
         });
         return response.json().catch(() => ({
@@ -167,6 +190,7 @@ class FileService {
         formData.append('overwrite', overwrite ? 'true' : 'false');
         const response = await fetch(`http://${baseHttpURL}/runtime/import-point-cloud-base-map`, {
             method: 'POST',
+            credentials: 'include',
             body: formData,
         });
         return response.json().catch(() => ({
@@ -182,6 +206,7 @@ class FileService {
         formData.append('packageName', packageName);
         const response = await fetch(`http://${baseHttpURL}/runtime/analyze-data-package`, {
             method: 'POST',
+            credentials: 'include',
             body: formData,
         });
         return response.json().catch(() => ({
@@ -197,6 +222,7 @@ class FileService {
         formData.append('packageName', packageName);
         const response = await fetch(`http://${baseHttpURL}/runtime/analyze-data-package-job`, {
             method: 'POST',
+            credentials: 'include',
             body: formData,
         });
         return response.json().catch(() => ({
@@ -336,6 +362,7 @@ class FileService {
         formData.append('overwrite', overwrite ? 'true' : 'false');
         const response = await fetch(`http://${baseHttpURL}/runtime/import-map-package`, {
             method: 'POST',
+            credentials: 'include',
             body: formData,
         });
         return response.json().catch(() => ({
@@ -418,7 +445,9 @@ class FileService {
 
     getBaseMapInfo(dir: string, layerId: string = 'enhanced') {
         const layerPath = layerId && layerId !== 'enhanced' ? `/layers/${encodeURIComponent(layerId)}` : '';
-        return fetch(`http://${baseHttpURL}/mapcreator/${dir}${layerPath}/tiles.json?mode=0`)
+        return fetch(`http://${baseHttpURL}/mapcreator/${dir}${layerPath}/tiles.json?mode=0`, {
+            credentials: 'include',
+        })
             .then((response) => response.json())
             .then((json) => ({
                 ...json,

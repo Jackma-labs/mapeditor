@@ -4,6 +4,7 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const net = require('net');
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -14,7 +15,12 @@ const config = require('./config');
 const runtime = require('./runtime');
 
 const app = express();
-app.use(cors());
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
 app.use(bodyParser.json({ limit: '25mb' }));
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -40,6 +46,8 @@ const existingUpgradeListeners = server.listeners('upgrade');
 server.removeAllListeners('upgrade');
 
 let lastAccessedBaseMapDir = null;
+const authSessions = new Map();
+const AUTH_COOKIE_NAME = 'mapeditor_session';
 
 const BASE_MAP_LAYER_DIRS = {
   enhanced: 'map_images',
@@ -65,6 +73,97 @@ const HEAVY_RUNTIME_JOB_TYPES = new Set([
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
+}
+
+function parseCookies(cookieHeader = '') {
+  return String(cookieHeader || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((cookies, part) => {
+      const separatorIndex = part.indexOf('=');
+      if (separatorIndex <= 0) {
+        return cookies;
+      }
+      const key = decodeURIComponent(part.slice(0, separatorIndex));
+      const value = decodeURIComponent(part.slice(separatorIndex + 1));
+      return {
+        ...cookies,
+        [key]: value,
+      };
+    }, {});
+}
+
+function getAuthUserFromRequest(req) {
+  if (!config.auth?.enabled) {
+    return {
+      username: config.auth?.username || 'admin',
+      role: config.auth?.role || 'admin',
+      authEnabled: false,
+    };
+  }
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionId = cookies[AUTH_COOKIE_NAME];
+  const session = sessionId ? authSessions.get(sessionId) : null;
+  if (!session) {
+    return null;
+  }
+  if (Date.now() > session.expiresAt) {
+    authSessions.delete(sessionId);
+    return null;
+  }
+  return {
+    username: session.username,
+    role: session.role,
+    authEnabled: true,
+  };
+}
+
+function buildAuthSessionPayload(req) {
+  const user = getAuthUserFromRequest(req);
+  return {
+    authEnabled: config.auth?.enabled === true,
+    authenticated: Boolean(user),
+    user,
+    permissions: user
+      ? {
+          canView: true,
+          canEdit: ['admin', 'operator'].includes(user.role),
+          canDeploy: user.role === 'admin',
+          canAdmin: user.role === 'admin',
+        }
+      : null,
+  };
+}
+
+function setAuthCookie(res, sessionId, expiresAt) {
+  const maxAgeSeconds = Math.max(60, Math.floor((expiresAt - Date.now()) / 1000));
+  res.cookie(AUTH_COOKIE_NAME, sessionId, {
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: maxAgeSeconds * 1000,
+  });
+}
+
+function safeCompareText(left, right) {
+  const leftBuffer = Buffer.from(String(left || ''));
+  const rightBuffer = Buffer.from(String(right || ''));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function requireAuth(req, res, next) {
+  if (req.path.startsWith('/runtime/auth/')) {
+    next();
+    return;
+  }
+  if (!config.auth?.enabled || getAuthUserFromRequest(req)) {
+    next();
+    return;
+  }
+  res.status(401).json({
+    code: 401,
+    message: 'Authentication required',
+  });
 }
 
 function getDreamviewProxyTarget() {
@@ -835,7 +934,11 @@ function handleGetAccountMapToolInfo(ws, requestId) {
   });
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  if (config.auth?.enabled && !getAuthUserFromRequest(req)) {
+    ws.close(1008, 'Authentication required');
+    return;
+  }
   ws.on('message', async (raw) => {
     let message;
     try {
@@ -892,6 +995,68 @@ app.get('/healthz', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
+app.get('/runtime/auth/session', (req, res) => {
+  res.json({
+    code: 0,
+    message: 'Success',
+    data: buildAuthSessionPayload(req),
+  });
+});
+
+app.post('/runtime/auth/login', (req, res) => {
+  if (!config.auth?.enabled) {
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: buildAuthSessionPayload(req),
+    });
+    return;
+  }
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password || '');
+  const expectedUsername = String(config.auth.username || 'admin');
+  const expectedPassword = String(config.auth.password || '');
+  const usernameMatches = username === expectedUsername;
+  const passwordMatches = expectedPassword.length > 0 && safeCompareText(password, expectedPassword);
+  if (!usernameMatches || !passwordMatches) {
+    res.status(401).json({
+      code: 401,
+      message: '用户名或密码错误',
+    });
+    return;
+  }
+  const sessionId = crypto.randomBytes(32).toString('hex');
+  const ttlHours = Math.max(1, Number(config.auth.sessionTtlHours) || 12);
+  const expiresAt = Date.now() + ttlHours * 60 * 60 * 1000;
+  authSessions.set(sessionId, {
+    username,
+    role: config.auth.role || 'admin',
+    expiresAt,
+  });
+  setAuthCookie(res, sessionId, expiresAt);
+  res.json({
+    code: 0,
+    message: 'Success',
+    data: buildAuthSessionPayload({
+      headers: {
+        cookie: `${AUTH_COOKIE_NAME}=${sessionId}`,
+      },
+    }),
+  });
+});
+
+app.post('/runtime/auth/logout', (req, res) => {
+  const cookies = parseCookies(req.headers.cookie);
+  if (cookies[AUTH_COOKIE_NAME]) {
+    authSessions.delete(cookies[AUTH_COOKIE_NAME]);
+  }
+  res.clearCookie(AUTH_COOKIE_NAME);
+  res.json({
+    code: 0,
+    message: 'Success',
+  });
+});
+
 app.get('/config', (_req, res) => {
   res.json({
     port: config.port,
@@ -908,6 +1073,8 @@ app.get('/config', (_req, res) => {
     apolloLite: config.apolloLite,
   });
 });
+
+app.use(requireAuth);
 
 app.get('/runtime/status', async (_req, res) => {
   try {
