@@ -586,14 +586,13 @@ export default function Index(prop: ToolbarProps) {
                         </div>
                         <div className="help-doc-step">
                             <span>4</span>
-                            <p>
-                                标注完成后保存并发布地图包，系统会生成 Apollo 可部署文件；发布后先执行 ApolloLite
-                                仿真验证。
-                            </p>
+                            <p>标注完成后先看左下角地图质量检查，红色错误必须清零；发布地图包会再次执行预检。</p>
                         </div>
                         <div className="help-doc-step">
                             <span>5</span>
-                            <p>仿真通过后执行边缘设备部署，必要时从部署历史中回滚。</p>
+                            <p>
+                                发布成功后执行 ApolloLite 仿真验证；仿真通过后再部署到边缘设备，必要时从部署历史中回滚。
+                            </p>
                         </div>
                     </section>
                     <section>
@@ -651,12 +650,18 @@ export default function Index(prop: ToolbarProps) {
                                 最后补交通灯、标志、方向箭头、减速带、闸机、停车位和区域，并确认它们关联到正确车道或控制点。
                             </p>
                         </div>
+                        <div className="help-doc-step">
+                            <span>10</span>
+                            <p>
+                                按地图质量检查的错误列表逐条定位：先修红色拓扑和几何错误，再处理黄色警告；前驱、后继和拓扑区域要和真实路线一致。
+                            </p>
+                        </div>
                     </section>
                     <section>
                         <h3>发布前检查</h3>
                         <p>
-                            检查每条车道是否有方向、前后继是否连续、路口转向是否符合规则、信号灯是否关联正确停止线和车道。
-                            禁止转向处不能残留可通行连接；发布后先仿真预检，再部署到边缘设备。
+                            质量面板会按绘制、拓扑、预检、发布展示状态。发布预检只拦截红色错误，黄色警告需要人工确认；
+                            禁止转向处不能残留可通行连接，信号灯必须关联正确停止线，车道入口和出口要明确。
                         </p>
                     </section>
                     <section>
