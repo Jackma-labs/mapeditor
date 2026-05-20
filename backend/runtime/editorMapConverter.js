@@ -552,7 +552,7 @@ function buildLanes(editorMap, boundaryIndex, pointIndex) {
         leftBoundary,
         rightBoundary,
         length,
-        speedLimit: number(lane.speed_limit ?? lane.attr?.speed, 10),
+        speedLimit: number(lane.speed_limit ?? lane.attr?.speed, 40),
         predecessorId: [],
         successorId: [],
         leftSample: [

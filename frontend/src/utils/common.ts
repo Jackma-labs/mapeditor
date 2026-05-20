@@ -129,7 +129,7 @@ function loadCenterlineLaneMap(data: any) {
         lanes[item.id] = {
             id: item.id,
             attr: {
-                speed: Number(item.speed_limit || item.speed || 10),
+                speed: Number(item.speed_limit || item.speed || 40),
                 direction: LaneDireaciotn.STRAIGHT,
                 prossibleDrivingDirection: ProssibleDrivingDirection.FORWARD,
                 laneType: LaneType.CityDriving,

@@ -117,7 +117,7 @@ export const initAreaAttr = {
 export const initAreaName = 'custom';
 export const initLaneAttrData = {
     id: null as string,
-    speed: 10,
+    speed: 40,
     direction: LaneDireaciotn.STRAIGHT,
     prossibleDrivingDirection: ProssibleDrivingDirection.FORWARD,
     leftBoundaryType: LaneBoundaryType.WHITESOLId,

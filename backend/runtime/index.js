@@ -771,18 +771,53 @@ async function listReleasedMaps(config) {
       'routing_map.bin',
       'sim_map.bin',
     ];
+    const sizeBytes = await getDirectorySize(mapDir);
+    const missingExpectedFiles = expectedFiles.filter((fileName) => !files.includes(fileName));
+    const ready = missingExpectedFiles.length === 0 && sizeBytes > 0;
     maps.push({
       mapName,
       path: mapDir,
       modifiedAt: stat.mtime.toISOString(),
-      sizeBytes: await getDirectorySize(mapDir),
+      sizeBytes,
       files,
       expectedFiles,
-      missingExpectedFiles: expectedFiles.filter((fileName) => !files.includes(fileName)),
+      missingExpectedFiles,
+      ready,
+      status: ready ? 'ready' : 'invalid',
+      statusMessage: ready ? 'Ready for deployment and simulation' : `Missing ${missingExpectedFiles.join(', ') || 'valid map files'}`,
     });
   }
   maps.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
   return maps;
+}
+
+async function getReleasedMapSummary(config, mapName) {
+  const normalizedMapName = validateMapName(mapName);
+  const maps = await listReleasedMaps(config);
+  return maps.find((map) => map.mapName === normalizedMapName) || null;
+}
+
+async function requireReleasedMapReady(config, mapName) {
+  const summary = await getReleasedMapSummary(config, mapName);
+  if (!summary) {
+    throw new Error(`released map not found: ${mapName}`);
+  }
+  if (!summary.ready) {
+    throw new Error(`released map is incomplete: ${summary.mapName}; ${summary.statusMessage}`);
+  }
+  return summary;
+}
+
+async function selectLatestReadyReleasedMap(config) {
+  const maps = await listReleasedMaps(config);
+  if (maps.length === 0) {
+    throw new Error(`no released maps found at ${config.releaseRoot}`);
+  }
+  const latestReady = maps.find((map) => map.ready);
+  if (latestReady) {
+    return latestReady;
+  }
+  throw new Error(`no complete released map found. ${maps.map((map) => `${map.mapName}: ${map.statusMessage}`).join(' | ')}`);
 }
 
 async function readReleasedMapManifest(mapDir) {
@@ -4615,6 +4650,17 @@ function buildPackageWorkflowStatus({ summary, analyses, quality, sourceManifest
     warnings.push('missing_source_manifest');
   }
   if (!hasAnalysis) {
+    if (baseMapExists) {
+      return {
+        code: 'base_map_ready',
+        label: '底图已生成',
+        canGenerateBaseMap: true,
+        canMerge: false,
+        errors: ['analysis_missing'],
+        warnings,
+        recommendedAction: 'run_precheck',
+      };
+    }
     return {
       code: 'pending_precheck',
       label: '待预检',
@@ -5783,6 +5829,7 @@ async function deployReleasedMap(config, params = {}) {
     if (!(await pathExists(sourceDir))) {
       throw new Error(`released map not found at ${sourceDir}`);
     }
+    await requireReleasedMapReady(config, mapName);
     if (config.edgeDeploy.mode !== 'ssh') {
       throw new Error(`unsupported edge deploy mode: ${config.edgeDeploy.mode}`);
     }
@@ -5880,12 +5927,8 @@ async function deployReleasedMap(config, params = {}) {
 async function deployLatestReleasedMap(config, params = {}) {
   const progress = typeof params.progress === 'function' ? params.progress : async () => {};
   await progress('Selecting latest released map');
-  const maps = await listReleasedMaps(config);
-  if (maps.length === 0) {
-    throw new Error(`no released maps found at ${config.releaseRoot}`);
-  }
-  const latest = maps[0];
-  await progress(`Latest released map selected: ${latest.mapName}`);
+  const latest = await selectLatestReadyReleasedMap(config);
+  await progress(`Latest complete released map selected: ${latest.mapName}`);
   const result = await deployReleasedMap(config, { mapName: latest.mapName, progress });
   return {
     mapName: latest.mapName,
