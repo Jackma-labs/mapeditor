@@ -11,6 +11,7 @@ import { Modal, Button, Form, Input, message } from 'antd';
 import { ModalProps } from 'antd/lib/modal';
 import FileService from 'src/service/index';
 import { useManagerStore } from 'src/store';
+import { inspectMapQuality, MapQualityIssue } from 'src/quality/mapQuality';
 import CloseIcon from '../../assets/images/ic_close.svg';
 import { message as messageFunc } from '../Message/index';
 
@@ -32,6 +33,27 @@ interface FieldData {
 interface CustomValid {
     status?: '' | 'error' | 'success' | 'warning' | 'validating';
     message: string;
+}
+
+function showPublishPreflightError(issues: MapQualityIssue[]) {
+    const topIssues = issues.slice(0, 8);
+    Modal.error({
+        icon: null,
+        closable: true,
+        title: '发布预检未通过',
+        content: (
+            <div className="publish-preflight-error">
+                <p>{`当前地图仍有 ${issues.length} 个红色错误，发布前需要先修复。`}</p>
+                {topIssues.map((issue) => (
+                    <div key={issue.id} className="publish-preflight-item">
+                        <strong>{issue.title}</strong>
+                        <span>{issue.suggestion}</span>
+                    </div>
+                ))}
+                {issues.length > topIssues.length && <p>其余问题可在左下角“地图质量检查”面板中继续定位。</p>}
+            </div>
+        ),
+    });
 }
 
 // eslint-disable-next-line react/function-component-definition
@@ -91,6 +113,14 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
 
         // 处理提交逻辑
         let response: any;
+        if (isPublish) {
+            const report = inspectMapQuality(mapState);
+            const blockingIssues = report.issues.filter((issue) => issue.severity === 'error');
+            if (blockingIssues.length > 0) {
+                showPublishPreflightError(blockingIssues);
+                return;
+            }
+        }
         const params = mapExport();
         if (isPublish) {
             setLoading(true);

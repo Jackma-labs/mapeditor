@@ -179,6 +179,25 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
     const lanes = Object.values(mapState.lanes);
     const relations = buildLaneRelations(mapState);
     const laneEdges = Object.values(relations).reduce((sum, relation) => sum + relation.successors.length, 0);
+    const hasDraftGeometry =
+        lanes.length > 0 ||
+        Object.keys(mapState.boundarys).length > 0 ||
+        Object.keys(mapState.grouds).length > 0 ||
+        Object.keys(mapState.stopLines).length > 0 ||
+        Object.keys(mapState.trafficSignals).length > 0 ||
+        Object.keys(mapState.signs).length > 0;
+
+    if (hasDraftGeometry && lanes.length === 0) {
+        buildIssue(issues, {
+            severity: 'error',
+            title: '地图没有车道',
+            description: '发布 Apollo 地图包至少需要完整车道，否则 Dreamview 无法生成路线。',
+            suggestion: '先按车道绘制流程生成主车道，再补充停止线、交通灯和标志。',
+            target: {
+                type: 'map',
+            },
+        });
+    }
 
     Object.values(mapState.boundarys).forEach((boundary) => {
         const pointIds = boundary.pointIds || [];
