@@ -81,6 +81,7 @@ const APOLLOLITE_SIMULATION_COMPONENTS = [
 const APOLLOLITE_DREAMVIEW_HTTP_TIMEOUT_MS = 1500;
 const APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS = 5000;
 const APOLLOLITE_SIM_MOTION_TIMEOUT_MS = 15000;
+const APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS = 20000;
 
 function normalizeZipOpenError(error, label) {
   const message = String(error?.message || error || '');
@@ -1038,14 +1039,21 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
   await fsp.rename(stagingDir, targetDir);
   const defaultMapFlag = await updateApolloLiteDefaultMapFlag(apolloLite, mapName);
   let dreamviewChange = null;
+  let dreamviewRestart = null;
   if (apolloLite.simulationReady) {
     try {
       await progress(`Switching Dreamview to ApolloLite map: ${mapName}`);
       dreamviewChange = await changeDreamviewMap(apolloLite, mapName);
     } catch (error) {
-      const message = `Dreamview map switch failed: ${error.message}`;
-      stageWarnings.push(message);
-      await progress(message);
+      await progress(`Dreamview map switch needs runtime reload: ${error.message}`);
+      try {
+        dreamviewRestart = await restartApolloLiteDreamview(apolloLite, progress);
+        dreamviewChange = await changeDreamviewMap(apolloLite, mapName);
+      } catch (restartError) {
+        const message = `Dreamview map switch failed after restart: ${restartError.message}`;
+        stageWarnings.push(message);
+        await progress(message);
+      }
     }
   }
 
@@ -1079,6 +1087,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     },
     defaultMapFlag,
     dreamviewChange,
+    dreamviewRestart,
     warnings: stageWarnings,
     removedEmptyBinaries,
   });
@@ -1092,6 +1101,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     removedEmptyBinaries,
     defaultMapFlag,
     dreamviewChange,
+    dreamviewRestart,
     validation,
     apolloLite: {
       root: apolloLite.root,
@@ -1432,20 +1442,204 @@ function sendDreamviewMessage(ws, payload) {
   ws.send(JSON.stringify(payload));
 }
 
+function normalizeDreamviewName(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/gu, '');
+}
+
+function getDreamviewStatusMaps(status) {
+  const maps = status?.maps;
+  if (Array.isArray(maps)) {
+    return maps
+      .map((item) => {
+        if (typeof item === 'string') {
+          return item;
+        }
+        return item?.name || item?.id || item?.mapName || '';
+      })
+      .filter(Boolean);
+  }
+  if (maps && typeof maps === 'object') {
+    return Object.keys(maps);
+  }
+  return [];
+}
+
+function getDreamviewStatusModes(status) {
+  const modes = status?.modes;
+  if (Array.isArray(modes)) {
+    return modes.filter(Boolean);
+  }
+  if (modes && typeof modes === 'object') {
+    return Object.keys(modes);
+  }
+  return [];
+}
+
+function getDreamviewCurrentMap(status) {
+  return status?.currentMap || status?.current_map || status?.currentMapName || status?.current_map_name || '';
+}
+
+function getDreamviewCurrentMode(status) {
+  return status?.currentMode || status?.current_mode || '';
+}
+
+function resolveDreamviewMapValue(status, mapName) {
+  const maps = getDreamviewStatusMaps(status);
+  const exact = maps.find((candidate) => candidate === mapName);
+  if (exact) {
+    return exact;
+  }
+  const normalizedMapName = normalizeDreamviewName(mapName);
+  return maps.find((candidate) => normalizeDreamviewName(candidate) === normalizedMapName) || mapName;
+}
+
+function resolveDreamviewSimulationMode(status) {
+  const modes = getDreamviewStatusModes(status);
+  return (
+    modes.find((mode) => mode === 'Mkz Standard Debug') ||
+    modes.find((mode) => /standard debug/iu.test(mode)) ||
+    modes.find((mode) => /debug/iu.test(mode)) ||
+    ''
+  );
+}
+
+function readDreamviewHmiStatus(ws, timeoutMs = APOLLOLITE_DREAMVIEW_HTTP_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      ws.off('message', onMessage);
+    };
+    const onMessage = (data) => {
+      let message = null;
+      try {
+        message = JSON.parse(Buffer.isBuffer(data) ? data.toString('utf8') : String(data));
+      } catch (error) {
+        return;
+      }
+      if (message?.type !== 'HMIStatus') {
+        return;
+      }
+      cleanup();
+      resolve(message.data || {});
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(null);
+    }, timeoutMs);
+    ws.on('message', onMessage);
+  });
+}
+
+async function switchDreamviewMapOnSocket(ws, mapName, progress = async () => {}) {
+  const expectedMap = normalizeDreamviewName(mapName);
+  const beforeStatus = await readDreamviewHmiStatus(ws);
+  const beforeMap = getDreamviewCurrentMap(beforeStatus);
+  const dreamviewMapValue = resolveDreamviewMapValue(beforeStatus, mapName);
+  if (normalizeDreamviewName(beforeMap) === expectedMap) {
+    return {
+      mapName,
+      dreamviewMapValue,
+      currentMap: beforeMap,
+      alreadyCurrent: true,
+    };
+  }
+
+  sendDreamviewMessage(ws, { type: 'HMIAction', action: 'CHANGE_MAP', value: dreamviewMapValue });
+  await delay(1000);
+  const afterStatus = await readDreamviewHmiStatus(ws, APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS);
+  const afterMap = getDreamviewCurrentMap(afterStatus);
+  if (afterMap && normalizeDreamviewName(afterMap) !== expectedMap) {
+    await progress(`Dreamview is still on ${afterMap || 'unknown map'} after CHANGE_MAP ${dreamviewMapValue}`);
+    throw new Error(`Dreamview did not switch to ${mapName}; current map is ${afterMap}`);
+  }
+  return {
+    mapName,
+    dreamviewMapValue,
+    currentMap: afterMap || '',
+    alreadyCurrent: false,
+  };
+}
+
+async function ensureDreamviewSimulationMode(ws, progress = async () => {}) {
+  const beforeStatus = await readDreamviewHmiStatus(ws);
+  const currentMode = getDreamviewCurrentMode(beforeStatus);
+  const targetMode = resolveDreamviewSimulationMode(beforeStatus);
+  if (!targetMode || currentMode === targetMode) {
+    return {
+      currentMode,
+      targetMode,
+      changed: false,
+    };
+  }
+
+  await progress(`Switching Dreamview mode: ${targetMode}`);
+  sendDreamviewMessage(ws, { type: 'HMIAction', action: 'CHANGE_MODE', value: targetMode });
+  await delay(1500);
+  const afterStatus = await readDreamviewHmiStatus(ws, APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS);
+  return {
+    currentMode: getDreamviewCurrentMode(afterStatus) || currentMode,
+    targetMode,
+    changed: true,
+  };
+}
+
+async function waitForApolloLiteDreamviewHttp(apolloLite, timeoutMs = APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let lastProbe = null;
+  while (Date.now() < deadline) {
+    lastProbe = await probeHttpUrl(apolloLite.dreamviewUrl).catch((error) => ({
+      ok: false,
+      message: error.message,
+    }));
+    if (lastProbe?.ok) {
+      return lastProbe;
+    }
+    await delay(1000);
+  }
+  throw new Error(`Dreamview did not become reachable after restart: ${lastProbe?.message || 'timeout'}`);
+}
+
+async function restartApolloLiteDreamview(apolloLite, progress = async () => {}) {
+  const containerName = await resolveApolloLiteDockerContainer(apolloLite);
+  if (!containerName) {
+    throw new Error('ApolloLite docker container was not found');
+  }
+  await progress(`Restarting Dreamview to reload map config: ${containerName}`);
+  const command = [
+    'cd /apollo',
+    'source /apollo/scripts/apollo_base.sh >/dev/null 2>&1 || true',
+    "pkill -f '[d]reamview/launch/dreamview.launch' || true",
+    'pkill -x dreamview || true',
+    'sleep 1',
+    'mkdir -p /apollo/data/log/mapeditor_dreamview',
+    'nohup /apollo/bazel-bin/cyber/tools/cyber_launch/cyber_launch start /apollo/modules/dreamview/launch/dreamview.launch >/apollo/data/log/mapeditor_dreamview/dreamview_restart.log 2>&1 &',
+  ].join(' && ');
+  const startedAt = new Date().toISOString();
+  await runCommand('docker', ['exec', containerName, 'bash', '-lc', command], {
+    timeoutMs: APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS,
+  });
+  const http = await waitForApolloLiteDreamviewHttp(apolloLite);
+  return {
+    containerName,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    http,
+  };
+}
+
 async function changeDreamviewMap(apolloLite, mapName) {
   const wsUrl = buildDreamviewWebSocketUrl(apolloLite);
   const ws = await connectDreamviewWebSocket(wsUrl);
   try {
-    sendDreamviewMessage(ws, { type: 'HMIAction', action: 'CHANGE_MAP', value: mapName });
-    await delay(1000);
+    const result = await switchDreamviewMapOnSocket(ws, mapName);
+    return {
+      wsUrl,
+      ...result,
+      changedAt: new Date().toISOString(),
+    };
   } finally {
     ws.close();
   }
-  return {
-    wsUrl,
-    mapName,
-    changedAt: new Date().toISOString(),
-  };
 }
 
 async function runDreamviewSimulationSequence(apolloLite, route, progress) {
@@ -1453,6 +1647,8 @@ async function runDreamviewSimulationSequence(apolloLite, route, progress) {
   await progress(`Connecting Dreamview websocket: ${wsUrl}`);
   const ws = await connectDreamviewWebSocket(wsUrl);
   const observedTypes = new Set();
+  let mapSwitch = null;
+  let modeSwitch = null;
   ws.on('message', (data) => {
     try {
       const message = JSON.parse(Buffer.isBuffer(data) ? data.toString('utf8') : String(data));
@@ -1466,8 +1662,8 @@ async function runDreamviewSimulationSequence(apolloLite, route, progress) {
   try {
     sendDreamviewMessage(ws, { type: 'ToggleSimControl', enable: true });
     await delay(500);
-    sendDreamviewMessage(ws, { type: 'HMIAction', action: 'CHANGE_MAP', value: route.mapName });
-    await delay(500);
+    mapSwitch = await switchDreamviewMapOnSocket(ws, route.mapName, progress);
+    modeSwitch = await ensureDreamviewSimulationMode(ws, progress);
     for (const component of APOLLOLITE_SIMULATION_COMPONENTS) {
       await progress(`Starting ApolloLite module: ${component.actionModule}`);
       sendDreamviewMessage(ws, {
@@ -1487,6 +1683,8 @@ async function runDreamviewSimulationSequence(apolloLite, route, progress) {
   return {
     wsUrl,
     observedTypes: Array.from(observedTypes),
+    mapSwitch,
+    modeSwitch,
   };
 }
 
