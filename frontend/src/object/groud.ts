@@ -253,6 +253,9 @@ export function createShapeGeometry(groud: Groud) {
         return null;
     }
     if (groud.type === ThreeElementType.LaneCurveGroud) {
+        if (shapePositions.length < 8) {
+            return null;
+        }
         const shape = new THREE.Shape();
         shape.moveTo(shapePositions[0].x, shapePositions[0].y);
         shape.bezierCurveTo(
@@ -263,7 +266,7 @@ export function createShapeGeometry(groud: Groud) {
             shapePositions[3].x,
             shapePositions[3].y,
         );
-        shape.moveTo(shapePositions[4].x, shapePositions[4].y);
+        shape.lineTo(shapePositions[4].x, shapePositions[4].y);
         shape.bezierCurveTo(
             shapePositions[5].x,
             shapePositions[5].y,
@@ -272,6 +275,7 @@ export function createShapeGeometry(groud: Groud) {
             shapePositions[7].x,
             shapePositions[7].y,
         );
+        shape.closePath();
         geometry = new THREE.ShapeGeometry(shape);
     } else {
         const shape = new THREE.Shape(shapePositions.map((p) => new THREE.Vector2(p.x, p.y)));
