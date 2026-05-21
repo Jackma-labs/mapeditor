@@ -712,6 +712,9 @@ function startRuntimeJob(type, runner, request = null) {
       job.error = {
         message: error.message,
       };
+      if (error.result) {
+        job.result = error.result;
+      }
       await appendRuntimeJobLog(job, error.message, 'error');
     } finally {
       job.finishedAt = new Date().toISOString();

@@ -1674,8 +1674,11 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
     motion,
   }).catch(() => {});
   if (!ready) {
-    await progress(motion.message || 'ApolloLite simulation route was sent, but vehicle motion was not confirmed');
-    return result;
+    const message = motion.message || 'ApolloLite simulation route was sent, but vehicle motion was not confirmed';
+    await progress(message);
+    const error = new Error(message);
+    error.result = result;
+    throw error;
   }
   await progress(`ApolloLite simulation smoke test passed: max speed ${motion.maxSpeedMps.toFixed(3)} m/s`);
   return result;
