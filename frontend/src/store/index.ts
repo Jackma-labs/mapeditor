@@ -163,10 +163,27 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             (hdBasemapCenter.x !== newState.imageBasemapCenter?.x ||
                 hdBasemapCenter.y !== newState.imageBasemapCenter?.y)
         ) {
+            const offsetX = hdBasemapCenter.x - (newState.imageBasemapCenter?.x || 0);
+            const offsetY = hdBasemapCenter.y - (newState.imageBasemapCenter?.y || 0);
             Object.keys(newState.points).forEach((key) => {
                 const point = newState.points[key];
-                point.position.x -= (newState.imageBasemapCenter?.x || 0) - hdBasemapCenter.x;
-                point.position.y -= (newState.imageBasemapCenter?.y || 0) - hdBasemapCenter.y;
+                point.position.x += offsetX;
+                point.position.y += offsetY;
+            });
+            Object.keys(newState.boundarys).forEach((key) => {
+                const controlPositions = newState.boundarys[key].controlsPosition || [];
+                for (let index = 0; index < controlPositions.length; index += 1) {
+                    const controlPosition = controlPositions[index];
+                    controlPosition.x += offsetX;
+                    controlPosition.y += offsetY;
+                }
+            });
+            Object.keys(newState.trafficSignals).forEach((key) => {
+                const signal = newState.trafficSignals[key];
+                if (signal.center) {
+                    signal.center.x += offsetX;
+                    signal.center.y += offsetY;
+                }
             });
             hdBasemapCenter.x = newState.imageBasemapCenter.x;
             hdBasemapCenter.y = newState.imageBasemapCenter.y;
