@@ -1604,6 +1604,16 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
   if (!containerName) {
     throw new Error('ApolloLite docker container was not found');
   }
+  const containerState = await runCommand('docker', ['inspect', '-f', '{{.State.Running}}', containerName], {
+    timeoutMs: 5000,
+  }).catch(() => null);
+  if (containerState?.stdout.trim() !== 'true') {
+    await progress(`Starting ApolloLite container: ${containerName}`);
+    await runCommand('docker', ['start', containerName], {
+      timeoutMs: APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS,
+    });
+    await delay(1000);
+  }
   await progress(`Restarting Dreamview to reload map config: ${containerName}`);
   const command = [
     'cd /apollo',
@@ -1624,6 +1634,28 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
     startedAt,
     finishedAt: new Date().toISOString(),
     http,
+  };
+}
+
+async function ensureApolloLiteDreamviewReachable(apolloLite, progress = async () => {}) {
+  const currentHttp = await probeHttpUrl(apolloLite.dreamviewUrl).catch((error) => ({
+    ok: false,
+    message: error.message,
+  }));
+  if (currentHttp?.ok) {
+    return {
+      alreadyReachable: true,
+      http: currentHttp,
+    };
+  }
+
+  await progress(`Dreamview is not reachable, restarting runtime: ${currentHttp?.message || 'no response'}`);
+  const restart = await restartApolloLiteDreamview(apolloLite, progress);
+  return {
+    alreadyReachable: false,
+    before: currentHttp,
+    restart,
+    http: restart.http,
   };
 }
 
@@ -1855,6 +1887,7 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
     ...getApolloLiteConfig(config),
     ...(stage.apolloLite || {}),
   };
+  const dreamviewRuntime = await ensureApolloLiteDreamviewReachable(apolloLite, progress);
   const components = await inspectApolloLiteSimulationComponents(apolloLite);
   const missingComponents = components.filter((component) => !component.available);
   if (missingComponents.length > 0) {
@@ -1883,6 +1916,7 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
     targetDir: stage.targetDir,
     stage,
     apolloLite,
+    dreamviewRuntime,
     components,
     route,
     dreamview,
