@@ -351,7 +351,18 @@ export default function MapQualityPanel() {
                 addCommand([new ApplyMapQualityRepairsCommand(repairActions)]);
                 setSelectedIssueId('');
                 PubSub.publish('render');
-                message.success(`已智能修复 ${repairActions.length} 项问题，请复核后再发布`);
+                setTimeout(() => {
+                    const nextReport = inspectMapQuality(useManagerStore.getState().mapState);
+                    if (nextReport.summary.errors === 0) {
+                        message.success(
+                            `已智能修复 ${repairActions.length} 项，当前无阻断发布的红色错误，剩余 ${nextReport.summary.warnings} 个警告待确认。`,
+                        );
+                        return;
+                    }
+                    message.warning(
+                        `已智能修复 ${repairActions.length} 项，仍有 ${nextReport.summary.errors} 个错误和 ${nextReport.summary.warnings} 个警告需要处理。`,
+                    );
+                }, 0);
             },
         });
     };

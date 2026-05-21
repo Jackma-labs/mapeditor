@@ -87,11 +87,6 @@ export function mergeJunctionLane(junction: Junction, lane: Lane) {
         actions.push(new AddPointToBoundaryCommand(pointId, junction.boundaryId, false, false));
     });
 
-    if (actions.length === 0) {
-        PubSub.publishSync('emptyPickObjects');
-        return;
-    }
-
     actions.push(new UpdateGroudCommand(junction.groudId));
     actions.push(new UpdateGroudCommand(lane.groudId));
     useManagerStore.getState().addCommand(actions);

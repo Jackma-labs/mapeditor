@@ -568,6 +568,90 @@ export default function Index(prop: ToolbarProps) {
         });
     };
 
+    const resetApolloLiteSimulation = () => {
+        Modal.confirm({
+            title: '重置仿真会话',
+            content:
+                '用于第二次换路段测试前清理上一条 Routing、重置 Sim Control，并确保 Dreamview 仍加载当前 ApolloLite 地图。',
+            okText: '重置',
+            cancelText: '取消',
+            onOk: async () => {
+                try {
+                    const response = await FileService.startApolloLiteResetSimulationJob();
+                    if (response?.code !== 0) {
+                        throw new Error(response?.message || '提交仿真重置任务失败');
+                    }
+                    const jobId = response?.data?.job?.id;
+                    if (!jobId) {
+                        throw new Error('后台任务没有返回 jobId');
+                    }
+                    const job = await waitForRuntimeJob(jobId, 'ApolloLite 仿真重置');
+                    const after = job.result?.after;
+                    Modal.success({
+                        title: after?.ready ? '仿真会话已重置' : '仿真会话已重置，但仍需检查',
+                        width: 720,
+                        content: (
+                            <div className="runtime-status-modal">
+                                <p>{`当前地图: ${after?.hmi?.currentMap || job.result?.targetMapName || '未读取'}`}</p>
+                                {(after?.checks || []).map((check: any) => (
+                                    <p key={check.name}>{`[${check.status}] ${check.name}: ${check.message}`}</p>
+                                ))}
+                            </div>
+                        ),
+                    });
+                } catch (error: any) {
+                    Modal.error({
+                        title: '仿真重置失败',
+                        content: error?.message || 'Unknown error',
+                    });
+                }
+            },
+        });
+    };
+
+    const showApolloLiteWorkflow = async () => {
+        try {
+            const response = await FileService.getApolloLiteWorkflow();
+            const result = response?.data;
+            const steps = result?.steps || [];
+            const routingFailure = result?.diagnosis?.routingDiagnostics?.latestFailure;
+            Modal.info({
+                title: 'ApolloLite 仿真工作流',
+                width: 760,
+                okText: '关闭',
+                content: (
+                    <div className="runtime-status-modal workflow-modal">
+                        <p>{`当前状态: ${result?.ready ? '可仿真' : '需要处理'}`}</p>
+                        <p>{`下一步: ${result?.nextAction || '无'}`}</p>
+                        <div className="workflow-step-list">
+                            {steps.map((step: any, index: number) => (
+                                <div className={`workflow-step-row ${step.status}`} key={step.key || index}>
+                                    <span>{index + 1}</span>
+                                    <div>
+                                        <strong>{step.title}</strong>
+                                        <p>{step.detail}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        {routingFailure && (
+                            <div className="workflow-routing-failure">
+                                <strong>最近 Routing 失败</strong>
+                                <p>{routingFailure.message}</p>
+                                <p>{routingFailure.suggestion}</p>
+                            </div>
+                        )}
+                    </div>
+                ),
+            });
+        } catch (error: any) {
+            Modal.error({
+                title: '读取仿真工作流失败',
+                content: error?.message || 'Unknown error',
+            });
+        }
+    };
+
     const rollbackDeployment = async (deploymentId: string) => {
         try {
             const response = await FileService.startRollbackDeploymentJob(deploymentId);
@@ -791,6 +875,12 @@ export default function Index(prop: ToolbarProps) {
             case 'apollolite-sim-smoke-test':
                 runApolloLiteSimulationSmokeTest();
                 break;
+            case 'apollolite-reset-simulation':
+                resetApolloLiteSimulation();
+                break;
+            case 'apollolite-workflow':
+                showApolloLiteWorkflow();
+                break;
             case 'deploy-history':
                 showDeploymentHistory();
                 break;
@@ -933,6 +1023,18 @@ export default function Index(prop: ToolbarProps) {
                             key: 'apollolite-sim-smoke-test',
                             disabled: !canEdit,
                         },
+                        {
+                            label: (
+                                <FileMenuLabel
+                                    title="重置仿真会话"
+                                    description={
+                                        canEdit ? '换路段测试前清理上一条 Routing 和 Sim Control 状态' : '需要编辑权限'
+                                    }
+                                />
+                            ),
+                            key: 'apollolite-reset-simulation',
+                            disabled: !canEdit,
+                        },
                     ],
                 },
             ],
@@ -1021,6 +1123,15 @@ export default function Index(prop: ToolbarProps) {
                             ),
                             key: 'apollolite-diagnose',
                             disabled: !canDeploy,
+                        },
+                        {
+                            label: (
+                                <FileMenuLabel
+                                    title="ApolloLite 仿真工作流"
+                                    description="查看发布、同步、Dreamview、PNC、Routing 的精确状态"
+                                />
+                            ),
+                            key: 'apollolite-workflow',
                         },
                         {
                             label: (

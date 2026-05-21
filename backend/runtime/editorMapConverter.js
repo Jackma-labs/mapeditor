@@ -499,9 +499,18 @@ function laneBoundaryFromId(boundaryId, boundaryIndex, pointIndex, reverse, virt
 }
 
 function laneTypeFromEditor(lane) {
-  const value = lane?.type || lane?.attr?.laneType;
+  const value = lane?.attr?.laneType ?? lane?.laneType;
   if (String(value).toUpperCase() === 'BIKING' || value === 2) {
     return LANE_TYPE.BIKING;
+  }
+  if (String(value).toUpperCase() === 'SIDEWALK') {
+    return LANE_TYPE.SIDEWALK;
+  }
+  if (String(value).toUpperCase() === 'PARKING') {
+    return LANE_TYPE.PARKING;
+  }
+  if (String(value).toUpperCase() === 'SHOULDER') {
+    return LANE_TYPE.SHOULDER;
   }
   return LANE_TYPE.CITY_DRIVING;
 }

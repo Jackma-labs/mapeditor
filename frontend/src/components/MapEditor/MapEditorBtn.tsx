@@ -5,7 +5,7 @@ import { connectLane, curveConnectLane } from 'src/handle/lane/LaneConnectHandle
 import { mergeLane } from 'src/handle/lane/mergeLaneHandle';
 import { mergeJunctionLane } from 'src/handle/junction/mergeJunctionLaneHandle';
 import { OperationType, PickElementInfo, ThreeElementType } from 'src/interface/commonInterFace';
-import { LaneBoundaryType, LaneTrend } from 'src/interface/laneInterFace';
+import { Lane, LaneBoundaryType, LaneTrend } from 'src/interface/laneInterFace';
 import { useManagerStore } from 'src/store';
 import { getLaneEndPointIds, getLaneRelations, getLaneStartPointIds } from 'src/utils/geometryUtil';
 import { searchGroudFromBoundaryId } from 'src/utils/search/groudSearch';
@@ -30,8 +30,8 @@ const isLaneGroudType = (type?: ThreeElementType) =>
     type === ThreeElementType.LaneGroud || type === ThreeElementType.LaneCurveGroud;
 
 const isJunctionLaneSelection = (items: PickElementInfo[] = []) =>
-    items.length === 2 &&
-    items.some((item) => item.type === ThreeElementType.JunctionGroud) &&
+    items.length >= 2 &&
+    items.filter((item) => item.type === ThreeElementType.JunctionGroud).length === 1 &&
     items.some((item) => isLaneGroudType(item.type));
 
 export default function Index() {
@@ -73,14 +73,16 @@ export default function Index() {
     };
     const handleJunctionLaneMerge = () => {
         const junctionPick = mapState.currentPickElement.find((item) => item.type === ThreeElementType.JunctionGroud);
-        const lanePick = mapState.currentPickElement.find((item) => isLaneGroudType(item.type));
         const junction = searchJunctionFromGroudId(junctionPick?.id);
-        const lane = searchLaneFromGroudId(lanePick?.id);
-        if (!junction || !lane) {
+        const lanes = mapState.currentPickElement
+            .filter((item) => isLaneGroudType(item.type))
+            .map((item) => searchLaneFromGroudId(item.id))
+            .filter((lane): lane is Lane => Boolean(lane));
+        if (!junction || lanes.length === 0) {
             console.warn('handleJunctionLaneMerge: junction or lane not found');
             return;
         }
-        mergeJunctionLane(junction, lane);
+        lanes.forEach((lane) => mergeJunctionLane(junction, lane));
     };
     const enableAddLaneBaseOneLane = () => {
         if (mapState.operationType !== OperationType.CopyLane) {

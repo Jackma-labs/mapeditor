@@ -490,33 +490,45 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
 
     if (lanes.length > 1 && laneComponents.length > 1) {
         const nearestGaps = findNearestComponentGaps(mapState, laneComponents, relations);
-        buildIssue(issues, {
-            severity: 'warning',
-            title: '车道网络不连通',
-            description: `当前车道网络被分成 ${laneComponents.length} 个连通块，可能是双向道路合法分离，也可能存在漏连。`,
-            suggestion: '先检查下方列出的连通块和最近断点；如果这些车道属于同一条可行驶路线，请补齐前后继连接。',
-            details: laneComponents
-                .slice(0, 6)
-                .map(
-                    (component) =>
-                        `连通块 ${component.id}（${component.laneIds.length} 条）：${formatReadableLaneIds(
-                            component.laneIds,
-                        )}`,
-                )
-                .concat(
-                    nearestGaps
-                        .slice(0, 5)
-                        .map(
-                            (gap) =>
-                                `最近断点：连通块 ${gap.fromComponentId} ${formatEndpoint(gap.from)} ↔ 连通块 ${
-                                    gap.toComponentId
-                                } ${formatEndpoint(gap.to)}，中心距 ${gap.distance.toFixed(2)}m`,
-                        ),
-                ),
-            target: {
-                type: 'map',
-            },
-        });
+        const actionableGaps = nearestGaps.filter((gap) => gap.distance <= 6);
+        const isolatedComponents = laneComponents.filter((component) => component.laneIds.length === 1);
+        if (actionableGaps.length > 0 || isolatedComponents.length > 0) {
+            buildIssue(issues, {
+                severity: 'warning',
+                title: '车道网络存在可疑断点',
+                description: `当前车道网络被分成 ${laneComponents.length} 个连通块；系统只在发现近距离断点或孤岛车道时提示，避免把合法双向车道误报成问题。`,
+                suggestion: '优先检查下方最近断点和孤岛车道；如果这些车道属于同一条可行驶路线，请补齐前后继连接。',
+                details: laneComponents
+                    .slice(0, 6)
+                    .map(
+                        (component) =>
+                            `连通块 ${component.id}（${component.laneIds.length} 条）：${formatReadableLaneIds(
+                                component.laneIds,
+                            )}`,
+                    )
+                    .concat(
+                        actionableGaps
+                            .slice(0, 5)
+                            .map(
+                                (gap) =>
+                                    `最近断点：连通块 ${gap.fromComponentId} ${formatEndpoint(gap.from)} -> 连通块 ${
+                                        gap.toComponentId
+                                    } ${formatEndpoint(gap.to)}，中心距 ${gap.distance.toFixed(2)}m`,
+                            ),
+                    )
+                    .concat(
+                        isolatedComponents
+                            .slice(0, 5)
+                            .map(
+                                (component) =>
+                                    `孤岛车道：连通块 ${component.id}，${formatReadableLaneIds(component.laneIds)}`,
+                            ),
+                    ),
+                target: {
+                    type: 'map',
+                },
+            });
+        }
     }
 
     Object.values(mapState.stopLines).forEach((stopLine) => {

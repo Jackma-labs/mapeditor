@@ -166,11 +166,30 @@ class FileService {
         return this.requestJson('/runtime/apollolite/diagnose');
     }
 
+    async getApolloLiteWorkflow() {
+        return this.requestJson('/runtime/apollolite/workflow');
+    }
+
     async startApolloLiteRepairJob() {
         return this.requestJson('/runtime/apollolite/repair-job', {
             method: 'POST',
             body: JSON.stringify({}),
         });
+    }
+
+    async startApolloLiteResetSimulationJob() {
+        return this.requestJson('/runtime/apollolite/reset-simulation-job', {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
+    }
+
+    async getEditorMapLocks() {
+        return this.requestJson('/runtime/editor-map-locks');
+    }
+
+    async getEditorMapHistory(mapName: string) {
+        return this.requestJson(`/runtime/editor-map-history/${encodeURIComponent(mapName)}`);
     }
 
     async getReleasedMaps() {

@@ -233,6 +233,11 @@ const Dialog: React.FC<DialogProps> = ({ title, mode: requestedMode, open, onCan
                         file: item.content,
                         json: response.info.data.map,
                     });
+                    if (response.info.data.lockGranted === false) {
+                        message.warning(
+                            `该标注地图正在被 ${response.info.data.lock?.username || '其他用户'} 编辑，当前以只读方式打开。`,
+                        );
+                    }
                 }
 
                 message.destroy();

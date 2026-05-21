@@ -6,6 +6,9 @@ CONTAINER="${MAP_APOLLOLITE_CONTAINER:-apollo_dev_dell_c7dbb59e}"
 CONTAINER_USER="${MAP_APOLLOLITE_CONTAINER_USER:-1000}"
 APOLLO_ROOT="${MAP_APOLLOLITE_ROOT_IN_CONTAINER:-/apollo}"
 LOG_DIR="${MAP_APOLLOLITE_DREAMVIEW_LOG_DIR:-/apollo/data/log/mapeditor_dreamview}"
+CONTAINER_HOME="${MAP_APOLLOLITE_CONTAINER_HOME:-/home/dell}"
+DREAMVIEW_CONF="${MAP_APOLLOLITE_DREAMVIEW_CONF:-/apollo/modules/dreamview/conf/dreamview.conf}"
+DREAMVIEW_SPAWN_MODE="${MAP_APOLLOLITE_SIM_CONTROL_SPAWN_MODE:-legacy}"
 
 container_exists() {
   docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER}"
@@ -55,12 +58,18 @@ start_container() {
 run_dreamview() {
   local command="$1"
   docker exec -u "${CONTAINER_USER}" "${CONTAINER}" bash -lc \
-    "cd '${APOLLO_ROOT}' && mkdir -p '${LOG_DIR}' && ./scripts/dreamview.sh ${command}"
+    "export HOME='${CONTAINER_HOME}' USER=dell LOGNAME=dell XDG_CONFIG_HOME='${CONTAINER_HOME}/.config'; cd '${APOLLO_ROOT}' && mkdir -p '${LOG_DIR}' \"\${HOME}/.apollo/dreamview/plugins\" && ./scripts/dreamview.sh ${command}"
+}
+
+ensure_dreamview_flags() {
+  docker exec -u "0" "${CONTAINER}" bash -lc \
+    "set -e; touch '${DREAMVIEW_CONF}'; grep -v '^--sim_control_spawn_mode=' '${DREAMVIEW_CONF}' > /tmp/mapeditor_dreamview.conf; printf '%s\n' '--sim_control_spawn_mode=${DREAMVIEW_SPAWN_MODE}' >> /tmp/mapeditor_dreamview.conf; cp /tmp/mapeditor_dreamview.conf '${DREAMVIEW_CONF}'; chown ${CONTAINER_USER}:${CONTAINER_USER} '${DREAMVIEW_CONF}' || true"
 }
 
 case "${ACTION}" in
   start)
     start_container
+    ensure_dreamview_flags
     set +e
     output="$(run_dreamview start 2>&1)"
     rc=$?

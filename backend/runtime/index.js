@@ -79,10 +79,40 @@ const APOLLOLITE_SIMULATION_COMPONENTS = [
     candidates: ['bazel-bin/modules/control/libcontrol_component.so'],
   },
 ];
+const APOLLOLITE_STABLE_PNC_LAUNCHES = [
+  {
+    name: 'routing',
+    launch: 'modules/routing/launch/routing.launch',
+    dagPattern: '[r]outing.dag',
+    logName: 'mapeditor_routing_start.log',
+  },
+  {
+    name: 'planning',
+    launch: 'modules/planning/launch/planning.launch',
+    dagPattern: '[p]lanning.dag',
+    logName: 'mapeditor_planning_start.log',
+  },
+  {
+    name: 'control_lateral_longitudinal',
+    launch: 'modules/control/launch/control_lateral_longitudinal_control.launch',
+    dagPattern: '[l]ateral_longitudinal_module.dag',
+    logName: 'mapeditor_control_lateral_longitudinal_start.log',
+  },
+];
+const APOLLOLITE_PNC_DAG_PATTERNS = [
+  '[r]outing.dag',
+  '[p]lanning.dag',
+  '[c]ontrol.dag',
+  '[m]pc_module.dag',
+  '[l]ateral_longitudinal_module.dag',
+];
 const APOLLOLITE_DREAMVIEW_HTTP_TIMEOUT_MS = 1500;
 const APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS = 5000;
 const APOLLOLITE_SIM_MOTION_TIMEOUT_MS = 15000;
 const APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS = 20000;
+const APOLLOLITE_STATE_FILE = 'apollolite_current_map.json';
+const APOLLOLITE_ROUTING_LOG_SCAN_LIMIT = 800;
+const APOLLOLITE_RECENT_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 
 function normalizeZipOpenError(error, label) {
   const message = String(error?.message || error || '');
@@ -622,13 +652,19 @@ async function readApolloLiteDefaultMapFlag(root) {
   }
   try {
     const content = await fsp.readFile(flagfilePath, 'utf8');
-    const mapDirLine = content.split(/\r?\n/).find((line) => line.startsWith('--map_dir='));
-    const mapDir = mapDirLine ? mapDirLine.slice('--map_dir='.length).trim() : '';
+    const mapDirLines = content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('--map_dir='));
+    const mapDirValues = mapDirLines.map((line) => line.slice('--map_dir='.length).trim()).filter(Boolean);
+    const selected = await selectApolloLiteDefaultMapEntry(root, mapDirValues);
+    const mapDir = selected?.mapDir || '';
     return {
       available: true,
       flagfilePath,
       mapDir,
-      mapName: mapDir ? path.basename(mapDir) : '',
+      mapName: selected?.mapName || (mapDir ? path.posix.basename(mapDir.replace(/\\/gu, '/')) : ''),
+      selectedBy: selected?.canonical ? 'canonical-stage-manifest' : selected ? 'latest-map-dir-entry' : '',
     };
   } catch (error) {
     return {
@@ -704,6 +740,12 @@ async function getApolloLiteStatus(config) {
     frontendAssetPath,
     defaultMapFlag,
     defaultMapName: defaultMapFlag.mapName,
+    currentMapState: await resolveApolloLiteCurrentMapState(config, {
+      ...apolloLite,
+      defaultMapFlag,
+      defaultMapName: defaultMapFlag.mapName,
+      mapRootWritable,
+    }),
     validationCommandConfigured: Boolean(apolloLite.validationCommand),
     message: stagingMessage,
     stagingMessage,
@@ -932,6 +974,101 @@ function createApolloLiteRuntimeMapName(mapName) {
   return `${asciiName || 'mapeditor_map'}_${hash}`;
 }
 
+async function readApolloLiteStageManifest(mapDir) {
+  try {
+    return JSON.parse(await fsp.readFile(path.join(mapDir, 'mapeditor_apollolite_stage.json'), 'utf8'));
+  } catch (error) {
+    return null;
+  }
+}
+
+function getRuntimeStateDir(config) {
+  return path.join(config.appRoot || path.dirname(config.releaseRoot), 'data', 'runtime_state');
+}
+
+function getApolloLiteCurrentMapStatePath(config) {
+  return path.join(getRuntimeStateDir(config), APOLLOLITE_STATE_FILE);
+}
+
+async function readApolloLiteCurrentMapState(config) {
+  try {
+    return JSON.parse(await fsp.readFile(getApolloLiteCurrentMapStatePath(config), 'utf8'));
+  } catch (error) {
+    return null;
+  }
+}
+
+async function resolveApolloLiteCurrentMapState(config, apolloLite) {
+  const currentState = await readApolloLiteCurrentMapState(config);
+  if (currentState) {
+    return currentState;
+  }
+  const runtimeMapName = apolloLite.defaultMapFlag?.mapName || apolloLite.defaultMapName || '';
+  if (!runtimeMapName || !apolloLite.mapRoot) {
+    return null;
+  }
+  const manifest = await readApolloLiteStageManifest(path.join(apolloLite.mapRoot, runtimeMapName));
+  if (!manifest) {
+    return null;
+  }
+  return {
+    ...manifest,
+    recoveredFrom: 'stage-manifest',
+    flagMapDir: apolloLite.defaultMapFlag?.mapDir || '',
+    updatedAt: manifest.stagedAt || '',
+  };
+}
+
+async function writeApolloLiteCurrentMapState(config, state) {
+  const stateDir = getRuntimeStateDir(config);
+  await fsp.mkdir(stateDir, { recursive: true });
+  const payload = {
+    ...state,
+    updatedAt: new Date().toISOString(),
+  };
+  await fsp.writeFile(getApolloLiteCurrentMapStatePath(config), JSON.stringify(payload, null, 2), 'utf8');
+  return payload;
+}
+
+async function scoreApolloLiteMapDirEntry(root, mapDir, index) {
+  const mapName = path.posix.basename(mapDir.replace(/\\/gu, '/'));
+  const hostDir = mapApolloContainerPathToHost(root, mapDir);
+  const manifest = await readApolloLiteStageManifest(hostDir);
+  const stat = await fsp.stat(hostDir).catch(() => null);
+  const stagedAtMs = Date.parse(manifest?.stagedAt || '') || 0;
+  const mtimeMs = stat?.mtimeMs || 0;
+  return {
+    index,
+    mapDir,
+    mapName,
+    hostDir,
+    manifest,
+    canonical: manifest?.apolloLiteMapName === mapName,
+    stagedAtMs,
+    mtimeMs,
+  };
+}
+
+async function selectApolloLiteDefaultMapEntry(root, mapDirValues) {
+  if (mapDirValues.length === 0) {
+    return null;
+  }
+  const entries = await Promise.all(mapDirValues.map((mapDir, index) => scoreApolloLiteMapDirEntry(root, mapDir, index)));
+  entries.sort((left, right) => {
+    if (left.canonical !== right.canonical) {
+      return right.canonical ? 1 : -1;
+    }
+    if (left.stagedAtMs !== right.stagedAtMs) {
+      return right.stagedAtMs - left.stagedAtMs;
+    }
+    if (left.mtimeMs !== right.mtimeMs) {
+      return right.mtimeMs - left.mtimeMs;
+    }
+    return right.index - left.index;
+  });
+  return entries[0];
+}
+
 async function selectReleasedMapName(config, mapName) {
   if (mapName) {
     return validateMapName(mapName);
@@ -1007,6 +1144,48 @@ async function updateApolloLiteDefaultMapFlag(apolloLite, mapName) {
   };
 }
 
+async function cleanupApolloLiteStaleRuntimeMapDirs(apolloLite, mapName, apolloLiteMapName, progress = async () => {}) {
+  if (!apolloLite.mapRoot || !mapName || !apolloLiteMapName || !(await pathExists(apolloLite.mapRoot))) {
+    return {
+      removed: [],
+      skipped: true,
+    };
+  }
+  const entries = await fsp.readdir(apolloLite.mapRoot, { withFileTypes: true });
+  const removed = [];
+  const errors = [];
+  const mapRoot = path.resolve(apolloLite.mapRoot);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === apolloLiteMapName) {
+      continue;
+    }
+    const candidateDir = path.resolve(apolloLite.mapRoot, entry.name);
+    const relative = path.relative(mapRoot, candidateDir);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      continue;
+    }
+    const manifest = await readApolloLiteStageManifest(candidateDir);
+    if (manifest?.mapName !== mapName) {
+      continue;
+    }
+    try {
+      await progress(`Removing stale ApolloLite runtime map directory: ${entry.name}`);
+      await fsp.rm(candidateDir, { recursive: true, force: true });
+      removed.push(entry.name);
+    } catch (error) {
+      errors.push({
+        mapName: entry.name,
+        error: error.message,
+      });
+    }
+  }
+  return {
+    removed,
+    errors,
+    skipped: false,
+  };
+}
+
 async function stageReleasedMapToApolloLite(config, params = {}) {
   const progress = typeof params.progress === 'function' ? params.progress : async () => {};
   const apolloLite = await getApolloLiteStatus(config);
@@ -1058,6 +1237,14 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
   await fsp.rm(targetDir, { recursive: true, force: true });
   await fsp.rename(stagingDir, targetDir);
   const defaultMapFlag = await updateApolloLiteDefaultMapFlag(apolloLite, apolloLiteMapName);
+  const staleRuntimeMapCleanup = await cleanupApolloLiteStaleRuntimeMapDirs(
+    apolloLite,
+    mapName,
+    apolloLiteMapName,
+    progress
+  ).catch((error) => ({
+    error: error.message,
+  }));
   let staleSimulationCleanup = null;
   let dreamviewChange = null;
   let dreamviewRestart = null;
@@ -1118,6 +1305,17 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     warnings: stageWarnings,
     removedEmptyBinaries,
   });
+  const currentMapState = await writeApolloLiteCurrentMapState(config, {
+    mapName,
+    apolloLiteMapName,
+    sourceDir: inspection.path,
+    targetDir,
+    flagMapDir: defaultMapFlag?.mapDir || '',
+    recordId: record?.id || '',
+    stagedAt,
+    dreamviewMap: dreamviewChange?.currentMap || dreamviewChange?.mapName || '',
+    warnings: stageWarnings,
+  });
 
   await progress(`ApolloLite staging ready: ${mapName}`);
   return {
@@ -1128,10 +1326,12 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     inspection,
     removedEmptyBinaries,
     defaultMapFlag,
+    staleRuntimeMapCleanup,
     staleSimulationCleanup,
     dreamviewChange,
     dreamviewRestart,
     validation,
+    currentMapState,
     apolloLite: {
       root: apolloLite.root,
       mapRoot: apolloLite.mapRoot,
@@ -1650,15 +1850,11 @@ async function stopApolloLiteStaleSimulationProcesses(apolloLite, progress = asy
   await progress(`Stopping stale ApolloLite PNC processes: ${containerName}`);
   const command = [
     'set +e',
-    "routing_pids=$(pgrep -f '[r]outing.dag' || true)",
-    "planning_pids=$(pgrep -f '[p]lanning.dag' || true)",
-    "control_pids=$(pgrep -f '[c]ontrol.dag' || true)",
-    'pids="$routing_pids $planning_pids $control_pids"',
+    ...APOLLOLITE_PNC_DAG_PATTERNS.map((pattern, index) => `pids_${index}=$(pgrep -f '${pattern}' || true)`),
+    `pids="${APOLLOLITE_PNC_DAG_PATTERNS.map((_, index) => `$pids_${index}`).join(' ')}"`,
     'if [ -n "$(echo "$pids" | tr -d " ")" ]; then kill -TERM $pids 2>/dev/null || true; sleep 1; fi',
-    "routing_left=$(pgrep -f '[r]outing.dag' || true)",
-    "planning_left=$(pgrep -f '[p]lanning.dag' || true)",
-    "control_left=$(pgrep -f '[c]ontrol.dag' || true)",
-    'printf "routing=%s\\nplanning=%s\\ncontrol=%s\\nremaining_routing=%s\\nremaining_planning=%s\\nremaining_control=%s\\n" "$routing_pids" "$planning_pids" "$control_pids" "$routing_left" "$planning_left" "$control_left"',
+    ...APOLLOLITE_PNC_DAG_PATTERNS.map((pattern, index) => `left_${index}=$(pgrep -f '${pattern}' || true)`),
+    `printf "stopped=%s\\nremaining=%s\\n" "$pids" "${APOLLOLITE_PNC_DAG_PATTERNS.map((_, index) => `$left_${index}`).join(' ')}"`,
   ].join('; ');
   const result = await runCommand('docker', ['exec', '-u', '0', containerName, 'bash', '-lc', command], {
     timeoutMs: 10000,
@@ -1666,6 +1862,39 @@ async function stopApolloLiteStaleSimulationProcesses(apolloLite, progress = asy
   return {
     containerName,
     stopped: true,
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
+  };
+}
+
+async function startApolloLiteStablePncStack(apolloLite, progress = async () => {}) {
+  const containerName = await resolveApolloLiteDockerContainer(apolloLite);
+  if (!containerName) {
+    return {
+      containerName: '',
+      started: false,
+      message: 'ApolloLite docker container was not found',
+    };
+  }
+  await progress(`Starting stable ApolloLite PNC stack: ${containerName}`);
+  const launchCommands = APOLLOLITE_STABLE_PNC_LAUNCHES.map((item) =>
+    `if ! pgrep -f '${item.dagPattern}' >/dev/null 2>&1; then nohup cyber_launch start ${item.launch} >/apollo/data/log/${item.logName} 2>&1 < /dev/null & fi`
+  );
+  const command = [
+    'cd /apollo',
+    'source scripts/apollo_base.sh >/dev/null 2>&1 || true',
+    'mkdir -p /apollo/data/log',
+    ...launchCommands,
+    'sleep 1',
+    "ps -eo pid,user,cmd | grep -E 'routing\\.dag|planning\\.dag|control\\.dag|mpc_module\\.dag|lateral_longitudinal_module\\.dag' | grep -v grep || true",
+  ].join('; ');
+  const result = await runCommand('docker', ['exec', '-u', '1000', containerName, 'bash', '-lc', command], {
+    timeoutMs: 12000,
+  });
+  return {
+    containerName,
+    started: true,
+    launches: APOLLOLITE_STABLE_PNC_LAUNCHES.map(({ name, launch }) => ({ name, launch })),
     stdout: result.stdout.trim(),
     stderr: result.stderr.trim(),
   };
@@ -1724,11 +1953,15 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
 
   const command = [
     'cd /apollo',
+    'export HOME=/home/dell USER=dell LOGNAME=dell XDG_CONFIG_HOME=/home/dell/.config',
     'source /apollo/scripts/apollo_base.sh >/dev/null 2>&1 || true',
+    "mkdir -p /home/dell/.apollo/dreamview/plugins /apollo/data/log/mapeditor_dreamview",
+    "grep -v '^--sim_control_spawn_mode=' /apollo/modules/dreamview/conf/dreamview.conf > /tmp/mapeditor_dreamview.conf || true",
+    "printf '%s\\n' '--sim_control_spawn_mode=legacy' >> /tmp/mapeditor_dreamview.conf",
+    'cp /tmp/mapeditor_dreamview.conf /apollo/modules/dreamview/conf/dreamview.conf',
     "pkill -f '[d]reamview/launch/dreamview.launch' || true",
     'pkill -x dreamview || true',
     'sleep 1',
-    'mkdir -p /apollo/data/log/mapeditor_dreamview',
     'nohup /apollo/bazel-bin/cyber/tools/cyber_launch/cyber_launch start /apollo/modules/dreamview/launch/dreamview.launch >/apollo/data/log/mapeditor_dreamview/dreamview_restart.log 2>&1 &',
   ].join(' && ');
   const startedAt = new Date().toISOString();
@@ -1817,7 +2050,7 @@ async function inspectApolloLiteSimulationProcesses(apolloLite) {
       processes: [],
     };
   }
-  const command = "ps -eo pid,cmd | grep -E 'routing\\.dag|planning\\.dag|control\\.dag' | grep -v grep || true";
+  const command = "ps -eo pid,user,cmd | grep -E 'routing\\.dag|planning\\.dag|control\\.dag|mpc_module\\.dag|lateral_longitudinal_module\\.dag' | grep -v grep || true";
   const result = await runCommand('docker', ['exec', containerName, 'bash', '-lc', command], {
     timeoutMs: 5000,
   });
@@ -1826,10 +2059,11 @@ async function inspectApolloLiteSimulationProcesses(apolloLite) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const match = line.match(/^(\d+)\s+(.+)$/u);
+      const match = line.match(/^(\d+)\s+(\S+)\s+(.+)$/u);
       return {
         pid: match ? Number(match[1]) : null,
-        command: match ? match[2] : line,
+        user: match ? match[2] : '',
+        command: match ? match[3] : line,
       };
     });
   return {
@@ -1927,8 +2161,189 @@ async function probeDreamviewMapData(apolloLite, radius = 200) {
   }
 }
 
+function summarizeApolloLitePncProcessHealth(processes = []) {
+  const groups = {
+    routing: processes.filter((item) => /routing\.dag/u.test(item.command)),
+    planning: processes.filter((item) => /planning\.dag/u.test(item.command)),
+    controlDefault: processes.filter((item) => /control\.dag/u.test(item.command)),
+    controlMpc: processes.filter((item) => /mpc_module\.dag/u.test(item.command)),
+    controlStable: processes.filter((item) => /lateral_longitudinal_module\.dag/u.test(item.command)),
+  };
+  const duplicateGroups = Object.entries(groups)
+    .filter(([, items]) => items.length > 1)
+    .map(([name]) => name);
+  const rootOwned = processes.filter((item) => item.user === 'root');
+  const unstableControl = groups.controlDefault.length + groups.controlMpc.length;
+  const expectedControl = groups.controlStable.length;
+  const issues = [];
+  if (duplicateGroups.length > 0) {
+    issues.push(`duplicate ${duplicateGroups.join(', ')}`);
+  }
+  if (rootOwned.length > 0) {
+    issues.push(`${rootOwned.length} root-owned process(es)`);
+  }
+  if (unstableControl > 0) {
+    issues.push(`${unstableControl} unstable control process(es)`);
+  }
+  const ready = groups.routing.length === 1 && groups.planning.length === 1 && expectedControl === 1 && issues.length === 0;
+  const idle = processes.length === 0;
+  return {
+    ready,
+    idle,
+    groups: Object.fromEntries(Object.entries(groups).map(([name, items]) => [name, items.length])),
+    issues,
+    message: ready
+      ? 'stable PNC stack is running'
+      : idle
+        ? 'PNC stack is not running'
+        : issues.length > 0
+          ? issues.join('; ')
+          : 'PNC stack is partially running',
+  };
+}
+
+function classifyApolloLiteRoutingFailure(line) {
+  const text = String(line || '').trim();
+  if (!text) {
+    return null;
+  }
+  const laneTypeMatch = text.match(/Expected lane\s+([^\s]+)\s+to be\s+([^,]+),\s+but was\s+([A-Z_]+)/u);
+  if (laneTypeMatch) {
+    return {
+      kind: 'lane-type',
+      severity: 'error',
+      laneId: laneTypeMatch[1],
+      expected: laneTypeMatch[2],
+      actual: laneTypeMatch[3],
+      message: `lane ${laneTypeMatch[1]} is ${laneTypeMatch[3]}, expected ${laneTypeMatch[2]}`,
+      suggestion: '重新发布当前标注地图，确认 ApolloLite 下拉只保留当前 hash 版本，并检查该车道类型是否为 CITY_DRIVING。',
+    };
+  }
+  const locateMatch = text.match(/cannot locate\s+(start|end)\s+point on map/iu);
+  if (locateMatch) {
+    return {
+      kind: `${locateMatch[1].toLowerCase()}-point-off-map`,
+      severity: 'error',
+      message: `${locateMatch[1].toLowerCase()} point is not on a routable lane`,
+      suggestion: '在 Route Editing 里把起点和终点点到绿色车道中心线附近，或者先执行“重置仿真会话”再重新点选。',
+    };
+  }
+  if (/Failed to prepare a routing request/iu.test(text)) {
+    return {
+      kind: 'prepare-routing-request',
+      severity: 'error',
+      message: text.replace(/^.*Failed to prepare a routing request:\s*/iu, ''),
+      suggestion: '优先检查起终点是否落在可通行车道、车道类型是否 CITY_DRIVING、前后继是否完整。',
+    };
+  }
+  if (/Failed to send a routing request/iu.test(text)) {
+    return {
+      kind: 'send-routing-request',
+      severity: 'error',
+      message: 'Dreamview failed to send routing request',
+      suggestion: '先执行“重置仿真会话”，如果仍失败，打开 ApolloLite 诊断查看最近 routing 失败原因。',
+    };
+  }
+  return null;
+}
+
+function stripAnsiControlCodes(value) {
+  return String(value || '').replace(/\x1B\[[0-9;]*[A-Za-z]/gu, '');
+}
+
+function parseApolloGlogTimestamp(value) {
+  const line = stripAnsiControlCodes(value);
+  const match = line.match(/[IWEF](?:(\d{4})?(\d{2})(\d{2}))\s+(\d{2}):(\d{2}):(\d{2})\.(\d+)/u);
+  if (!match) {
+    return '';
+  }
+  const now = new Date();
+  const [, matchedYear, month, day, hour, minute, second, fraction] = match;
+  const year = matchedYear ? Number(matchedYear) : now.getFullYear();
+  const milliseconds = Number(String(fraction).slice(0, 3).padEnd(3, '0'));
+  let date = new Date(
+    year,
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    milliseconds
+  );
+  if (!matchedYear && date.getTime() - now.getTime() > 24 * 60 * 60 * 1000) {
+    date = new Date(
+      year - 1,
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+      milliseconds
+    );
+  }
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function parseApolloLiteRoutingDiagnostics(logText) {
+  const failures = [];
+  const lines = String(logText || '').split(/\r?\n/u);
+  for (const rawLine of lines) {
+    const line = stripAnsiControlCodes(rawLine);
+    const classified = classifyApolloLiteRoutingFailure(line);
+    if (!classified) {
+      continue;
+    }
+    const timeMatch = line.match(/([IWEF](?:\d{8}|\d{4})\s+\d{2}:\d{2}:\d{2}\.\d+)/u);
+    failures.push({
+      ...classified,
+      line: line.trim().slice(0, 1000),
+      logTime: timeMatch?.[1] || '',
+      timestamp: parseApolloGlogTimestamp(timeMatch?.[1] || line),
+    });
+  }
+  return failures.slice(-20).reverse();
+}
+
+async function collectApolloLiteRoutingDiagnostics(apolloLite) {
+  const containerName = await resolveApolloLiteDockerContainer(apolloLite);
+  if (!containerName) {
+    return {
+      available: false,
+      containerName: '',
+      failures: [],
+      message: 'ApolloLite docker container was not found',
+    };
+  }
+  const command = [
+    'set +e',
+    'for f in /apollo/data/log/dreamview.* /apollo/data/log/mapeditor_dreamview/*.log /apollo/data/log/*routing*; do',
+    '  [ -f "$f" ] || continue',
+    '  echo "== $f =="',
+    `  tail -n ${APOLLOLITE_ROUTING_LOG_SCAN_LIMIT} "$f" 2>/dev/null`,
+    'done',
+  ].join('\n');
+  const result = await runCommand('docker', ['exec', '-u', '0', containerName, 'bash', '-lc', command], {
+    timeoutMs: 8000,
+  }).catch((error) => ({
+    stdout: '',
+    stderr: error.message,
+    code: 1,
+  }));
+  const failures = parseApolloLiteRoutingDiagnostics(result.stdout || '');
+  const hasFailure = failures.length > 0;
+  return {
+    available: result.code === 0,
+    containerName,
+    failures,
+    latestFailure: failures[0] || null,
+    message: hasFailure ? failures[0].message : 'no recent routing failure found in scanned logs',
+    stderr: result.stderr?.trim?.() || '',
+  };
+}
+
 async function diagnoseApolloLiteRuntime(config) {
   const apolloLite = await getApolloLiteStatus(config);
+  const currentMapState = await resolveApolloLiteCurrentMapState(config, apolloLite);
   const flagfile = await readApolloLiteMapDirEntries(apolloLite.root).catch((error) => ({
     available: false,
     error: error.message,
@@ -1938,6 +2353,13 @@ async function diagnoseApolloLiteRuntime(config) {
     available: false,
     error: error.message,
     processes: [],
+  }));
+  const pncProcessHealth = summarizeApolloLitePncProcessHealth(processes.processes || []);
+  const routingDiagnostics = await collectApolloLiteRoutingDiagnostics(apolloLite).catch((error) => ({
+    available: false,
+    error: error.message,
+    failures: [],
+    latestFailure: null,
   }));
   let hmi = null;
   let mapData = null;
@@ -1959,6 +2381,12 @@ async function diagnoseApolloLiteRuntime(config) {
       error: error.message,
     }));
   }
+  const expectedRuntimeMapName = currentMapState?.apolloLiteMapName || apolloLite.defaultMapName || '';
+  const hmiMatchesExpectedMap =
+    !expectedRuntimeMapName ||
+    !hmi?.currentMap ||
+    normalizeDreamviewName(hmi.currentMap) === normalizeDreamviewName(expectedRuntimeMapName);
+  const flagMatchesExpectedMap = !expectedRuntimeMapName || apolloLite.defaultMapName === expectedRuntimeMapName;
 
   const checks = [
     {
@@ -1977,9 +2405,16 @@ async function diagnoseApolloLiteRuntime(config) {
       message: `${flagfile.entries?.length || 0} map_dir entr${flagfile.entries?.length === 1 ? 'y' : 'ies'}`,
     },
     {
-      name: 'stale-pnc-processes',
-      status: processes.processes?.length ? 'warning' : 'ok',
-      message: processes.processes?.length ? `${processes.processes.length} stale process(es)` : 'no stale PNC process',
+      name: 'current-map-source',
+      status: flagMatchesExpectedMap && hmiMatchesExpectedMap ? 'ok' : 'warning',
+      message: flagMatchesExpectedMap && hmiMatchesExpectedMap
+        ? `current map ${expectedRuntimeMapName || apolloLite.defaultMapName || 'not selected'}`
+        : `expected ${expectedRuntimeMapName || 'unknown'}, flag=${apolloLite.defaultMapName || 'unknown'}, hmi=${hmi?.currentMap || 'unknown'}`,
+    },
+    {
+      name: 'stable-pnc-stack',
+      status: pncProcessHealth.ready || pncProcessHealth.idle ? 'ok' : 'warning',
+      message: pncProcessHealth.message,
     },
     {
       name: 'dreamview-map-data',
@@ -1994,6 +2429,9 @@ async function diagnoseApolloLiteRuntime(config) {
     apolloLite,
     flagfile,
     processes,
+    pncProcessHealth,
+    currentMapState,
+    routingDiagnostics,
     hmi,
     mapData,
   };
@@ -2014,6 +2452,20 @@ async function repairApolloLiteRuntime(config, progress = async () => {}) {
       name: 'normalize-map-dir',
       result: await updateApolloLiteDefaultMapFlag(apolloLite, flagMapName),
     });
+    const selectedManifest = await readApolloLiteStageManifest(path.join(apolloLite.mapRoot || '', flagMapName));
+    if (selectedManifest?.mapName) {
+      actions.push({
+        name: 'cleanup-stale-runtime-map-dirs',
+        result: await cleanupApolloLiteStaleRuntimeMapDirs(
+          apolloLite,
+          selectedManifest.mapName,
+          flagMapName,
+          progress
+        ).catch((error) => ({
+          error: error.message,
+        })),
+      });
+    }
   }
 
   actions.push({
@@ -2040,6 +2492,13 @@ async function repairApolloLiteRuntime(config, progress = async () => {}) {
     });
   }
 
+  actions.push({
+    name: 'start-stable-pnc-stack',
+    result: await startApolloLiteStablePncStack(apolloLite, progress).catch((error) => ({
+      error: error.message,
+    })),
+  });
+
   const after = await diagnoseApolloLiteRuntime(config).catch((error) => ({
     ready: false,
     error: error.message,
@@ -2050,6 +2509,136 @@ async function repairApolloLiteRuntime(config, progress = async () => {}) {
     before,
     actions,
     after,
+  };
+}
+
+async function resetApolloLiteSimulationSession(config, progress = async () => {}) {
+  const apolloLite = await getApolloLiteStatus(config);
+  if (!apolloLite.enabled) {
+    throw new Error('ApolloLite is disabled');
+  }
+  const dreamviewRuntime = await ensureApolloLiteDreamviewReachable(apolloLite, progress);
+  const currentMapState = await resolveApolloLiteCurrentMapState(config, apolloLite);
+  const targetMapName = currentMapState?.apolloLiteMapName || apolloLite.defaultMapName || '';
+  if (targetMapName) {
+    await progress(`Normalizing ApolloLite map_dir before simulation reset: ${targetMapName}`);
+    await updateApolloLiteDefaultMapFlag(apolloLite, targetMapName);
+  }
+  await progress('Starting stable ApolloLite PNC stack');
+  const pncStack = await startApolloLiteStablePncStack(apolloLite, progress);
+
+  const wsUrl = buildDreamviewWebSocketUrl(apolloLite);
+  await progress(`Resetting Dreamview simulation websocket: ${wsUrl}`);
+  const ws = await connectDreamviewWebSocket(wsUrl);
+  let mapSwitch = null;
+  let modeSwitch = null;
+  try {
+    if (targetMapName) {
+      mapSwitch = await switchDreamviewMapOnSocket(ws, targetMapName, progress);
+    }
+    modeSwitch = await ensureDreamviewSimulationMode(ws, progress);
+    sendDreamviewMessage(ws, { type: 'ToggleSimControl', enable: false });
+    await delay(300);
+    sendDreamviewMessage(ws, { type: 'Reset' });
+    await delay(800);
+    sendDreamviewMessage(ws, { type: 'ToggleSimControl', enable: true });
+    await delay(800);
+  } finally {
+    ws.close();
+  }
+  const resetAt = new Date().toISOString();
+  if (currentMapState || targetMapName) {
+    await writeApolloLiteCurrentMapState(config, {
+      ...(currentMapState || {}),
+      apolloLiteMapName: targetMapName || currentMapState?.apolloLiteMapName || '',
+      mapName: currentMapState?.mapName || '',
+      targetDir: currentMapState?.targetDir || '',
+      flagMapDir: `/apollo/modules/map/data/${targetMapName || currentMapState?.apolloLiteMapName || ''}`,
+      lastSimulationResetAt: resetAt,
+    }).catch(() => null);
+  }
+
+  const after = await diagnoseApolloLiteRuntime(config).catch((error) => ({
+    ready: false,
+    error: error.message,
+  }));
+  return {
+    ready: after.ready === true,
+    targetMapName,
+    dreamviewRuntime,
+    pncStack,
+    wsUrl,
+    mapSwitch,
+    modeSwitch,
+    resetAt,
+    after,
+  };
+}
+
+async function getApolloLiteWorkflow(config) {
+  const diagnosis = await diagnoseApolloLiteRuntime(config).catch((error) => ({
+    ready: false,
+    error: error.message,
+    checks: [],
+  }));
+  const currentMapState = diagnosis.currentMapState || await readApolloLiteCurrentMapState(config);
+  const failedChecks = (diagnosis.checks || []).filter((check) => check.status !== 'ok');
+  const latestRoutingFailure = diagnosis.routingDiagnostics?.latestFailure;
+  const routingFailureTime = Date.parse(latestRoutingFailure?.timestamp || '');
+  const resetTime = Date.parse(currentMapState?.lastSimulationResetAt || '');
+  const routingFailure =
+    latestRoutingFailure && (!Number.isFinite(resetTime) || !Number.isFinite(routingFailureTime) || routingFailureTime > resetTime)
+      ? latestRoutingFailure
+      : null;
+  const steps = [
+    {
+      key: 'release',
+      title: '发布地图包',
+      status: currentMapState?.mapName ? 'done' : 'pending',
+      detail: currentMapState?.mapName
+        ? `当前发布: ${currentMapState.mapName}`
+        : '先保存标注并发布 Apollo 地图包',
+    },
+    {
+      key: 'stage',
+      title: '同步到 ApolloLite',
+      status: currentMapState?.apolloLiteMapName && diagnosis.flagfile?.entries?.length === 1 ? 'done' : 'blocked',
+      detail: currentMapState?.apolloLiteMapName
+        ? `运行时版本: ${currentMapState.apolloLiteMapName}`
+        : '执行 ApolloLite 仿真预检生成唯一运行时版本',
+    },
+    {
+      key: 'dreamview',
+      title: 'Dreamview 加载地图',
+      status: diagnosis.hmi?.currentMap ? (failedChecks.some((check) => check.name === 'current-map-source') ? 'warning' : 'done') : 'blocked',
+      detail: diagnosis.hmi?.currentMap
+        ? `当前地图: ${diagnosis.hmi.currentMap}`
+        : 'Dreamview 尚未返回当前地图',
+    },
+    {
+      key: 'pnc',
+      title: 'PNC 稳定栈',
+      status: diagnosis.pncProcessHealth?.ready ? 'done' : 'warning',
+      detail: diagnosis.pncProcessHealth?.message || '未读取 PNC 状态',
+    },
+    {
+      key: 'route',
+      title: '设置起终点并发 Routing',
+      status: routingFailure ? 'warning' : diagnosis.ready ? 'ready' : 'pending',
+      detail: routingFailure ? `${routingFailure.message}. ${routingFailure.suggestion}` : '点选绿色车道中心线附近；换路段前先重置仿真会话',
+    },
+  ];
+  return {
+    ready: diagnosis.ready === true,
+    generatedAt: new Date().toISOString(),
+    currentMapState,
+    diagnosis,
+    steps,
+    nextAction: failedChecks.length > 0
+      ? `处理 ${failedChecks[0].name}: ${failedChecks[0].message}`
+      : routingFailure
+        ? routingFailure.suggestion
+        : '可以开始仿真测试；切换新路段前使用“重置仿真会话”。',
   };
 }
 
@@ -2071,19 +2660,13 @@ async function runDreamviewSimulationSequence(apolloLite, route, progress) {
     }
   });
   try {
-    sendDreamviewMessage(ws, { type: 'ToggleSimControl', enable: true });
-    await delay(500);
     mapSwitch = await switchDreamviewMapOnSocket(ws, route.mapName, progress);
     modeSwitch = await ensureDreamviewSimulationMode(ws, progress);
-    for (const component of APOLLOLITE_SIMULATION_COMPONENTS) {
-      await progress(`Starting ApolloLite module: ${component.actionModule}`);
-      sendDreamviewMessage(ws, {
-        type: 'HMIAction',
-        action: 'START_MODULE',
-        value: component.actionModule,
-      });
-      await delay(400);
-    }
+    sendDreamviewMessage(ws, { type: 'ToggleSimControl', enable: false });
+    await delay(300);
+    sendDreamviewMessage(ws, { type: 'Reset' });
+    await delay(800);
+    sendDreamviewMessage(ws, { type: 'ToggleSimControl', enable: true });
     await delay(1200);
     await progress(`Sending simulation route across ${route.laneIds.length} lane(s)`);
     sendDreamviewMessage(ws, route.request);
@@ -2101,27 +2684,20 @@ async function runDreamviewSimulationSequence(apolloLite, route, progress) {
 
 async function stopDreamviewSimulationSequence(apolloLite, progress) {
   const wsUrl = buildDreamviewWebSocketUrl(apolloLite);
-  await progress(`Stopping ApolloLite simulation modules: ${wsUrl}`);
+  await progress(`Stopping ApolloLite simulation control: ${wsUrl}`);
   const ws = await connectDreamviewWebSocket(wsUrl);
-  const stoppedModules = [];
   try {
-    for (const component of [...APOLLOLITE_SIMULATION_COMPONENTS].reverse()) {
-      sendDreamviewMessage(ws, {
-        type: 'HMIAction',
-        action: 'STOP_MODULE',
-        value: component.actionModule,
-      });
-      stoppedModules.push(component.actionModule);
-      await delay(300);
-    }
     sendDreamviewMessage(ws, { type: 'ToggleSimControl', enable: false });
     await delay(300);
   } finally {
     ws.close();
   }
+  const pncCleanup = await stopApolloLiteStaleSimulationProcesses(apolloLite, progress).catch((error) => ({
+    error: error.message,
+  }));
   return {
     wsUrl,
-    stoppedModules,
+    pncCleanup,
     simControlEnabled: false,
     stoppedAt: new Date().toISOString(),
   };
@@ -2278,6 +2854,8 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
   if (startPose) {
     await progress(`Current vehicle pose: x=${startPose.x.toFixed(3)}, y=${startPose.y.toFixed(3)}`);
   }
+  await progress('Starting stable ApolloLite PNC stack');
+  const pncStack = await startApolloLiteStablePncStack(apolloLite, progress);
   await progress('Building route from staged Apollo map');
   const route = await buildApolloLiteSimulationRoute(stage.targetDir, startPose);
   route.mapName = stage.apolloLiteMapName || stage.mapName;
@@ -2288,6 +2866,12 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
   const cleanup = await stopDreamviewSimulationSequence(apolloLite, progress).catch((error) => ({
     error: error.message,
   }));
+  const routingDiagnostics = await collectApolloLiteRoutingDiagnostics(apolloLite).catch((error) => ({
+    available: false,
+    error: error.message,
+    failures: [],
+    latestFailure: null,
+  }));
   const ready = motion.moved === true;
   const result = {
     ready,
@@ -2297,9 +2881,11 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
     apolloLite,
     dreamviewRuntime,
     components,
+    pncStack,
     route,
     dreamview,
     motion,
+    routingDiagnostics,
     cleanup,
   };
   await appendDeploymentRecord(config, {
@@ -2314,11 +2900,16 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
       laneIds: route.laneIds,
       estimatedLengthMeters: route.estimatedLengthMeters,
     },
+    pncStack,
     motion,
+    routingDiagnostics,
     cleanup,
   }).catch(() => {});
   if (!ready) {
-    const message = motion.message || 'ApolloLite simulation route was sent, but vehicle motion was not confirmed';
+    const routingHint = routingDiagnostics.latestFailure?.message
+      ? ` Latest routing failure: ${routingDiagnostics.latestFailure.message}`
+      : '';
+    const message = `${motion.message || 'ApolloLite simulation route was sent, but vehicle motion was not confirmed'}${routingHint}`;
     await progress(message);
     const error = new Error(message);
     error.result = result;
@@ -6801,6 +7392,8 @@ module.exports = {
   getApolloLiteStatus,
   diagnoseApolloLiteRuntime,
   repairApolloLiteRuntime,
+  resetApolloLiteSimulationSession,
+  getApolloLiteWorkflow,
   getDeployConfig,
   discoverEdgeMapRoot,
   configureEdgeDeploy,

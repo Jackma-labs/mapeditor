@@ -62,6 +62,8 @@ function getBaseMapLayerDir(layer = 'enhanced') {
   return BASE_MAP_LAYER_DIRS[layer] || null;
 }
 const runtimeJobs = new Map();
+const editorMapLocks = new Map();
+let websocketClientSeq = 0;
 const HEAVY_RUNTIME_JOB_TYPES = new Set([
   'import-data-package-base-map',
   'import-data-packages-merged-base-map',
@@ -789,8 +791,20 @@ async function listEditorMaps() {
   }
 }
 
+function normalizeEditorMapName(mapName) {
+  const name = String(mapName || '').trim();
+  if (!name || name.includes('/') || name.includes('\\') || name.startsWith('.')) {
+    throw new Error(`非法地图名称: ${mapName || ''}`);
+  }
+  return name;
+}
+
 function buildEditorMapPath(mapName) {
-  return path.join(config.editorMapRoot, `${mapName}.json`);
+  return path.join(config.editorMapRoot, `${normalizeEditorMapName(mapName)}.json`);
+}
+
+function buildEditorMapHistoryDir(mapName) {
+  return path.join(config.editorMapRoot, '.history', normalizeEditorMapName(mapName));
 }
 
 async function loadEditorMap(mapName) {
@@ -799,12 +813,130 @@ async function loadEditorMap(mapName) {
   return JSON.parse(content);
 }
 
+function timestampForFileName() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+async function backupEditorMapIfExists(mapName, filePath) {
+  if (!(await pathExists(filePath))) {
+    return null;
+  }
+  const historyDir = buildEditorMapHistoryDir(mapName);
+  await ensureDir(historyDir);
+  const backupPath = path.join(historyDir, `${timestampForFileName()}.json`);
+  await fsp.copyFile(filePath, backupPath);
+  return backupPath;
+}
+
+async function listEditorMapHistory(mapName) {
+  const historyDir = buildEditorMapHistoryDir(mapName);
+  if (!(await pathExists(historyDir))) {
+    return [];
+  }
+  const entries = await fsp.readdir(historyDir, { withFileTypes: true });
+  const items = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) {
+      continue;
+    }
+    const filePath = path.join(historyDir, entry.name);
+    const stat = await fsp.stat(filePath).catch(() => null);
+    items.push({
+      file: entry.name,
+      path: filePath,
+      sizeBytes: stat?.size || 0,
+      updatedAt: stat?.mtime?.toISOString?.() || '',
+    });
+  }
+  return items.sort((left, right) => new Date(right.updatedAt) - new Date(left.updatedAt));
+}
+
 async function saveEditorMap(mapName, data) {
   await ensureDir(config.editorMapRoot);
   const filePath = buildEditorMapPath(mapName);
   const content = JSON.stringify(data, null, 2);
+  await backupEditorMapIfExists(mapName, filePath);
   await fsp.writeFile(filePath, content, 'utf8');
   return filePath;
+}
+
+function getWebsocketClientInfo(ws) {
+  if (!ws.mapeditorClientId) {
+    websocketClientSeq += 1;
+    ws.mapeditorClientId = `ws-${Date.now().toString(36)}-${websocketClientSeq}`;
+  }
+  const user = ws.mapeditorUser || {
+    username: 'anonymous',
+    role: 'anonymous',
+  };
+  return {
+    clientId: ws.mapeditorClientId,
+    username: user.username || 'anonymous',
+    role: user.role || '',
+  };
+}
+
+function pruneEditorMapLocks() {
+  for (const [mapName, lock] of editorMapLocks.entries()) {
+    if (!lock.ws || lock.ws.readyState !== WebSocket.OPEN) {
+      editorMapLocks.delete(mapName);
+    }
+  }
+}
+
+function serializeEditorMapLock(lock) {
+  if (!lock) {
+    return null;
+  }
+  return {
+    mapName: lock.mapName,
+    clientId: lock.clientId,
+    username: lock.username,
+    role: lock.role,
+    acquiredAt: lock.acquiredAt,
+    updatedAt: lock.updatedAt,
+  };
+}
+
+function acquireEditorMapLock(mapName, ws) {
+  pruneEditorMapLocks();
+  const normalizedMapName = normalizeEditorMapName(mapName);
+  const client = getWebsocketClientInfo(ws);
+  const existing = editorMapLocks.get(normalizedMapName);
+  if (existing && existing.clientId !== client.clientId) {
+    return {
+      granted: false,
+      lock: serializeEditorMapLock(existing),
+    };
+  }
+  const lock = {
+    ...client,
+    mapName: normalizedMapName,
+    ws,
+    acquiredAt: existing?.acquiredAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  editorMapLocks.set(normalizedMapName, lock);
+  return {
+    granted: true,
+    lock: serializeEditorMapLock(lock),
+  };
+}
+
+function ensureEditorMapLockForWrite(mapName, ws) {
+  const lock = acquireEditorMapLock(mapName, ws);
+  if (!lock.granted) {
+    throw new Error(`地图 ${mapName} 正在被 ${lock.lock?.username || '其他用户'} 编辑，请稍后再保存或发布`);
+  }
+  return lock.lock;
+}
+
+function releaseEditorMapLocksForSocket(ws) {
+  for (const [mapName, lock] of editorMapLocks.entries()) {
+    if (lock.ws === ws) {
+      editorMapLocks.delete(mapName);
+    }
+  }
 }
 
 async function prepareReleaseDir(mapName, allowOverwrite) {
@@ -855,11 +987,12 @@ async function handleOpenMapFile(ws, requestId, info) {
     if (!mapName) {
       throw new Error('Missing mapName');
     }
+    const lock = acquireEditorMapLock(mapName, ws);
     const map = await loadEditorMap(mapName);
     sendWsResponse(ws, requestId, {
       code: 0,
       message: 'Success',
-      data: { map },
+      data: { map, lock: lock.lock, lockGranted: lock.granted },
     });
   } catch (error) {
     log('OpenMapFile failed:', error);
@@ -881,6 +1014,7 @@ async function handleSaveMapFile(ws, requestId, info) {
     return;
   }
   try {
+    const lock = ensureEditorMapLockForWrite(mapName, ws);
     const filePath = buildEditorMapPath(mapName);
     const exists = await pathExists(filePath);
     if (exists && ifCheckFileDuplicated) {
@@ -894,7 +1028,7 @@ async function handleSaveMapFile(ws, requestId, info) {
     sendWsResponse(ws, requestId, {
       code: 0,
       message: 'Success',
-      data: { mapName },
+      data: { mapName, lock },
     });
   } catch (error) {
     log('SaveMapFile failed:', error);
@@ -931,6 +1065,7 @@ async function handleReleaseMapFile(ws, requestId, info) {
     return;
   }
   try {
+    const lock = ensureEditorMapLockForWrite(mapName, ws);
     await ensureDir(config.releaseRoot);
     const { exists, dir } = await prepareReleaseDir(
       mapName,
@@ -967,6 +1102,7 @@ async function handleReleaseMapFile(ws, requestId, info) {
         stdout: result.stdout.trim(),
         apolloLiteStage,
         apolloLiteStageError,
+        lock,
       },
     });
   } catch (error) {
@@ -992,10 +1128,20 @@ function handleGetAccountMapToolInfo(ws, requestId) {
 }
 
 wss.on('connection', (ws, req) => {
-  if (config.auth?.enabled && !getAuthUserFromRequest(req)) {
+  const user = getAuthUserFromRequest(req);
+  if (config.auth?.enabled && !user) {
     ws.close(1008, 'Authentication required');
     return;
   }
+  ws.mapeditorUser = user || {
+    username: 'admin',
+    role: 'admin',
+    authEnabled: false,
+  };
+  getWebsocketClientInfo(ws);
+  ws.on('close', () => {
+    releaseEditorMapLocksForSocket(ws);
+  });
   ws.on('message', async (raw) => {
     let message;
     try {
@@ -1665,6 +1811,24 @@ app.get('/runtime/jobs/:jobId/logs', (req, res) => {
   });
 });
 
+app.get('/runtime/editor-map-locks', requirePermission('canView'), (_req, res) => {
+  pruneEditorMapLocks();
+  sendSuccess(res, {
+    locks: Array.from(editorMapLocks.values()).map((lock) => serializeEditorMapLock(lock)),
+  });
+});
+
+app.get('/runtime/editor-map-history/:mapName', requirePermission('canView'), async (req, res) => {
+  try {
+    sendSuccess(res, {
+      mapName: normalizeEditorMapName(req.params.mapName),
+      history: await listEditorMapHistory(req.params.mapName),
+    });
+  } catch (error) {
+    sendError(res, 500, 15060, error.message);
+  }
+});
+
 app.post('/runtime/import-map-package', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -1783,6 +1947,19 @@ app.get('/runtime/apollolite/diagnose', async (_req, res) => {
   }
 });
 
+app.get('/runtime/apollolite/workflow', async (_req, res) => {
+  try {
+    const result = await runtime.getApolloLiteWorkflow(config);
+    res.status(result.ready ? 200 : 500).json({
+      code: result.ready ? 0 : 15058,
+      message: result.ready ? 'Success' : 'ApolloLite workflow is not ready',
+      data: result,
+    });
+  } catch (error) {
+    sendError(res, 500, 15058, error.message);
+  }
+});
+
 app.post('/runtime/apollolite/repair-job', requirePermission('canDeploy'), async (_req, res) => {
   try {
     const activeJob = findActiveHeavyRuntimeJob();
@@ -1799,6 +1976,20 @@ app.post('/runtime/apollolite/repair-job', requirePermission('canDeploy'), async
     sendAcceptedJob(res, job);
   } catch (error) {
     sendError(res, 500, 15057, error.message);
+  }
+});
+
+app.post('/runtime/apollolite/reset-simulation-job', requirePermission('canEdit'), async (_req, res) => {
+  try {
+    const job = startRuntimeJob(
+      'reset-apollolite-simulation',
+      (runtimeJob) =>
+        runtime.resetApolloLiteSimulationSession(config, (message) => updateRuntimeJobProgress(runtimeJob, message)),
+      {}
+    );
+    sendAcceptedJob(res, job);
+  } catch (error) {
+    sendError(res, 500, 15059, error.message);
   }
 });
 

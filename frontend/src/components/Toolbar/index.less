@@ -271,6 +271,79 @@
     }
 }
 
+.workflow-modal {
+    .workflow-step-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 12px;
+    }
+
+    .workflow-step-row {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr);
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid #3a4354;
+        border-radius: 8px;
+        background: #1f2633;
+
+        > span {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: #2f3b4e;
+            color: #c9d6eb;
+            line-height: 24px;
+        }
+
+        strong {
+            color: #ffffff;
+            font-size: 13px;
+        }
+
+        p {
+            margin: 3px 0 0;
+            color: #a6b5cc;
+            line-height: 1.5;
+        }
+
+        &.done,
+        &.ready {
+            border-color: rgba(70, 190, 130, 0.48);
+        }
+
+        &.warning {
+            border-color: rgba(255, 176, 32, 0.58);
+        }
+
+        &.blocked {
+            border-color: rgba(255, 77, 88, 0.58);
+        }
+    }
+
+    .workflow-routing-failure {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border: 1px solid rgba(255, 77, 88, 0.58);
+        border-radius: 8px;
+        background: rgba(255, 77, 88, 0.08);
+
+        strong {
+            color: #ff8b95;
+        }
+
+        p {
+            margin: 6px 0 0;
+            color: #ffd7dc;
+            line-height: 1.5;
+        }
+    }
+}
+
 .draw-tool-sidebar {
     position: fixed;
     left: 14px;
