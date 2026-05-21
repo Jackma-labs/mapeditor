@@ -1690,6 +1690,38 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
     error: error.message,
   }));
   await progress(`Restarting Dreamview to reload map config: ${containerName}`);
+  const helperScript = path.resolve(__dirname, '../../scripts/apollolite-dreamview.sh');
+  if (process.platform !== 'win32' && (await pathExists(helperScript))) {
+    const startedAt = new Date().toISOString();
+    const stopResult = await runCommand('bash', [helperScript, 'stop'], {
+      timeoutMs: APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS,
+    }).catch((error) => ({
+      code: -1,
+      stdout: '',
+      stderr: error.message,
+    }));
+    const startResult = await runCommand('bash', [helperScript, 'start'], {
+      timeoutMs: APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS,
+    });
+    const http = await waitForApolloLiteDreamviewHttp(apolloLite);
+    return {
+      containerName,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      helperScript,
+      stopResult: {
+        code: stopResult.code,
+        stderr: String(stopResult.stderr || '').slice(0, 2000),
+      },
+      startResult: {
+        code: startResult.code,
+        stderr: String(startResult.stderr || '').slice(0, 2000),
+      },
+      staleSimulationCleanup,
+      http,
+    };
+  }
+
   const command = [
     'cd /apollo',
     'source /apollo/scripts/apollo_base.sh >/dev/null 2>&1 || true',
