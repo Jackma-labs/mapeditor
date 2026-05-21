@@ -1,5 +1,6 @@
 const fs = require('fs');
 const fsp = fs.promises;
+const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
 const path = require('path');
@@ -914,6 +915,23 @@ function resolveApolloLiteMapPath(mapRoot, mapName) {
   return targetDir;
 }
 
+function createApolloLiteRuntimeMapName(mapName) {
+  const normalizedMapName = validateMapName(mapName);
+  if (/^[A-Za-z0-9_.-]+$/u.test(normalizedMapName) && !normalizedMapName.startsWith('.')) {
+    return normalizedMapName;
+  }
+
+  const asciiName = normalizedMapName
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7e]+/gu, '')
+    .replace(/[^A-Za-z0-9_.-]+/gu, '_')
+    .replace(/_+/gu, '_')
+    .replace(/^[_ .-]+|[_ .-]+$/gu, '')
+    .slice(0, 48);
+  const hash = crypto.createHash('sha1').update(normalizedMapName).digest('hex').slice(0, 8);
+  return `${asciiName || 'mapeditor_map'}_${hash}`;
+}
+
 async function selectReleasedMapName(config, mapName) {
   if (mapName) {
     return validateMapName(mapName);
@@ -943,6 +961,7 @@ async function runApolloLiteValidationCommand(config, params) {
   }
   const replacements = {
     mapName: params.mapName,
+    apolloLiteMapName: params.apolloLiteMapName || params.mapName,
     mapDir: params.mapDir,
     apolloLiteRoot: params.apolloLiteRoot,
   };
@@ -970,22 +989,21 @@ async function updateApolloLiteDefaultMapFlag(apolloLite, mapName) {
     await fsp.copyFile(flagfilePath, backupPath).catch(() => {});
   }
   const lines = (await fsp.readFile(flagfilePath, 'utf8')).split(/\r?\n/);
-  let replaced = false;
-  const nextLines = lines.map((line) => {
-    if (line.startsWith('--map_dir=')) {
-      replaced = true;
-      return `--map_dir=${mapDirValue}`;
+  let removedMapDirEntries = 0;
+  const nextLines = lines.filter((line) => {
+    if (line.trim().startsWith('--map_dir=')) {
+      removedMapDirEntries += 1;
+      return false;
     }
-    return line;
+    return true;
   });
-  if (!replaced) {
-    nextLines.push(`--map_dir=${mapDirValue}`);
-  }
+  nextLines.push(`--map_dir=${mapDirValue}`);
   await fsp.writeFile(flagfilePath, `${nextLines.join('\n').replace(/\n+$/u, '')}\n`, 'utf8');
   return {
     flagfilePath,
     backupPath,
     mapDir: mapDirValue,
+    removedMapDirEntries,
   };
 }
 
@@ -1003,14 +1021,15 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
   }
 
   const mapName = await selectReleasedMapName(config, params.mapName);
+  const apolloLiteMapName = createApolloLiteRuntimeMapName(mapName);
   await progress(`Checking released map for ApolloLite: ${mapName}`);
   const inspection = await inspectReleasedMapForApolloLite(config, mapName);
   if (!inspection.ready) {
     throw new Error(`ApolloLite map preflight failed: ${inspection.errors.join('; ')}`);
   }
 
-  const targetDir = resolveApolloLiteMapPath(apolloLite.mapRoot, mapName);
-  const stagingDir = resolveApolloLiteMapPath(apolloLite.mapRoot, `.mapeditor-stage-${mapName}-${Date.now()}`);
+  const targetDir = resolveApolloLiteMapPath(apolloLite.mapRoot, apolloLiteMapName);
+  const stagingDir = resolveApolloLiteMapPath(apolloLite.mapRoot, `.mapeditor-stage-${apolloLiteMapName}-${Date.now()}`);
   await progress(`Copying map package into ApolloLite staging: ${targetDir}`);
   await fsp.rm(stagingDir, { recursive: true, force: true });
   await fsp.cp(inspection.path, stagingDir, { recursive: true, force: true });
@@ -1026,6 +1045,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
   const stageWarnings = [...inspection.warnings];
   const stageManifest = {
     mapName,
+    apolloLiteMapName,
     stagedAt,
     sourceDir: inspection.path,
     targetDir,
@@ -1037,18 +1057,22 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
   await fsp.writeFile(path.join(stagingDir, 'mapeditor_apollolite_stage.json'), JSON.stringify(stageManifest, null, 2), 'utf8');
   await fsp.rm(targetDir, { recursive: true, force: true });
   await fsp.rename(stagingDir, targetDir);
-  const defaultMapFlag = await updateApolloLiteDefaultMapFlag(apolloLite, mapName);
+  const defaultMapFlag = await updateApolloLiteDefaultMapFlag(apolloLite, apolloLiteMapName);
+  let staleSimulationCleanup = null;
   let dreamviewChange = null;
   let dreamviewRestart = null;
   if (apolloLite.simulationReady) {
+    staleSimulationCleanup = await stopApolloLiteStaleSimulationProcesses(apolloLite, progress).catch((error) => ({
+      error: error.message,
+    }));
     try {
-      await progress(`Switching Dreamview to ApolloLite map: ${mapName}`);
-      dreamviewChange = await changeDreamviewMap(apolloLite, mapName);
+      await progress(`Switching Dreamview to ApolloLite map: ${apolloLiteMapName}`);
+      dreamviewChange = await changeDreamviewMap(apolloLite, apolloLiteMapName);
     } catch (error) {
       await progress(`Dreamview map switch needs runtime reload: ${error.message}`);
       try {
         dreamviewRestart = await restartApolloLiteDreamview(apolloLite, progress);
-        dreamviewChange = await changeDreamviewMap(apolloLite, mapName);
+        dreamviewChange = await changeDreamviewMap(apolloLite, apolloLiteMapName);
       } catch (restartError) {
         const message = `Dreamview map switch failed after restart: ${restartError.message}`;
         stageWarnings.push(message);
@@ -1063,6 +1087,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     validation = await runApolloLiteValidationCommand(config, {
       validationCommand: apolloLite.validationCommand,
       mapName,
+      apolloLiteMapName,
       mapDir: targetDir,
       apolloLiteRoot: apolloLite.root,
     });
@@ -1077,6 +1102,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     finishedAt: new Date().toISOString(),
     sourceDir: inspection.path,
     targetDir,
+    apolloLiteMapName,
     apolloLite: {
       root: apolloLite.root,
       mapRoot: apolloLite.mapRoot,
@@ -1086,6 +1112,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
       validationCommandConfigured: apolloLite.validationCommandConfigured,
     },
     defaultMapFlag,
+    staleSimulationCleanup,
     dreamviewChange,
     dreamviewRestart,
     warnings: stageWarnings,
@@ -1095,11 +1122,13 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
   await progress(`ApolloLite staging ready: ${mapName}`);
   return {
     mapName,
+    apolloLiteMapName,
     sourceDir: inspection.path,
     targetDir,
     inspection,
     removedEmptyBinaries,
     defaultMapFlag,
+    staleSimulationCleanup,
     dreamviewChange,
     dreamviewRestart,
     validation,
@@ -1599,6 +1628,39 @@ async function waitForApolloLiteDreamviewHttp(apolloLite, timeoutMs = APOLLOLITE
   throw new Error(`Dreamview did not become reachable after restart: ${lastProbe?.message || 'timeout'}`);
 }
 
+async function stopApolloLiteStaleSimulationProcesses(apolloLite, progress = async () => {}) {
+  const containerName = await resolveApolloLiteDockerContainer(apolloLite);
+  if (!containerName) {
+    return {
+      containerName: '',
+      stopped: false,
+      message: 'ApolloLite docker container was not found',
+    };
+  }
+  await progress(`Stopping stale ApolloLite PNC processes: ${containerName}`);
+  const command = [
+    'set +e',
+    "routing_pids=$(pgrep -f '[r]outing.dag' || true)",
+    "planning_pids=$(pgrep -f '[p]lanning.dag' || true)",
+    "control_pids=$(pgrep -f '[c]ontrol.dag' || true)",
+    'pids="$routing_pids $planning_pids $control_pids"',
+    'if [ -n "$(echo "$pids" | tr -d " ")" ]; then kill -TERM $pids 2>/dev/null || true; sleep 1; fi',
+    "routing_left=$(pgrep -f '[r]outing.dag' || true)",
+    "planning_left=$(pgrep -f '[p]lanning.dag' || true)",
+    "control_left=$(pgrep -f '[c]ontrol.dag' || true)",
+    'printf "routing=%s\\nplanning=%s\\ncontrol=%s\\nremaining_routing=%s\\nremaining_planning=%s\\nremaining_control=%s\\n" "$routing_pids" "$planning_pids" "$control_pids" "$routing_left" "$planning_left" "$control_left"',
+  ].join('; ');
+  const result = await runCommand('docker', ['exec', '-u', '0', containerName, 'bash', '-lc', command], {
+    timeoutMs: 10000,
+  });
+  return {
+    containerName,
+    stopped: true,
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
+  };
+}
+
 async function restartApolloLiteDreamview(apolloLite, progress = async () => {}) {
   const containerName = await resolveApolloLiteDockerContainer(apolloLite);
   if (!containerName) {
@@ -1614,6 +1676,9 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
     });
     await delay(1000);
   }
+  const staleSimulationCleanup = await stopApolloLiteStaleSimulationProcesses(apolloLite, progress).catch((error) => ({
+    error: error.message,
+  }));
   await progress(`Restarting Dreamview to reload map config: ${containerName}`);
   const command = [
     'cd /apollo',
@@ -1633,6 +1698,7 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
     containerName,
     startedAt,
     finishedAt: new Date().toISOString(),
+    staleSimulationCleanup,
     http,
   };
 }
@@ -1901,7 +1967,7 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
   }
   await progress('Building route from staged Apollo map');
   const route = await buildApolloLiteSimulationRoute(stage.targetDir, startPose);
-  route.mapName = stage.mapName;
+  route.mapName = stage.apolloLiteMapName || stage.mapName;
   route.startPose = startPose;
   const dreamview = await runDreamviewSimulationSequence(apolloLite, route, progress);
   await progress('Checking whether the simulated vehicle starts moving');
