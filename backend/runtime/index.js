@@ -1688,6 +1688,34 @@ async function runDreamviewSimulationSequence(apolloLite, route, progress) {
   };
 }
 
+async function stopDreamviewSimulationSequence(apolloLite, progress) {
+  const wsUrl = buildDreamviewWebSocketUrl(apolloLite);
+  await progress(`Stopping ApolloLite simulation modules: ${wsUrl}`);
+  const ws = await connectDreamviewWebSocket(wsUrl);
+  const stoppedModules = [];
+  try {
+    for (const component of [...APOLLOLITE_SIMULATION_COMPONENTS].reverse()) {
+      sendDreamviewMessage(ws, {
+        type: 'HMIAction',
+        action: 'STOP_MODULE',
+        value: component.actionModule,
+      });
+      stoppedModules.push(component.actionModule);
+      await delay(300);
+    }
+    sendDreamviewMessage(ws, { type: 'ToggleSimControl', enable: false });
+    await delay(300);
+  } finally {
+    ws.close();
+  }
+  return {
+    wsUrl,
+    stoppedModules,
+    simControlEnabled: false,
+    stoppedAt: new Date().toISOString(),
+  };
+}
+
 async function resolveApolloLiteDockerContainer(apolloLite) {
   if (apolloLite.dockerContainer) {
     return apolloLite.dockerContainer;
@@ -1845,6 +1873,9 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
   const dreamview = await runDreamviewSimulationSequence(apolloLite, route, progress);
   await progress('Checking whether the simulated vehicle starts moving');
   const motion = await waitForApolloLiteMotion(apolloLite, progress);
+  const cleanup = await stopDreamviewSimulationSequence(apolloLite, progress).catch((error) => ({
+    error: error.message,
+  }));
   const ready = motion.moved === true;
   const result = {
     ready,
@@ -1856,6 +1887,7 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
     route,
     dreamview,
     motion,
+    cleanup,
   };
   await appendDeploymentRecord(config, {
     id: createDeploymentId('apollolite-sim'),
@@ -1870,6 +1902,7 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
       estimatedLengthMeters: route.estimatedLengthMeters,
     },
     motion,
+    cleanup,
   }).catch(() => {});
   if (!ready) {
     const message = motion.message || 'ApolloLite simulation route was sent, but vehicle motion was not confirmed';
