@@ -51,6 +51,21 @@ interface LaneComponent {
     laneIds: string[];
 }
 
+interface LaneEndpointInfo {
+    laneId: string;
+    endpoint: 'start' | 'end';
+    pointIds: [string | null, string | null];
+    center: { x: number; y: number };
+}
+
+interface ComponentGap {
+    fromComponentId: number;
+    toComponentId: number;
+    from: LaneEndpointInfo;
+    to: LaneEndpointInfo;
+    distance: number;
+}
+
 const validLaneDirections = new Set<number>([
     LaneDireaciotn.STRAIGHT,
     LaneDireaciotn.TURN_LEFT,
@@ -182,6 +197,17 @@ function formatLaneIds(laneIds: string[]) {
     return visibleLaneIds;
 }
 
+function formatReadableLaneIds(laneIds: string[]) {
+    if (laneIds.length === 0) {
+        return '无';
+    }
+    const visibleLaneIds = laneIds.slice(0, 8).join('、');
+    if (laneIds.length > 8) {
+        return `${visibleLaneIds} 等 ${laneIds.length} 条`;
+    }
+    return visibleLaneIds;
+}
+
 function buildLaneRelationDetails(
     relation: LaneRelation,
     laneComponentIndex: Record<string, number>,
@@ -202,6 +228,87 @@ function getLaneTarget(mapState: MapState, lane: Lane): MapQualityTarget {
         groudId: lane.groudId,
         boundaryIds: [lane.leftBoundaryId, lane.rightBoundaryId].filter(Boolean),
     };
+}
+
+function getEndpointCenter(mapState: MapState, pointIds: [string | null, string | null]) {
+    const leftPoint = pointIds[0] ? mapState.points[pointIds[0]] : null;
+    const rightPoint = pointIds[1] ? mapState.points[pointIds[1]] : null;
+    if (!leftPoint || !rightPoint) {
+        return null;
+    }
+    return {
+        x: (leftPoint.position.x + rightPoint.position.x) / 2,
+        y: (leftPoint.position.y + rightPoint.position.y) / 2,
+    };
+}
+
+function getLaneEndpointsForGap(mapState: MapState, relation: LaneRelation): LaneEndpointInfo[] {
+    const startCenter = getEndpointCenter(mapState, relation.startPointIds);
+    const endCenter = getEndpointCenter(mapState, relation.endPointIds);
+    return [
+        startCenter && {
+            laneId: relation.laneId,
+            endpoint: 'start' as const,
+            pointIds: relation.startPointIds,
+            center: startCenter,
+        },
+        endCenter && {
+            laneId: relation.laneId,
+            endpoint: 'end' as const,
+            pointIds: relation.endPointIds,
+            center: endCenter,
+        },
+    ].filter(Boolean) as LaneEndpointInfo[];
+}
+
+function distanceBetweenEndpoints(left: LaneEndpointInfo, right: LaneEndpointInfo) {
+    return Math.hypot(left.center.x - right.center.x, left.center.y - right.center.y);
+}
+
+function formatEndpoint(endpoint: LaneEndpointInfo) {
+    const endpointLabel = endpoint.endpoint === 'start' ? '起点' : '终点';
+    return `车道 ${endpoint.laneId} ${endpointLabel}(${formatReadableLaneIds(
+        endpoint.pointIds.filter(Boolean) as string[],
+    )})`;
+}
+
+function findNearestComponentGaps(
+    mapState: MapState,
+    laneComponents: LaneComponent[],
+    relations: Record<string, LaneRelation>,
+) {
+    const gaps: ComponentGap[] = [];
+    for (let i = 0; i < laneComponents.length; i += 1) {
+        for (let j = i + 1; j < laneComponents.length; j += 1) {
+            const fromComponent = laneComponents[i];
+            const toComponent = laneComponents[j];
+            const fromEndpoints = fromComponent.laneIds.flatMap((laneId) =>
+                getLaneEndpointsForGap(mapState, relations[laneId]),
+            );
+            const toEndpoints = toComponent.laneIds.flatMap((laneId) =>
+                getLaneEndpointsForGap(mapState, relations[laneId]),
+            );
+            let bestGap: ComponentGap = null;
+            fromEndpoints.forEach((from) => {
+                toEndpoints.forEach((to) => {
+                    const distance = distanceBetweenEndpoints(from, to);
+                    if (!bestGap || distance < bestGap.distance) {
+                        bestGap = {
+                            fromComponentId: fromComponent.id,
+                            toComponentId: toComponent.id,
+                            from,
+                            to,
+                            distance,
+                        };
+                    }
+                });
+            });
+            if (bestGap) {
+                gaps.push(bestGap);
+            }
+        }
+    }
+    return gaps.sort((left, right) => left.distance - right.distance);
 }
 
 export function inspectMapQuality(mapState: MapState): MapQualityReport {
@@ -382,14 +489,30 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
     }
 
     if (lanes.length > 1 && laneComponents.length > 1) {
+        const nearestGaps = findNearestComponentGaps(mapState, laneComponents, relations);
         buildIssue(issues, {
             severity: 'warning',
             title: '车道网络不连通',
-            description: `当前车道网络被分成 ${laneComponents.length} 个连通块，可能存在分离路段或漏连。`,
-            suggestion: '逐个检查孤立区域；如果是同一张运营地图，应补齐连接关系。',
+            description: `当前车道网络被分成 ${laneComponents.length} 个连通块，可能是双向道路合法分离，也可能存在漏连。`,
+            suggestion: '先检查下方列出的连通块和最近断点；如果这些车道属于同一条可行驶路线，请补齐前后继连接。',
             details: laneComponents
                 .slice(0, 6)
-                .map((component) => `区域 ${component.id}：${formatLaneIds(component.laneIds)}`),
+                .map(
+                    (component) =>
+                        `连通块 ${component.id}（${component.laneIds.length} 条）：${formatReadableLaneIds(
+                            component.laneIds,
+                        )}`,
+                )
+                .concat(
+                    nearestGaps
+                        .slice(0, 5)
+                        .map(
+                            (gap) =>
+                                `最近断点：连通块 ${gap.fromComponentId} ${formatEndpoint(gap.from)} ↔ 连通块 ${
+                                    gap.toComponentId
+                                } ${formatEndpoint(gap.to)}，中心距 ${gap.distance.toFixed(2)}m`,
+                        ),
+                ),
             target: {
                 type: 'map',
             },

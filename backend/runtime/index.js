@@ -1022,13 +1022,14 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
   }
 
   const stagedAt = new Date().toISOString();
+  const stageWarnings = [...inspection.warnings];
   const stageManifest = {
     mapName,
     stagedAt,
     sourceDir: inspection.path,
     targetDir,
     runtimeSelections: inspection.runtimeSelections,
-    warnings: inspection.warnings,
+    warnings: stageWarnings,
     removedEmptyBinaries,
     apolloLiteRoot: apolloLite.root,
   };
@@ -1036,6 +1037,17 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
   await fsp.rm(targetDir, { recursive: true, force: true });
   await fsp.rename(stagingDir, targetDir);
   const defaultMapFlag = await updateApolloLiteDefaultMapFlag(apolloLite, mapName);
+  let dreamviewChange = null;
+  if (apolloLite.simulationReady) {
+    try {
+      await progress(`Switching Dreamview to ApolloLite map: ${mapName}`);
+      dreamviewChange = await changeDreamviewMap(apolloLite, mapName);
+    } catch (error) {
+      const message = `Dreamview map switch failed: ${error.message}`;
+      stageWarnings.push(message);
+      await progress(message);
+    }
+  }
 
   let validation = null;
   if (apolloLite.validationCommand) {
@@ -1066,7 +1078,8 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
       validationCommandConfigured: apolloLite.validationCommandConfigured,
     },
     defaultMapFlag,
-    warnings: inspection.warnings,
+    dreamviewChange,
+    warnings: stageWarnings,
     removedEmptyBinaries,
   });
 
@@ -1078,6 +1091,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     inspection,
     removedEmptyBinaries,
     defaultMapFlag,
+    dreamviewChange,
     validation,
     apolloLite: {
       root: apolloLite.root,
@@ -1416,6 +1430,22 @@ function sendDreamviewMessage(ws, payload) {
     throw new Error('Dreamview websocket is not open');
   }
   ws.send(JSON.stringify(payload));
+}
+
+async function changeDreamviewMap(apolloLite, mapName) {
+  const wsUrl = buildDreamviewWebSocketUrl(apolloLite);
+  const ws = await connectDreamviewWebSocket(wsUrl);
+  try {
+    sendDreamviewMessage(ws, { type: 'HMIAction', action: 'CHANGE_MAP', value: mapName });
+    await delay(1000);
+  } finally {
+    ws.close();
+  }
+  return {
+    wsUrl,
+    mapName,
+    changedAt: new Date().toISOString(),
+  };
 }
 
 async function runDreamviewSimulationSequence(apolloLite, route, progress) {
