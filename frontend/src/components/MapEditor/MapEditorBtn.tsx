@@ -3,12 +3,14 @@ import React, { useEffect, useState } from 'react';
 import { combineLaneHandle } from 'src/handle/boundary/combineLaneHandle';
 import { connectLane, curveConnectLane } from 'src/handle/lane/LaneConnectHandle';
 import { mergeLane } from 'src/handle/lane/mergeLaneHandle';
-import { OperationType, ThreeElementType } from 'src/interface/commonInterFace';
+import { mergeJunctionLane } from 'src/handle/junction/mergeJunctionLaneHandle';
+import { OperationType, PickElementInfo, ThreeElementType } from 'src/interface/commonInterFace';
 import { LaneBoundaryType, LaneTrend } from 'src/interface/laneInterFace';
 import { useManagerStore } from 'src/store';
 import { getLaneEndPointIds, getLaneRelations, getLaneStartPointIds } from 'src/utils/geometryUtil';
 import { searchGroudFromBoundaryId } from 'src/utils/search/groudSearch';
 import { searchLaneFromGroudId, searchLanesFromBoundaryId } from 'src/utils/search/laneSearch';
+import { searchJunctionFromGroudId } from 'src/utils/search/junctionSearch';
 import PubSub from 'pubsub-js';
 import { splitLaneInCenterHandle } from 'src/handle/lane/splitLaneHandle';
 import { searchPointIdsFromBoundaryId, searchPointsFromBoundaryId } from 'src/utils/search/pointSearch';
@@ -24,11 +26,20 @@ import {
 import { searchBoundaryByBoundaryId } from 'src/utils/search/boundarySearch';
 import { roadBoundaryRalationsHandle } from 'src/handle/boundary/roadBoundaryRalationsHandle';
 
+const isLaneGroudType = (type?: ThreeElementType) =>
+    type === ThreeElementType.LaneGroud || type === ThreeElementType.LaneCurveGroud;
+
+const isJunctionLaneSelection = (items: PickElementInfo[] = []) =>
+    items.length === 2 &&
+    items.some((item) => item.type === ThreeElementType.JunctionGroud) &&
+    items.some((item) => isLaneGroudType(item.type));
+
 export default function Index() {
     const [canInsertPointToBoundary, setCanInsertPointToBoundary] = useState(false);
     const [canStragihtConnect, setCanStragihtConnect] = useState(false);
     const [canCurveConnect, setCanCurveConnect] = useState(false);
     const [canMerge, setCanMerge] = useState(false);
+    const [canMergeJunctionLane, setCanMergeJunctionLane] = useState(false);
     const [canModifyLane, setCanModifyLane] = useState(false);
     const [canSplitLaneInVertical, setCanSplitLaneInVertical] = useState(false);
     const [splitLaneInVerticalDisable, setSplitLaneInVerticalDisable] = useState(false);
@@ -59,6 +70,17 @@ export default function Index() {
             return;
         }
         mergeLane(lane1, lane2);
+    };
+    const handleJunctionLaneMerge = () => {
+        const junctionPick = mapState.currentPickElement.find((item) => item.type === ThreeElementType.JunctionGroud);
+        const lanePick = mapState.currentPickElement.find((item) => isLaneGroudType(item.type));
+        const junction = searchJunctionFromGroudId(junctionPick?.id);
+        const lane = searchLaneFromGroudId(lanePick?.id);
+        if (!junction || !lane) {
+            console.warn('handleJunctionLaneMerge: junction or lane not found');
+            return;
+        }
+        mergeJunctionLane(junction, lane);
     };
     const enableAddLaneBaseOneLane = () => {
         if (mapState.operationType !== OperationType.CopyLane) {
@@ -195,6 +217,11 @@ export default function Index() {
     };
     useEffect(() => {
         const { currentPickElement } = mapState;
+        setCanStragihtConnect(false);
+        setCanCurveConnect(false);
+        setCanMerge(false);
+        setCanCombineLane(false);
+        setCanMergeJunctionLane(isJunctionLaneSelection(currentPickElement));
         setCanInsertPointToBoundary(
             currentPickElement?.length === 1 &&
                 (currentPickElement[0].type === ThreeElementType.LaneBoundary ||
@@ -246,8 +273,8 @@ export default function Index() {
             }
         } else if (currentPickElement.length === 2) {
             if (
-                mapState.currentPickElement[0].type === ThreeElementType.LaneGroud ||
-                mapState.currentPickElement[0].type === ThreeElementType.LaneCurveGroud
+                isLaneGroudType(mapState.currentPickElement[0].type) &&
+                isLaneGroudType(mapState.currentPickElement[1].type)
             ) {
                 setCanCombineLane(false);
                 const groudId1 = mapState.currentPickElement[0]?.id;
@@ -318,10 +345,7 @@ export default function Index() {
             setCanCombineLane(false);
         }
 
-        if (
-            currentPickElement[0]?.type === ThreeElementType.LaneGroud ||
-            currentPickElement[0]?.type === ThreeElementType.LaneCurveGroud
-        ) {
+        if (currentPickElement.length > 0 && currentPickElement.every((item) => isLaneGroudType(item.type))) {
             setSplitLaneInVerticalDisable(false);
             setCanSplitLaneInVertical(true);
             const allRelation = isCurrentPickElementHaveAdjacentLane();
@@ -408,6 +432,11 @@ export default function Index() {
             {canMerge && (
                 <div className="lane-handle-btn" onClick={handleLaneMerge}>
                     合并
+                </div>
+            )}
+            {canMergeJunctionLane && (
+                <div className="lane-handle-btn" onClick={handleJunctionLaneMerge}>
+                    路口吸附车道
                 </div>
             )}
             {canModifyLane && (

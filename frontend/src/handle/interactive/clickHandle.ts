@@ -123,6 +123,11 @@ export function getActiveObject(
             currentPickElement[0].type === type ||
             (currentPickElement[0].type === ThreeElementType.LaneCurveGroud && type === ThreeElementType.LaneGroud) ||
             (currentPickElement[0].type === ThreeElementType.LaneGroud && type === ThreeElementType.LaneCurveGroud) ||
+            (currentPickElement[0].type === ThreeElementType.JunctionGroud &&
+                (type === ThreeElementType.LaneGroud || type === ThreeElementType.LaneCurveGroud)) ||
+            ((currentPickElement[0].type === ThreeElementType.LaneGroud ||
+                currentPickElement[0].type === ThreeElementType.LaneCurveGroud) &&
+                type === ThreeElementType.JunctionGroud) ||
             (currentPickElement[0].type === ThreeElementType.LaneBoundary && type === ThreeElementType.RoadBoundary) ||
             (currentPickElement[0].type === ThreeElementType.RoadBoundary && type === ThreeElementType.LaneBoundary) ||
             (currentPickElement[0].type === ThreeElementType.RoadBoundary &&

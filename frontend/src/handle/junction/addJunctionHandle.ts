@@ -30,7 +30,15 @@ export function addJunctionClickHandle(
     PubSub.publishSync('removeMouseMoveElements');
 
     const pointId = `${getElementMaxIndex(points) + 1}`;
-    const cm1 = new AddPointCommand(pointId, position, ThreeElementType.JunctionPoint);
+    const pointPick = getPickupObject(e, camera, dom, scene, [
+        ThreeElementType.JunctionPoint,
+        ThreeElementType.LanePoint,
+    ]);
+    const reusePointId = pointPick?.userData?.id;
+    const targetPointId = reusePointId || pointId;
+    const addPointCommand = reusePointId
+        ? null
+        : new AddPointCommand(pointId, position, ThreeElementType.JunctionPoint);
     if (!newState.currentDrawData.currentDrawingElementId) {
         const junctionId = `${getElementMaxIndex(junctions) + 1}`;
         const junctionBoundaryId = `${getElementMaxIndex(boundarys) + 1}`;
@@ -47,8 +55,9 @@ export function addJunctionClickHandle(
             [],
             [],
         );
-        const cm5 = new AddPointToBoundaryCommand(pointId, junctionBoundaryId, true, false);
-        useManagerStore.getState().addCommand([cm1, cm2, cm3, cm4, cm5]);
+        const cm5 = new AddPointToBoundaryCommand(targetPointId, junctionBoundaryId, true, false);
+        const actions = addPointCommand ? [addPointCommand, cm2, cm3, cm4, cm5] : [cm2, cm3, cm4, cm5];
+        useManagerStore.getState().addCommand(actions);
     } else {
         const junctionId = newState.currentDrawData.currentDrawingElementId;
         const junction = junctions[junctionId];
@@ -64,21 +73,16 @@ export function addJunctionClickHandle(
             return;
         }
 
-        if (boundary.pointIds.length > 2) {
-            const pointPick = getPickupObject(e, camera, dom, scene, [ThreeElementType.JunctionPoint]);
-            if (pointPick?.userData?.id === boundary.pointIds[0]) {
-                const cm2 = new AddPointToBoundaryCommand(boundary.pointIds[0], junctionBoundaryId, true, false);
-                const cm4 = new SetCurrentDrawDataCommand(null, null);
-                const cm5 = new SetOperationTypeCommand(null);
-                const cm6 = new AddGroudCommand(junction.groudId, ThreeElementType.JunctionGroud);
-                useManagerStore.getState().addCommand([cm2, cm4, cm5, cm6]);
-            } else {
-                const cm2 = new AddPointToBoundaryCommand(pointId, junctionBoundaryId, true, false);
-                useManagerStore.getState().addCommand([cm1, cm2]);
-            }
-        } else {
-            const cm2 = new AddPointToBoundaryCommand(pointId, junctionBoundaryId, true, false);
-            useManagerStore.getState().addCommand([cm1, cm2]);
+        if (boundary.pointIds.length > 2 && pointPick?.userData?.id === boundary.pointIds[0]) {
+            const cm2 = new AddPointToBoundaryCommand(boundary.pointIds[0], junctionBoundaryId, true, false);
+            const cm4 = new SetCurrentDrawDataCommand(null, null);
+            const cm5 = new SetOperationTypeCommand(null);
+            const cm6 = new AddGroudCommand(junction.groudId, ThreeElementType.JunctionGroud);
+            useManagerStore.getState().addCommand([cm2, cm4, cm5, cm6]);
+        } else if (!boundary.pointIds.includes(targetPointId)) {
+            const cm2 = new AddPointToBoundaryCommand(targetPointId, junctionBoundaryId, true, false);
+            const actions = addPointCommand ? [addPointCommand, cm2] : [cm2];
+            useManagerStore.getState().addCommand(actions);
         }
     }
 }
