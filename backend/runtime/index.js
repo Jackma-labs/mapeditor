@@ -1158,6 +1158,16 @@ function buildDreamviewWebSocketUrl(apolloLite) {
   return parsed.toString();
 }
 
+function buildDreamviewMapWebSocketUrl(apolloLite) {
+  const target = apolloLite.dreamviewProxyTarget || apolloLite.dreamviewUrl || 'http://127.0.0.1:8888';
+  const parsed = new URL(target);
+  parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+  const pathname = parsed.pathname.replace(/\/+$/u, '');
+  parsed.pathname = !pathname || pathname === '/' ? '/map' : `${pathname}/map`;
+  parsed.search = '';
+  return parsed.toString();
+}
+
 function extractTopLevelProtoBlocks(text, blockName) {
   const blocks = [];
   const lines = text.split(/\r?\n/u);
@@ -1738,6 +1748,277 @@ async function changeDreamviewMap(apolloLite, mapName) {
   } finally {
     ws.close();
   }
+}
+
+async function readApolloLiteMapDirEntries(root) {
+  const flagfilePath = root ? path.join(root, ...APOLLOLITE_GLOBAL_FLAGFILE.split('/')) : '';
+  if (!flagfilePath || !(await pathExists(flagfilePath))) {
+    return {
+      available: false,
+      flagfilePath,
+      entries: [],
+    };
+  }
+  const content = await fsp.readFile(flagfilePath, 'utf8');
+  const entries = content
+    .split(/\r?\n/u)
+    .map((line, index) => ({ lineNumber: index + 1, line: line.trim() }))
+    .filter((item) => item.line.startsWith('--map_dir='))
+    .map((item) => ({
+      lineNumber: item.lineNumber,
+      mapDir: item.line.slice('--map_dir='.length).trim(),
+      mapName: path.basename(item.line.slice('--map_dir='.length).trim()),
+    }));
+  return {
+    available: true,
+    flagfilePath,
+    entries,
+  };
+}
+
+async function inspectApolloLiteSimulationProcesses(apolloLite) {
+  const containerName = await resolveApolloLiteDockerContainer(apolloLite);
+  if (!containerName) {
+    return {
+      containerName: '',
+      available: false,
+      processes: [],
+    };
+  }
+  const command = "ps -eo pid,cmd | grep -E 'routing\\.dag|planning\\.dag|control\\.dag' | grep -v grep || true";
+  const result = await runCommand('docker', ['exec', containerName, 'bash', '-lc', command], {
+    timeoutMs: 5000,
+  });
+  const processes = result.stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^(\d+)\s+(.+)$/u);
+      return {
+        pid: match ? Number(match[1]) : null,
+        command: match ? match[2] : line,
+      };
+    });
+  return {
+    containerName,
+    available: true,
+    processes,
+  };
+}
+
+function waitForDreamviewMessage(ws, predicate, timeoutMs = APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      ws.off('message', onMessage);
+      ws.off('error', onError);
+    };
+    const onMessage = (data, isBinary) => {
+      let parsed = null;
+      if (!isBinary) {
+        try {
+          parsed = JSON.parse(Buffer.isBuffer(data) ? data.toString('utf8') : String(data));
+        } catch (error) {
+          parsed = null;
+        }
+      }
+      const result = predicate({ data, isBinary, parsed });
+      if (result) {
+        cleanup();
+        resolve(result);
+      }
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Dreamview websocket probe timeout'));
+    }, timeoutMs);
+    ws.on('message', onMessage);
+    ws.on('error', onError);
+  });
+}
+
+async function probeDreamviewMapData(apolloLite, radius = 200) {
+  const wsUrl = buildDreamviewWebSocketUrl(apolloLite);
+  const mapWsUrl = buildDreamviewMapWebSocketUrl(apolloLite);
+  const ws = await connectDreamviewWebSocket(wsUrl);
+  try {
+    const idsPromise = waitForDreamviewMessage(
+      ws,
+      ({ parsed }) => {
+        if (parsed?.type !== 'MapElementIds') {
+          return null;
+        }
+        return parsed;
+      },
+      APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS
+    );
+    sendDreamviewMessage(ws, { type: 'RetrieveMapElementIdsByRadius', radius });
+    const idsResponse = await idsPromise;
+    const ids = idsResponse.mapElementIds || {};
+    const counts = Object.fromEntries(
+      Object.entries(ids).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0])
+    );
+    const mapWs = await connectDreamviewWebSocket(mapWsUrl);
+    try {
+      const mapDataPromise = waitForDreamviewMessage(
+        mapWs,
+        ({ data, isBinary }) => {
+          if (!isBinary) {
+            return null;
+          }
+          return {
+            bytes: data.length,
+          };
+        },
+        APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS
+      );
+      sendDreamviewMessage(mapWs, { type: 'RetrieveMapData', elements: ids });
+      const mapData = await mapDataPromise;
+      return {
+        ok: mapData.bytes > 0,
+        wsUrl,
+        mapWsUrl,
+        radius,
+        counts,
+        mapData,
+      };
+    } finally {
+      mapWs.close();
+    }
+  } finally {
+    ws.close();
+  }
+}
+
+async function diagnoseApolloLiteRuntime(config) {
+  const apolloLite = await getApolloLiteStatus(config);
+  const flagfile = await readApolloLiteMapDirEntries(apolloLite.root).catch((error) => ({
+    available: false,
+    error: error.message,
+    entries: [],
+  }));
+  const processes = await inspectApolloLiteSimulationProcesses(apolloLite).catch((error) => ({
+    available: false,
+    error: error.message,
+    processes: [],
+  }));
+  let hmi = null;
+  let mapData = null;
+  if (apolloLite.dreamviewHttpReady) {
+    const ws = await connectDreamviewWebSocket(buildDreamviewWebSocketUrl(apolloLite)).catch(() => null);
+    if (ws) {
+      try {
+        const status = await readDreamviewHmiStatus(ws, APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS);
+        hmi = {
+          currentMap: getDreamviewCurrentMap(status),
+          currentMode: getDreamviewCurrentMode(status),
+        };
+      } finally {
+        ws.close();
+      }
+    }
+    mapData = await probeDreamviewMapData(apolloLite).catch((error) => ({
+      ok: false,
+      error: error.message,
+    }));
+  }
+
+  const checks = [
+    {
+      name: 'apollolite-root',
+      status: apolloLite.rootAvailable ? 'ok' : 'error',
+      message: apolloLite.rootAvailable ? apolloLite.root : 'ApolloLite root is unavailable',
+    },
+    {
+      name: 'dreamview-http',
+      status: apolloLite.dreamviewHttpReady ? 'ok' : 'error',
+      message: apolloLite.dreamviewHttp?.message || '',
+    },
+    {
+      name: 'single-map-dir',
+      status: flagfile.entries?.length === 1 ? 'ok' : 'warning',
+      message: `${flagfile.entries?.length || 0} map_dir entr${flagfile.entries?.length === 1 ? 'y' : 'ies'}`,
+    },
+    {
+      name: 'stale-pnc-processes',
+      status: processes.processes?.length ? 'warning' : 'ok',
+      message: processes.processes?.length ? `${processes.processes.length} stale process(es)` : 'no stale PNC process',
+    },
+    {
+      name: 'dreamview-map-data',
+      status: mapData?.ok ? 'ok' : 'error',
+      message: mapData?.ok ? `${mapData.mapData.bytes} bytes` : mapData?.error || 'Dreamview map data was not checked',
+    },
+  ];
+  return {
+    ready: checks.every((check) => check.status === 'ok'),
+    checkedAt: new Date().toISOString(),
+    checks,
+    apolloLite,
+    flagfile,
+    processes,
+    hmi,
+    mapData,
+  };
+}
+
+async function repairApolloLiteRuntime(config, progress = async () => {}) {
+  const before = await diagnoseApolloLiteRuntime(config).catch((error) => ({
+    ready: false,
+    error: error.message,
+  }));
+  const apolloLite = await getApolloLiteStatus(config);
+  const actions = [];
+
+  const flagMapName = apolloLite.defaultMapName || '';
+  if (flagMapName) {
+    await progress(`Normalizing ApolloLite map_dir: ${flagMapName}`);
+    actions.push({
+      name: 'normalize-map-dir',
+      result: await updateApolloLiteDefaultMapFlag(apolloLite, flagMapName),
+    });
+  }
+
+  actions.push({
+    name: 'stop-stale-pnc-processes',
+    result: await stopApolloLiteStaleSimulationProcesses(apolloLite, progress).catch((error) => ({
+      error: error.message,
+    })),
+  });
+
+  await progress('Restarting Dreamview for clean runtime state');
+  actions.push({
+    name: 'restart-dreamview',
+    result: await restartApolloLiteDreamview(apolloLite, progress).catch((error) => ({
+      error: error.message,
+    })),
+  });
+
+  if (flagMapName) {
+    actions.push({
+      name: 'switch-dreamview-map',
+      result: await changeDreamviewMap(apolloLite, flagMapName).catch((error) => ({
+        error: error.message,
+      })),
+    });
+  }
+
+  const after = await diagnoseApolloLiteRuntime(config).catch((error) => ({
+    ready: false,
+    error: error.message,
+  }));
+  return {
+    repairedAt: new Date().toISOString(),
+    ready: after.ready === true,
+    before,
+    actions,
+    after,
+  };
 }
 
 async function runDreamviewSimulationSequence(apolloLite, route, progress) {
@@ -6486,6 +6767,8 @@ module.exports = {
   getStatus,
   getRuntimeDoctor,
   getApolloLiteStatus,
+  diagnoseApolloLiteRuntime,
+  repairApolloLiteRuntime,
   getDeployConfig,
   discoverEdgeMapRoot,
   configureEdgeDeploy,

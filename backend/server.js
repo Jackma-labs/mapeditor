@@ -69,6 +69,7 @@ const HEAVY_RUNTIME_JOB_TYPES = new Set([
   'sync-capture-source-packages',
   'prebuild-data-package-base-maps',
   'stage-apollolite-map',
+  'repair-apollolite-runtime',
 ]);
 
 function log(...args) {
@@ -1766,6 +1767,38 @@ app.get('/runtime/apollolite/status', async (_req, res) => {
       code: 15052,
       message: error.message,
     });
+  }
+});
+
+app.get('/runtime/apollolite/diagnose', async (_req, res) => {
+  try {
+    const result = await runtime.diagnoseApolloLiteRuntime(config);
+    res.status(result.ready ? 200 : 500).json({
+      code: result.ready ? 0 : 15056,
+      message: result.ready ? 'Success' : 'ApolloLite runtime needs repair',
+      data: result,
+    });
+  } catch (error) {
+    sendError(res, 500, 15056, error.message);
+  }
+});
+
+app.post('/runtime/apollolite/repair-job', requirePermission('canDeploy'), async (_req, res) => {
+  try {
+    const activeJob = findActiveHeavyRuntimeJob();
+    if (activeJob) {
+      sendRuntimeJobBusy(res, activeJob);
+      return;
+    }
+    const job = startRuntimeJob(
+      'repair-apollolite-runtime',
+      (runtimeJob) =>
+        runtime.repairApolloLiteRuntime(config, (message) => updateRuntimeJobProgress(runtimeJob, message)),
+      {}
+    );
+    sendAcceptedJob(res, job);
+  } catch (error) {
+    sendError(res, 500, 15057, error.message);
   }
 });
 

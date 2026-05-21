@@ -49,6 +49,8 @@ interface RenderIconProps {
 // eslint-disable-next-line react/function-component-definition
 const RenderIcon: FC<RenderIconProps> = ({ url }) => <img src={url} alt="My SVG" />;
 
+type MapDialogMode = 'baseMap' | 'editorMap';
+
 function MapElementIcon({ type }: { type: MapElementType }) {
     const common = {
         fill: 'none',
@@ -188,6 +190,7 @@ export default function Index(prop: ToolbarProps) {
     const { messageApi, account, onLogout } = prop;
     const [rotateStatus, setRotateStatus] = useState(RotateStatus.Disable);
     const [dialogTitle, setDialogTitle] = useState('');
+    const [mapDialogMode, setMapDialogMode] = useState<MapDialogMode>('baseMap');
     const [curHoverTool, setCurHoverTool] = useState<HoverTool>(null);
     const [showSaveDataRemind, changeShowSaveDataRemind] = useState(false);
 
@@ -303,6 +306,72 @@ export default function Index(prop: ToolbarProps) {
         } catch (error: any) {
             Modal.error({
                 title: '运行状态获取失败',
+                content: error?.message || 'Unknown error',
+            });
+        }
+    };
+
+    const showApolloLiteDiagnosis = async () => {
+        try {
+            const response = await FileService.diagnoseApolloLiteRuntime();
+            const result = response?.data;
+            const checks = result?.checks || [];
+            const mapData = result?.mapData;
+            const hmi = result?.hmi;
+            const content = (
+                <div className="runtime-status-modal">
+                    <p>{`运行状态: ${result?.ready ? '正常' : '需要修复'}`}</p>
+                    <p>{`Dreamview 当前地图: ${hmi?.currentMap || '未读取'}`}</p>
+                    <p>{`地图数据: ${mapData?.ok ? `${mapData.mapData?.bytes || 0} bytes` : mapData?.error || '未返回'}`}</p>
+                    <ul>
+                        {checks.map((check: any) => (
+                            <li key={check.name}>{`[${check.status}] ${check.name}: ${check.message}`}</li>
+                        ))}
+                    </ul>
+                </div>
+            );
+            if (response?.code === 0) {
+                Modal.success({
+                    title: 'ApolloLite 诊断通过',
+                    width: 720,
+                    content,
+                });
+                return;
+            }
+            Modal.confirm({
+                title: 'ApolloLite 需要自愈',
+                width: 720,
+                content,
+                okText: '自动修复',
+                cancelText: '取消',
+                onOk: async () => {
+                    const repairResponse = await FileService.startApolloLiteRepairJob();
+                    if (repairResponse?.code !== 0) {
+                        throw new Error(repairResponse?.message || '提交自动修复任务失败');
+                    }
+                    const jobId = repairResponse?.data?.job?.id;
+                    if (!jobId) {
+                        throw new Error('后台任务没有返回 jobId');
+                    }
+                    const job = await waitForRuntimeJob(jobId, 'ApolloLite 自动修复');
+                    const after = job.result?.after;
+                    Modal.success({
+                        title: after?.ready ? 'ApolloLite 自动修复完成' : 'ApolloLite 自动修复已执行',
+                        width: 720,
+                        content: (
+                            <div className="runtime-status-modal">
+                                <p>{`最终状态: ${after?.ready ? '正常' : '仍需人工检查'}`}</p>
+                                {(after?.checks || []).map((check: any) => (
+                                    <p key={check.name}>{`[${check.status}] ${check.name}: ${check.message}`}</p>
+                                ))}
+                            </div>
+                        ),
+                    });
+                },
+            });
+        } catch (error: any) {
+            Modal.error({
+                title: 'ApolloLite 诊断失败',
                 content: error?.message || 'Unknown error',
             });
         }
@@ -677,10 +746,12 @@ export default function Index(prop: ToolbarProps) {
         switch (key) {
             case '1':
                 setDialogTitle('新建标注任务');
+                setMapDialogMode('baseMap');
                 setVisibleVal({ ...visibleVal, map: true });
                 break;
             case '2':
                 setDialogTitle('继续编辑标注');
+                setMapDialogMode('editorMap');
                 if (viewstate.onsave) {
                     changeShowSaveDataRemind(true);
                 } else {
@@ -704,6 +775,9 @@ export default function Index(prop: ToolbarProps) {
                 break;
             case 'runtime-status':
                 showRuntimeStatus();
+                break;
+            case 'apollolite-diagnose':
+                showApolloLiteDiagnosis();
                 break;
             case 'preflight-deploy':
                 showPreflightResult();
@@ -937,6 +1011,20 @@ export default function Index(prop: ToolbarProps) {
                         {
                             label: (
                                 <FileMenuLabel
+                                    title="ApolloLite 诊断修复"
+                                    description={
+                                        canDeploy
+                                            ? '检查 Dreamview 地图数据、残留模块和 map_dir，并可一键自愈'
+                                            : '需要管理员权限'
+                                    }
+                                />
+                            ),
+                            key: 'apollolite-diagnose',
+                            disabled: !canDeploy,
+                        },
+                        {
+                            label: (
+                                <FileMenuLabel
                                     title="生产工作流"
                                     description="查看采图、标注、发布、仿真、部署的标准步骤"
                                 />
@@ -1014,7 +1102,14 @@ export default function Index(prop: ToolbarProps) {
                     ))}
                 </div>
 
-                {visibleVal.map && <DialogMap title={dialogTitle} open={visibleVal.map} onCancel={handleCloseDialog} />}
+                {visibleVal.map && (
+                    <DialogMap
+                        title={dialogTitle}
+                        mode={mapDialogMode}
+                        open={visibleVal.map}
+                        onCancel={handleCloseDialog}
+                    />
+                )}
                 {visibleVal.operate && (
                     <DialogOperate
                         title={dialogTitle}

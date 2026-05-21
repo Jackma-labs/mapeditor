@@ -162,6 +162,17 @@ class FileService {
         return this.requestJson('/runtime/status');
     }
 
+    async diagnoseApolloLiteRuntime() {
+        return this.requestJson('/runtime/apollolite/diagnose');
+    }
+
+    async startApolloLiteRepairJob() {
+        return this.requestJson('/runtime/apollolite/repair-job', {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
+    }
+
     async getReleasedMaps() {
         return this.requestJson('/runtime/released-maps');
     }

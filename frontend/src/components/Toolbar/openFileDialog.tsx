@@ -13,6 +13,7 @@ import { message as messageFunc } from '../Message/index';
 const closeNode = <img src={CloseIcon} alt="close" />;
 interface DialogProps extends Omit<ModalProps, 'visible'> {
     title: string;
+    mode?: 'baseMap' | 'editorMap';
     items?: ReactNode;
     open: boolean;
     onCancel?: () => void;
@@ -159,9 +160,12 @@ const formatPackageImportSummary = (data: any, mapName: string) => {
 };
 
 // eslint-disable-next-line react/function-component-definition
-const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }) => {
-    const Icon = title === '打开底图' ? FileIcon : MapIcon;
-    const defaultAddress = title === '打开底图' ? '/apollo/data/base_map/' : '/apollo/data/editor_map/';
+const Dialog: React.FC<DialogProps> = ({ title, mode: requestedMode, open, onCancel, items, ...rest }) => {
+    const dialogMode = requestedMode || (title === '打开底图' ? 'baseMap' : 'editorMap');
+    const isBaseMapDialog = dialogMode === 'baseMap';
+    const isEditorMapDialog = dialogMode === 'editorMap';
+    const Icon = isBaseMapDialog ? FileIcon : MapIcon;
+    const defaultAddress = isBaseMapDialog ? '/apollo/data/base_map/' : '/apollo/data/editor_map/';
     // 提交按钮禁用状态
     const [visible, setVisible] = useState(true);
     const [currentKey, setCurrentKey] = useState('0');
@@ -174,8 +178,6 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
     const [packageJobText, setPackageJobText] = useState('');
     const importInputRef = useRef<HTMLInputElement>(null);
     const importModeRef = useRef<ImportMode>('base-map-zip');
-    const isBaseMapDialog = title === '打开底图';
-    const isEditorMapDialog = title === '打开标注地图';
     const dataPackagePanelDesc =
         '完整资产管理、重命名、删除、多包合并请走“文件 > 采图包工作台”；这里只保留从已预检包快速生成单张底图。';
 
@@ -195,7 +197,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
     const onOkButton = () => {
         menuData.forEach(async (item) => {
             if (item.key === currentKey) {
-                if (title === '打开底图') {
+                if (isBaseMapDialog) {
                     const response = await FileService.getBaseMapInfo(item.content);
                     if (!response) {
                         messageFunc({
@@ -217,7 +219,7 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
                         });
                         return;
                     }
-                } else if (title === '打开标注地图') {
+                } else if (isEditorMapDialog) {
                     const response = await FileService.getHDMap(item.content);
                     if (response?.info?.code !== 0) {
                         messageFunc({
@@ -272,9 +274,9 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
         setListLoading(true);
         let response: any;
         try {
-            if (title === '打开底图') {
+            if (isBaseMapDialog) {
                 response = await FileService.getBaseMapList();
-            } else if (title === '打开标注地图') {
+            } else if (isEditorMapDialog) {
                 response = await FileService.getHDMapList();
             }
 
@@ -462,9 +464,9 @@ const Dialog: React.FC<DialogProps> = ({ title, open, onCancel, items, ...rest }
             try {
                 const status = await FileService.getRuntimeStatus();
                 const paths = status?.data?.paths;
-                if (title === '打开底图' && paths?.baseMapRoot) {
+                if (isBaseMapDialog && paths?.baseMapRoot) {
                     setTitleAddress(paths.baseMapRoot);
-                } else if (title === '打开标注地图' && paths?.editorMapRoot) {
+                } else if (isEditorMapDialog && paths?.editorMapRoot) {
                     setTitleAddress(paths.editorMapRoot);
                 }
             } catch (error) {
