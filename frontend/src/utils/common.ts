@@ -16,11 +16,148 @@ import {
 } from 'src/interface/laneInterFace';
 import { ParkingSpace } from 'src/interface/parkingSpaceInterFace';
 import { SpeedBump } from 'src/interface/speedBumpInterFace';
-import { StopLine } from 'src/interface/stopLineInterFace';
+import { StopLine, StopLineOrigin } from 'src/interface/stopLineInterFace';
 import { TrafficSignal } from 'src/interface/trafficSignal';
 import * as THREE from 'three';
 
 const DEFAULT_IMPORTED_LANE_WIDTH = 4;
+
+function getStringId(value: any) {
+    if (value === undefined || value === null || value === '') {
+        return '';
+    }
+    return String(value);
+}
+
+function getNextObjectId(collection: { [id: string]: any }) {
+    let maxId = 0;
+    Object.keys(collection).forEach((id) => {
+        const value = Number(id);
+        if (Number.isFinite(value)) {
+            maxId = Math.max(maxId, value);
+        }
+    });
+    let nextId = `${maxId + 1}`;
+    while (collection[nextId]) {
+        nextId = `${Number(nextId) + 1}`;
+    }
+    return nextId;
+}
+
+function isStopLineBoundary(boundary: Boundary) {
+    return Number(boundary?.type) === ThreeElementType.StopLineBoundary;
+}
+
+function getBoundaryCenter(boundary: Boundary, points: { [id: string]: PointElement }) {
+    const positions = (boundary?.pointIds || []).map((pointId) => points[pointId]?.position).filter(Boolean);
+    if (positions.length === 0) {
+        return null;
+    }
+    const sum = positions.reduce(
+        (acc, position) => ({
+            x: acc.x + position.x,
+            y: acc.y + position.y,
+        }),
+        { x: 0, y: 0 },
+    );
+    return {
+        x: sum.x / positions.length,
+        y: sum.y / positions.length,
+    };
+}
+
+function findNearestStopLineBoundaryId(
+    boundarys: { [id: string]: Boundary },
+    points: { [id: string]: PointElement },
+    stopLines: { [id: string]: StopLine },
+    referencePoint: { x: number; y: number } | null,
+) {
+    if (!referencePoint) {
+        return '';
+    }
+    const usedBoundaryIds = new Set(Object.values(stopLines).map((stopLine) => stopLine.boundaryId));
+    let bestBoundaryId = '';
+    let bestDistance = Number.POSITIVE_INFINITY;
+    Object.keys(boundarys).forEach((boundaryId) => {
+        const boundary = boundarys[boundaryId];
+        if (!isStopLineBoundary(boundary) || usedBoundaryIds.has(boundaryId)) {
+            return;
+        }
+        const center = getBoundaryCenter(boundary, points);
+        if (!center) {
+            return;
+        }
+        const distance = Math.hypot(center.x - referencePoint.x, center.y - referencePoint.y);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestBoundaryId = boundaryId;
+        }
+    });
+    return bestDistance <= 15 ? bestBoundaryId : '';
+}
+
+function ensureReferencedStopLine(
+    stopLines: { [id: string]: StopLine },
+    boundarys: { [id: string]: Boundary },
+    points: { [id: string]: PointElement },
+    preferredStopLineId: any,
+    preferredBoundaryId: any,
+    origin: StopLineOrigin,
+    referencePoint: { x: number; y: number } | null = null,
+) {
+    const stopLineId = getStringId(preferredStopLineId);
+    const boundaryId = getStringId(preferredBoundaryId);
+    const nextStopLines = stopLines;
+
+    if (stopLineId && nextStopLines[stopLineId]) {
+        nextStopLines[stopLineId] = {
+            ...nextStopLines[stopLineId],
+            origin: nextStopLines[stopLineId].origin ?? origin,
+        };
+        return stopLineId;
+    }
+
+    if (stopLineId && isStopLineBoundary(boundarys[stopLineId])) {
+        nextStopLines[stopLineId] = {
+            id: stopLineId,
+            boundaryId: stopLineId,
+            origin,
+        };
+        return stopLineId;
+    }
+
+    if (stopLineId && boundaryId && isStopLineBoundary(boundarys[boundaryId])) {
+        nextStopLines[stopLineId] = {
+            id: stopLineId,
+            boundaryId,
+            origin,
+        };
+        return stopLineId;
+    }
+
+    if (boundaryId && isStopLineBoundary(boundarys[boundaryId])) {
+        const nextStopLineId = getNextObjectId(nextStopLines);
+        nextStopLines[nextStopLineId] = {
+            id: nextStopLineId,
+            boundaryId,
+            origin,
+        };
+        return nextStopLineId;
+    }
+
+    const nearestBoundaryId = findNearestStopLineBoundaryId(boundarys, points, nextStopLines, referencePoint);
+    if (nearestBoundaryId) {
+        const nextStopLineId = stopLineId || getNextObjectId(nextStopLines);
+        nextStopLines[nextStopLineId] = {
+            id: nextStopLineId,
+            boundaryId: nearestBoundaryId,
+            origin,
+        };
+        return nextStopLineId;
+    }
+
+    return stopLineId;
+}
 
 function isCenterlineLaneMap(data: any) {
     const lanes = data?.lane || [];
@@ -270,18 +407,38 @@ export function loadHdmp(data: any): any {
             ...item,
         };
     });
-    stopLine?.forEach((item: StopLine) => {
-        stopLines[item.id] = item;
+    stopLine?.forEach((item: any) => {
+        const stopLineId = getStringId(item.id || item.stopLineId || item.stop_line_id);
+        const boundaryId = getStringId(item.boundaryId || item.boundary_id);
+        if (!stopLineId || !boundaryId) {
+            return;
+        }
+        stopLines[stopLineId] = {
+            id: stopLineId,
+            boundaryId,
+            origin: item.origin ?? StopLineOrigin.StopLine,
+        };
     });
     trafficSignal?.forEach((item: any) => {
+        const centerSource = item.center || {};
         const center = new THREE.Vector3(
-            Number(item.center.x.toFixed(4)),
-            Number(item.center.y.toFixed(4)),
+            Number(Number(centerSource.x || 0).toFixed(4)),
+            Number(Number(centerSource.y || 0).toFixed(4)),
             mapElementZ[ThreeElementType.TrafficLight],
+        );
+        const stopLineId = ensureReferencedStopLine(
+            stopLines,
+            boundarys,
+            points,
+            item.stopLineId || item.stop_line_id,
+            item.boundaryId || item.boundary_id,
+            StopLineOrigin.TrafficLight,
+            center,
         );
         trafficSignals[item.id] = {
             ...item,
-            subSignals: item.subSignal,
+            stopLineId,
+            subSignals: item.subSignal || item.subSignals || [],
             center,
         };
     });
@@ -291,14 +448,32 @@ export function loadHdmp(data: any): any {
         };
     });
     stopSign?.forEach((item: any) => {
+        const stopLineId = ensureReferencedStopLine(
+            stopLines,
+            boundarys,
+            points,
+            item.stopLineId || item.stop_line_id,
+            item.boundaryId || item.boundary_id,
+            StopLineOrigin.Sign,
+        );
         signs[item.id] = {
             ...item,
+            stopLineId,
             type: SignType.StopSign,
         };
     });
     yieldSign?.forEach((item: any) => {
+        const stopLineId = ensureReferencedStopLine(
+            stopLines,
+            boundarys,
+            points,
+            item.stopLineId || item.stop_line_id,
+            item.boundaryId || item.boundary_id,
+            StopLineOrigin.Sign,
+        );
         signs[item.id] = {
             ...item,
+            stopLineId,
             type: SignType.YieldSign,
         };
     });
@@ -308,8 +483,17 @@ export function loadHdmp(data: any): any {
         };
     });
     barrierGate?.forEach((item: any) => {
+        const stopLineId = ensureReferencedStopLine(
+            stopLines,
+            boundarys,
+            points,
+            item.stopLineId || item.stop_line_id,
+            item.stopLineBoundaryId || item.stop_line_boundary_id,
+            StopLineOrigin.BarrierGate,
+        );
         barrierGates[item.id] = {
             ...item,
+            stopLineId,
         };
     });
     return {

@@ -317,16 +317,22 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             stopLine: Object.keys(stopLines).map((id: string) => ({
                 id: stopLines[id].id,
                 boundaryId: stopLines[id].boundaryId,
+                origin: stopLines[id].origin,
             })),
             trafficSignal: Object.keys(trafficSignals).map((tId) => {
                 const { id, stopLineId, heading, height, type, center, subSignals } = trafficSignals[tId];
+                const stopLineBoundaryId = stopLines[stopLineId]?.boundaryId;
                 return {
                     id,
                     stopLineId,
+                    boundaryId: stopLineBoundaryId,
                     heading,
                     height,
                     type,
-                    center: { x: Number(center.x.toFixed(4)), y: Number(center.y.toFixed(4)) },
+                    center: {
+                        x: Number((center?.x || 0).toFixed(4)),
+                        y: Number((center?.y || 0).toFixed(4)),
+                    },
                     subSignal: subSignals,
                 };
             }),
@@ -344,10 +350,18 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             }),
             stopSign: Object.keys(signs)
                 .filter((sid) => signs[sid].type === SignType.StopSign)
-                .map((id) => ({ id, stopLineId: signs[id].stopLineId })),
+                .map((id) => ({
+                    id,
+                    stopLineId: signs[id].stopLineId,
+                    boundaryId: stopLines[signs[id].stopLineId]?.boundaryId,
+                })),
             yieldSign: Object.keys(signs)
                 .filter((sid) => signs[sid].type === SignType.YieldSign)
-                .map((id) => ({ id, stopLineId: signs[id].stopLineId })),
+                .map((id) => ({
+                    id,
+                    stopLineId: signs[id].stopLineId,
+                    boundaryId: stopLines[signs[id].stopLineId]?.boundaryId,
+                })),
             basemapCenter: get().mapState.imageBasemapCenter || get().mapState.hdBasemapCenter || { x: 0, y: 0 },
             area: Object.keys(areas).map((item: string) => {
                 const { id, type, boundaryId, groudId, name } = areas[item];

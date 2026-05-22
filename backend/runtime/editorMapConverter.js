@@ -24,6 +24,8 @@ const LANE_DIRECTION = {
   BIDIRECTION: 3,
 };
 
+const EDITOR_STOP_LINE_BOUNDARY_TYPE = 11;
+
 function addType(parent, name, fields) {
   const type = new protobuf.Type(name);
   fields.forEach((field) => {
@@ -398,6 +400,40 @@ function buildBoundaryIndex(editorMap) {
   return result;
 }
 
+function buildStopLineIndex(editorMap) {
+  const result = new Map();
+  for (const stopLine of [...arr(editorMap.stopLine), ...arr(editorMap.stop_line)]) {
+    const stopLineId = stopLine?.id ?? stopLine?.stopLineId ?? stopLine?.stop_line_id;
+    const boundaryId = stopLine?.boundaryId ?? stopLine?.boundary_id;
+    if (stopLineId !== undefined && stopLineId !== null && boundaryId !== undefined && boundaryId !== null) {
+      result.set(String(stopLineId), String(boundaryId));
+    }
+  }
+  return result;
+}
+
+function isStopLineBoundary(boundary) {
+  return Number(boundary?.type) === EDITOR_STOP_LINE_BOUNDARY_TYPE;
+}
+
+function resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex) {
+  const stopLineId = item?.stopLineId ?? item?.stop_line_id;
+  const boundaryId = item?.boundaryId ?? item?.boundary_id;
+  if (stopLineId !== undefined && stopLineId !== null) {
+    const resolvedBoundaryId = stopLineIndex.get(String(stopLineId));
+    if (resolvedBoundaryId) {
+      return resolvedBoundaryId;
+    }
+    if (isStopLineBoundary(boundaryIndex.get(String(stopLineId)))) {
+      return String(stopLineId);
+    }
+  }
+  if (boundaryId !== undefined && boundaryId !== null) {
+    return String(boundaryId);
+  }
+  return null;
+}
+
 function boundaryPointIds(boundary) {
   return arr(boundary?.point_id || boundary?.pointIds);
 }
@@ -624,6 +660,7 @@ function createHeader(editorMap) {
 function createMapMessage(editorMap) {
   const pointIndex = buildPointIndex(editorMap);
   const boundaryIndex = buildBoundaryIndex(editorMap);
+  const stopLineIndex = buildStopLineIndex(editorMap);
   const laneInfos = buildLanes(editorMap, boundaryIndex, pointIndex);
   const laneIds = laneInfos.map((item) => id(item.source.id));
   const conversionWarnings = [];
@@ -631,7 +668,8 @@ function createMapMessage(editorMap) {
     .map((item) => {
       const center = pointFromEditor(item.center || {});
       const half = 0.3;
-      const stopLine = curveFromBoundaryId(item.stopLineId || item.boundaryId, boundaryIndex, pointIndex);
+      const stopLineBoundaryId = resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex);
+      const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex);
       if (!stopLine) {
         conversionWarnings.push({
           code: 'signal-missing-stop-line',
@@ -685,13 +723,15 @@ function createMapMessage(editorMap) {
       .filter(Boolean),
     stopSign: arr(editorMap.stopSign)
       .map((item) => {
-        const stopLine = curveFromBoundaryId(item.stopLineId || item.boundaryId, boundaryIndex, pointIndex);
+        const stopLineBoundaryId = resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex);
+        const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex);
         return stopLine ? { id: id(item.id), stopLine: [stopLine], type: 1 } : null;
       })
       .filter(Boolean),
     yield: arr(editorMap.yieldSign)
       .map((item) => {
-        const stopLine = curveFromBoundaryId(item.stopLineId || item.boundaryId, boundaryIndex, pointIndex);
+        const stopLineBoundaryId = resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex);
+        const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex);
         return stopLine ? { id: id(item.id), stopLine: [stopLine] } : null;
       })
       .filter(Boolean),

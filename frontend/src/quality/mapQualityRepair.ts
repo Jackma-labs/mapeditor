@@ -1,6 +1,7 @@
 import { ThreeElementType, ThreeObject } from 'src/interface/commonInterFace';
 import { LaneDireaciotn, LaneTrend, LaneType, ProssibleDrivingDirection } from 'src/interface/laneInterFace';
 import { MapState } from 'src/interface/mapStateInterface';
+import { StopLineOrigin } from 'src/interface/stopLineInterFace';
 import { buildLaneRelations } from 'src/quality/mapQuality';
 import { useManagerStore } from 'src/store';
 import * as THREE from 'three';
@@ -12,6 +13,7 @@ type RepairKind =
     | 'fillLaneType'
     | 'restoreLaneGroud'
     | 'restoreLaneArrow'
+    | 'restoreTrafficSignalStopLine'
     | 'snapLaneSuccessorStart';
 
 interface BoundaryPointPatch {
@@ -29,6 +31,8 @@ export interface MapQualityRepairAction {
     nextValue?: number;
     groudId?: string;
     arrowId?: string;
+    stopLineId?: string;
+    boundaryId?: string;
     targetLaneId?: string;
     pointPatches?: BoundaryPointPatch[];
     confidence?: number;
@@ -42,6 +46,7 @@ export interface MapQualityRepairResult {
 interface RepairSnapshot {
     boundarys: MapState['boundarys'];
     lanes: MapState['lanes'];
+    stopLines: MapState['stopLines'];
     grouds: MapState['grouds'];
     prossibleDrivingDirections: MapState['prossibleDrivingDirections'];
     needRenderElements: MapState['needRenderElements'];
@@ -287,6 +292,7 @@ function snapshotRepairState(mapState: MapState): RepairSnapshot {
     return {
         boundarys: { ...mapState.boundarys },
         lanes: { ...mapState.lanes },
+        stopLines: { ...mapState.stopLines },
         grouds: { ...mapState.grouds },
         prossibleDrivingDirections: { ...mapState.prossibleDrivingDirections },
         needRenderElements: {
@@ -384,6 +390,24 @@ export function buildMapQualityRepairActions(mapState: MapState): MapQualityRepa
         }
     });
 
+    Object.values(mapState.trafficSignals).forEach((signal) => {
+        if (
+            !signal.stopLineId ||
+            mapState.stopLines[signal.stopLineId] ||
+            Number(mapState.boundarys[signal.stopLineId]?.type) !== ThreeElementType.StopLineBoundary
+        ) {
+            return;
+        }
+        actions.push({
+            kind: 'restoreTrafficSignalStopLine',
+            targetId: signal.id,
+            stopLineId: signal.stopLineId,
+            boundaryId: signal.stopLineId,
+            title: `恢复交通灯 ${signal.id} 的停止线对象`,
+            description: `交通灯 ${signal.id} 引用了边界 ${signal.stopLineId}，自动补齐 StopLine 数据对象。`,
+        });
+    });
+
     return [...actions, ...buildTopologyRepairActions(mapState)];
 }
 
@@ -392,6 +416,7 @@ export function applyMapQualityRepairs(mapState: MapState, actions: MapQualityRe
         ...mapState,
         boundarys: { ...mapState.boundarys },
         lanes: { ...mapState.lanes },
+        stopLines: { ...mapState.stopLines },
         grouds: { ...mapState.grouds },
         prossibleDrivingDirections: { ...mapState.prossibleDrivingDirections },
         needRenderElements: {
@@ -417,6 +442,18 @@ export function applyMapQualityRepairs(mapState: MapState, actions: MapQualityRe
                 pointIds: [...action.nextPointIds],
             };
             addRenderElement(nextMapState.needRenderElements, ThreeObject.Boundary, boundary.id, boundary.type);
+            return;
+        }
+
+        if (action.kind === 'restoreTrafficSignalStopLine' && action.stopLineId && action.boundaryId) {
+            if (!nextMapState.boundarys[action.boundaryId]) {
+                return;
+            }
+            nextMapState.stopLines[action.stopLineId] = {
+                id: action.stopLineId,
+                boundaryId: action.boundaryId,
+                origin: StopLineOrigin.TrafficLight,
+            };
             return;
         }
 

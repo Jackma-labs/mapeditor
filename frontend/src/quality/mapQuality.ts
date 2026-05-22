@@ -86,6 +86,17 @@ function buildIssue(issues: MapQualityIssue[], issue: Omit<MapQualityIssue, 'id'
     });
 }
 
+function resolveStopLineBoundaryId(mapState: MapState, stopLineId: string) {
+    const stopLine = mapState.stopLines[stopLineId];
+    if (stopLine?.boundaryId && mapState.boundarys[stopLine.boundaryId]) {
+        return stopLine.boundaryId;
+    }
+    if (Number(mapState.boundarys[stopLineId]?.type) === ThreeElementType.StopLineBoundary) {
+        return stopLineId;
+    }
+    return '';
+}
+
 function getLaneStartPointIds(mapState: MapState, lane: Lane): [string | null, string | null] {
     const leftBoundary = mapState.boundarys[lane.leftBoundaryId];
     const rightBoundary = mapState.boundarys[lane.rightBoundaryId];
@@ -548,7 +559,7 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
     });
 
     Object.values(mapState.trafficSignals).forEach((signal) => {
-        if (!signal.stopLineId || !mapState.stopLines[signal.stopLineId]) {
+        if (!signal.stopLineId || !resolveStopLineBoundaryId(mapState, signal.stopLineId)) {
             buildIssue(issues, {
                 severity: 'error',
                 title: `交通灯 ${signal.id} 未关联停止线`,
@@ -563,7 +574,7 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
     });
 
     Object.values(mapState.signs).forEach((sign) => {
-        if (sign.stopLineId && !mapState.stopLines[sign.stopLineId]) {
+        if (sign.stopLineId && !resolveStopLineBoundaryId(mapState, sign.stopLineId)) {
             buildIssue(issues, {
                 severity: 'error',
                 title: `标志 ${sign.id} 关联的停止线不存在`,
