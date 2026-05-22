@@ -1044,6 +1044,19 @@ function normalizeApolloLiteTrafficLightColor(value) {
   return 'GREEN';
 }
 
+function getApolloLiteTrafficLightSimProcessPattern() {
+  return `[${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME[0]}]${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME.slice(1)}.py`;
+}
+
+function buildApolloLiteTrafficLightSimKillCommand(includeShell = false) {
+  const commandPattern = includeShell ? '($2 ~ /^python/ || $2 ~ /^bash/)' : '$2 ~ /^python/';
+  return `ps -eo pid=,comm=,args= | awk '${commandPattern} && $0 ~ /mapeditor_traffic_light_sim[.]py/ {print $1}' | xargs -r kill || true`;
+}
+
+function buildApolloLiteTrafficLightSimProcessListCommand() {
+  return "ps -eo pid=,comm=,args= | awk '$2 ~ /^python/ && $0 ~ /mapeditor_traffic_light_sim[.]py/ {print}' || true";
+}
+
 function parseApolloLiteSignalIdsFromBaseMapText(text) {
   const ids = [];
   const lines = String(text || '').split(/\r?\n/u);
@@ -1183,7 +1196,6 @@ def main():
         message.header.module_name = '${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME}'
         message.header.sequence_num = seq
         message.contain_lights = True
-        message.camera_id = 'mapeditor'
         for signal_id in signal_ids:
             light = message.traffic_light.add()
             light.id = signal_id
@@ -1222,7 +1234,9 @@ async function getApolloLiteTrafficLightSimulationStatus(config) {
     };
   }
   const command = [
-    `pgrep -af ${quoteShell(`[${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME[0]}]${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME.slice(1)}.py`)} || true`,
+    'echo __MAPEDITOR_TRAFFIC_LIGHT_PROCESS__',
+    buildApolloLiteTrafficLightSimProcessListCommand(),
+    'echo __MAPEDITOR_TRAFFIC_LIGHT_LOG__',
     `tail -n 20 ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_LOG)} 2>/dev/null || true`,
   ].join('; ');
   const result = await runCommand('docker', ['exec', '-u', 'dell', containerName, 'bash', '-lc', command], {
@@ -1233,7 +1247,12 @@ async function getApolloLiteTrafficLightSimulationStatus(config) {
     code: 1,
   }));
   const sections = String(result.stdout || '').split(/\r?\n/u);
-  const processLines = sections.filter((line) => line.includes(APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME) && line.includes('.py'));
+  const processMarker = sections.indexOf('__MAPEDITOR_TRAFFIC_LIGHT_PROCESS__');
+  const logMarker = sections.indexOf('__MAPEDITOR_TRAFFIC_LIGHT_LOG__');
+  const processLines = sections
+    .slice(processMarker >= 0 ? processMarker + 1 : 0, logMarker >= 0 ? logMarker : 0)
+    .filter((line) => line.includes(APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME) && line.includes('.py'));
+  const logTail = sections.slice(logMarker >= 0 ? logMarker + 1 : sections.length).filter(Boolean).slice(-20);
   return {
     available: result.code === 0,
     running: processLines.length > 0,
@@ -1242,7 +1261,7 @@ async function getApolloLiteTrafficLightSimulationStatus(config) {
     signalIds: signalInfo.ids || [],
     signalSourceDir: signalInfo.sourceDir || '',
     processes: processLines,
-    logTail: sections.slice(processLines.length).filter(Boolean).slice(-20),
+    logTail,
     message:
       processLines.length > 0
         ? `traffic light simulation is publishing ${signalInfo.ids?.length || 0} signal(s)`
@@ -1271,7 +1290,7 @@ async function stopApolloLiteTrafficLightSimulation(config, progress = async () 
       containerName,
       'bash',
       '-lc',
-      `pkill -f ${quoteShell(`${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME}.py`)} || true`,
+      buildApolloLiteTrafficLightSimKillCommand(true),
     ],
     { timeoutMs: 5000 }
   );
@@ -1296,13 +1315,14 @@ async function startApolloLiteTrafficLightSimulation(config, params = {}, progre
     throw new Error('当前 ApolloLite 地图没有 trafficSignal；请先发布包含红绿灯的标注地图，或检查红绿灯是否已保存并发布。');
   }
   const color = normalizeApolloLiteTrafficLightColor(params.color);
-  const interval = Math.max(0.02, Math.min(2, number(params.interval, 0.1)));
+  const requestedInterval = Number(params.interval);
+  const interval = Math.max(0.02, Math.min(2, Number.isFinite(requestedInterval) ? requestedInterval : 0.1));
   await progress(`Starting ApolloLite traffic light simulation: ${signalInfo.ids.length} signal(s), ${color}`);
   const scriptBase64 = Buffer.from(buildApolloLiteTrafficLightSimScript(), 'utf8').toString('base64');
   const idsBase64 = Buffer.from(JSON.stringify(signalInfo.ids), 'utf8').toString('base64');
   const startCommand = [
     `mkdir -p ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_DIR)}`,
-    `pkill -f ${quoteShell(`${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME}.py`)} || true`,
+    buildApolloLiteTrafficLightSimKillCommand(),
     `printf %s ${quoteShell(scriptBase64)} | base64 -d > ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_SCRIPT)}`,
     `printf %s ${quoteShell(idsBase64)} | base64 -d > ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_IDS)}`,
     `chmod +x ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_SCRIPT)}`,
@@ -1319,7 +1339,7 @@ async function startApolloLiteTrafficLightSimulation(config, params = {}, progre
           )} --color ${quoteShell(color)} --interval ${interval}`,
         ].join(' && ')
       ),
-      `> ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_LOG)} 2>&1 < /dev/null & echo $!`,
+      `> ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_LOG)} 2>&1 < /dev/null & sim_pid=$!; disown "$sim_pid" 2>/dev/null || true; echo "$sim_pid"`,
     ].join(' '),
   ].join(' && ');
   const result = await runCommand('docker', ['exec', '-u', 'dell', containerName, 'bash', '-lc', startCommand], {
