@@ -25,6 +25,11 @@ const LANE_DIRECTION = {
 };
 
 const EDITOR_STOP_LINE_BOUNDARY_TYPE = 11;
+const EDITOR_AREA_TYPE = {
+  DRIVEABLE: 1,
+  UNDRIVEABLE: 2,
+  CUSTOM: 3,
+};
 
 function addType(parent, name, fields) {
   const type = new protobuf.Type(name);
@@ -217,6 +222,11 @@ function createProtoRoot() {
     ['overlapId', 3, 'Id', 'repeated'],
     ['heading', 4, 'double'],
   ]);
+  addType(hdmap, 'ClearArea', [
+    ['id', 1, 'Id'],
+    ['overlapId', 2, 'Id', 'repeated'],
+    ['polygon', 3, 'Polygon'],
+  ]);
   addType(hdmap, 'BoundaryEdge', [
     ['curve', 1, 'Curve'],
     ['type', 2, 'Type'],
@@ -259,6 +269,7 @@ function createProtoRoot() {
     ['stopSign', 5, 'StopSign', 'repeated'],
     ['signal', 6, 'Signal', 'repeated'],
     ['yield', 7, 'YieldSign', 'repeated'],
+    ['clearArea', 9, 'ClearArea', 'repeated'],
     ['speedBump', 10, 'SpeedBump', 'repeated'],
     ['road', 11, 'Road', 'repeated'],
     ['parkingSpace', 12, 'ParkingSpace', 'repeated'],
@@ -306,8 +317,23 @@ function arr(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function arrFromKeys(object, keys) {
+  return keys.flatMap((key) => arr(object?.[key]));
+}
+
 function id(value) {
   return { id: String(value || '') };
+}
+
+function addConversionWarning(warnings, warning) {
+  warnings.push({
+    severity: warning.severity || 'warning',
+    code: warning.code,
+    element: warning.element || '',
+    id: String(warning.id || ''),
+    message: warning.message,
+    ...(warning.details ? { details: warning.details } : {}),
+  });
 }
 
 function bytes(value) {
@@ -394,7 +420,7 @@ function buildPointIndex(editorMap) {
 
 function buildBoundaryIndex(editorMap) {
   const result = new Map();
-  for (const boundary of [...arr(editorMap.boundary), ...arr(editorMap.roadBoundary)]) {
+  for (const boundary of [...arr(editorMap.boundary), ...arrFromKeys(editorMap, ['roadBoundary', 'road_boundary'])]) {
     result.set(String(boundary.id), boundary);
   }
   return result;
@@ -566,11 +592,18 @@ function directionFromEditor(lane) {
   return LANE_DIRECTION.FORWARD;
 }
 
-function buildLanes(editorMap, boundaryIndex, pointIndex) {
+function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
   const laneInfos = [];
   for (const lane of arr(editorMap.lane)) {
     const center = centerLineFromLane(lane, boundaryIndex, pointIndex);
     if (center.length < 2) {
+      addConversionWarning(conversionWarnings, {
+        severity: 'error',
+        code: 'lane-missing-centerline',
+        element: 'lane',
+        id: lane.id,
+        message: `Lane ${lane.id || ''} was skipped because it cannot produce a valid Apollo central_curve.`,
+      });
       continue;
     }
     const length = polylineLength(center);
@@ -587,8 +620,23 @@ function buildLanes(editorMap, boundaryIndex, pointIndex) {
       pointIndex,
       Boolean(lane.right_boundary_reverse || lane.rightBoundaryReverse)
     );
+    if (!leftBoundary || !rightBoundary) {
+      addConversionWarning(conversionWarnings, {
+        severity: 'error',
+        code: 'lane-missing-boundary',
+        element: 'lane',
+        id: lane.id,
+        message: `Lane ${lane.id || ''} was skipped because Apollo requires valid left_boundary and right_boundary.`,
+        details: {
+          leftBoundaryId: lane.left_boundary_id || lane.leftBoundaryId || '',
+          rightBoundaryId: lane.right_boundary_id || lane.rightBoundaryId || '',
+        },
+      });
+      continue;
+    }
     laneInfos.push({
       source: lane,
+      center,
       start: center[0],
       end: center[center.length - 1],
       proto: {
@@ -657,13 +705,43 @@ function createHeader(editorMap) {
   };
 }
 
+function roadBoundaryFromEditor(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
+  const edges = arrFromKeys(editorMap, ['roadBoundary', 'road_boundary'])
+    .map((item) => {
+      const curve = curveFromBoundaryId(item.id, boundaryIndex, pointIndex);
+      if (!curve) {
+        addConversionWarning(conversionWarnings, {
+          severity: 'warning',
+          code: 'road-boundary-invalid-curve',
+          element: 'roadBoundary',
+          id: item.id,
+          message: `Road boundary ${item.id || ''} was not exported because it cannot produce a valid Apollo curve.`,
+        });
+        return null;
+      }
+      return {
+        curve,
+        type: 1,
+      };
+    })
+    .filter(Boolean);
+  return edges.length > 0
+    ? {
+        outerPolygon: {
+          edge: edges,
+        },
+      }
+    : null;
+}
+
 function createMapMessage(editorMap) {
   const pointIndex = buildPointIndex(editorMap);
   const boundaryIndex = buildBoundaryIndex(editorMap);
   const stopLineIndex = buildStopLineIndex(editorMap);
-  const laneInfos = buildLanes(editorMap, boundaryIndex, pointIndex);
-  const laneIds = laneInfos.map((item) => id(item.source.id));
   const conversionWarnings = [];
+  const laneInfos = buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings);
+  const laneIds = laneInfos.map((item) => id(item.source.id));
+  const roadBoundary = roadBoundaryFromEditor(editorMap, boundaryIndex, pointIndex, conversionWarnings);
   const signals = arr(editorMap.trafficSignal)
     .map((item) => {
       const center = pointFromEditor(item.center || {});
@@ -671,8 +749,10 @@ function createMapMessage(editorMap) {
       const stopLineBoundaryId = resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex);
       const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex);
       if (!stopLine) {
-        conversionWarnings.push({
+        addConversionWarning(conversionWarnings, {
+          severity: 'error',
           code: 'signal-missing-stop-line',
+          element: 'trafficSignal',
           id: String(item.id || ''),
           message: `Traffic signal ${item.id || ''} was skipped because Apollo requires a valid stop_line.`,
         });
@@ -698,33 +778,127 @@ function createMapMessage(editorMap) {
       };
     })
     .filter(Boolean);
+  arrFromKeys(editorMap, ['barrierGate', 'barrier_gate']).forEach((item) => {
+    addConversionWarning(conversionWarnings, {
+      severity: 'warning',
+      code: 'barrier-gate-not-in-apollo-hdmap',
+      element: 'barrierGate',
+      id: item.id,
+      message: `Barrier gate ${item.id || ''} is retained in editor_map.json but Apollo HDMap has no direct barrier gate element.`,
+    });
+  });
+  const overlapDependentCount =
+    arr(editorMap.trafficSignal).length +
+    arr(editorMap.stopSign).length +
+    arr(editorMap.yieldSign).length +
+    arr(editorMap.crosswalk).length +
+    arrFromKeys(editorMap, ['speed_bump', 'speedBump']).length;
+  if (overlapDependentCount > 0) {
+    addConversionWarning(conversionWarnings, {
+      severity: 'warning',
+      code: 'apollo-overlap-not-generated',
+      element: 'overlap',
+      id: 'map',
+      message:
+        'Apollo overlap records are not generated yet; traffic signs, signals, crosswalks, and speed bumps are exported geometrically but not lane-overlap linked.',
+    });
+  }
+  const referencedStopLineIds = new Set(
+    [
+      ...arr(editorMap.trafficSignal),
+      ...arr(editorMap.stopSign),
+      ...arr(editorMap.yieldSign),
+      ...arrFromKeys(editorMap, ['barrierGate', 'barrier_gate']),
+    ]
+      .map((item) => item?.stopLineId ?? item?.stop_line_id)
+      .filter((value) => value !== undefined && value !== null)
+      .map((value) => String(value))
+  );
+  arrFromKeys(editorMap, ['stopLine', 'stop_line']).forEach((item) => {
+    const stopLineId = item?.id ?? item?.stopLineId ?? item?.stop_line_id;
+    if (stopLineId !== undefined && stopLineId !== null && !referencedStopLineIds.has(String(stopLineId))) {
+      addConversionWarning(conversionWarnings, {
+        severity: 'warning',
+        code: 'standalone-stop-line-not-exported',
+        element: 'stopLine',
+        id: stopLineId,
+        message: `Stop line ${stopLineId || ''} is not exported as a top-level Apollo element unless it is referenced by a signal, stop sign, or yield sign.`,
+      });
+    }
+  });
 
   return {
     header: createHeader(editorMap),
     lane: laneInfos.map((item) => item.proto),
     crosswalk: arr(editorMap.crosswalk)
-      .map((item) => ({
-        id: id(item.id),
-        polygon: polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex),
-      }))
-      .filter((item) => item.polygon),
+      .map((item) => {
+        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex);
+        if (!polygon) {
+          addConversionWarning(conversionWarnings, {
+            severity: 'warning',
+            code: 'crosswalk-invalid-polygon',
+            element: 'crosswalk',
+            id: item.id,
+            message: `Crosswalk ${item.id || ''} was not exported because it has no valid Apollo polygon.`,
+          });
+          return null;
+        }
+        return {
+          id: id(item.id),
+          polygon,
+        };
+      })
+      .filter(Boolean),
     junction: arr(editorMap.junction)
-      .map((item) => ({
-        id: id(item.id),
-        polygon: polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex),
-        type: number(item.attr?.type, 0),
-      }))
-      .filter((item) => item.polygon),
-    speedBump: arr(editorMap.speed_bump)
+      .map((item) => {
+        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex);
+        if (!polygon) {
+          addConversionWarning(conversionWarnings, {
+            severity: 'warning',
+            code: 'junction-invalid-polygon',
+            element: 'junction',
+            id: item.id,
+            message: `Junction ${item.id || ''} was not exported because it has no valid Apollo polygon.`,
+          });
+          return null;
+        }
+        return {
+          id: id(item.id),
+          polygon,
+          type: number(item.attr?.type, 0),
+        };
+      })
+      .filter(Boolean),
+    speedBump: arrFromKeys(editorMap, ['speed_bump', 'speedBump'])
       .map((item) => {
         const curve = curveFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex);
-        return curve ? { id: id(item.id), position: [curve] } : null;
+        if (!curve) {
+          addConversionWarning(conversionWarnings, {
+            severity: 'warning',
+            code: 'speed-bump-invalid-curve',
+            element: 'speedBump',
+            id: item.id,
+            message: `Speed bump ${item.id || ''} was not exported because it has no valid Apollo curve.`,
+          });
+          return null;
+        }
+        return { id: id(item.id), position: [curve] };
       })
       .filter(Boolean),
     stopSign: arr(editorMap.stopSign)
       .map((item) => {
         const stopLineBoundaryId = resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex);
         const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex);
+        if (!stopLine) {
+          addConversionWarning(conversionWarnings, {
+            severity: 'warning',
+            code: 'stop-sign-missing-stop-line',
+            element: 'stopSign',
+            id: item.id,
+            message: `Stop sign ${item.id || ''} was not exported because Apollo requires a valid stop_line.`,
+          });
+          return null;
+        }
         return stopLine ? { id: id(item.id), stopLine: [stopLine], type: 1 } : null;
       })
       .filter(Boolean),
@@ -732,17 +906,73 @@ function createMapMessage(editorMap) {
       .map((item) => {
         const stopLineBoundaryId = resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex);
         const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex);
+        if (!stopLine) {
+          addConversionWarning(conversionWarnings, {
+            severity: 'warning',
+            code: 'yield-sign-missing-stop-line',
+            element: 'yieldSign',
+            id: item.id,
+            message: `Yield sign ${item.id || ''} was not exported because Apollo requires a valid stop_line.`,
+          });
+          return null;
+        }
         return stopLine ? { id: id(item.id), stopLine: [stopLine] } : null;
       })
       .filter(Boolean),
     signal: signals,
-    parkingSpace: arr(editorMap.parkingSpace)
-      .map((item) => ({
-        id: id(item.id),
-        polygon: polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex),
-        heading: number(item.heading, 0),
-      }))
-      .filter((item) => item.polygon),
+    parkingSpace: arrFromKeys(editorMap, ['parkingSpace', 'parking_space'])
+      .map((item) => {
+        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex);
+        if (!polygon) {
+          addConversionWarning(conversionWarnings, {
+            severity: 'warning',
+            code: 'parking-space-invalid-polygon',
+            element: 'parkingSpace',
+            id: item.id,
+            message: `Parking space ${item.id || ''} was not exported because it has no valid Apollo polygon.`,
+          });
+          return null;
+        }
+        return {
+          id: id(item.id),
+          polygon,
+          heading: number(item.heading, 0),
+        };
+      })
+      .filter(Boolean),
+    clearArea: arr(editorMap.area)
+      .map((item) => {
+        if (number(item.type, 0) !== EDITOR_AREA_TYPE.UNDRIVEABLE) {
+          addConversionWarning(conversionWarnings, {
+            severity: 'warning',
+            code: 'area-type-not-apollo-clear-area',
+            element: 'area',
+            id: item.id,
+            message: `Area ${item.id || ''} was not exported as Apollo clear_area because only non-driveable areas map to clear_area.`,
+            details: {
+              type: item.type,
+              name: item.name || '',
+            },
+          });
+          return null;
+        }
+        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex);
+        if (!polygon) {
+          addConversionWarning(conversionWarnings, {
+            severity: 'warning',
+            code: 'clear-area-invalid-polygon',
+            element: 'area',
+            id: item.id,
+            message: `Area ${item.id || ''} was not exported because it has no valid Apollo clear_area polygon.`,
+          });
+          return null;
+        }
+        return {
+          id: id(item.id),
+          polygon,
+        };
+      })
+      .filter(Boolean),
     road:
       laneIds.length > 0
         ? [
@@ -752,6 +982,7 @@ function createMapMessage(editorMap) {
                 {
                   id: id('road_0_section_0'),
                   laneId: laneIds,
+                  ...(roadBoundary ? { boundary: roadBoundary } : {}),
                 },
               ],
               type: 2,
@@ -847,6 +1078,135 @@ function cleanMapForEncoding(mapMessage) {
   return payload;
 }
 
+function countRoadBoundaryEdges(cleanMap) {
+  return arr(cleanMap.road).reduce(
+    (sum, road) =>
+      sum +
+      arr(road.section).reduce(
+        (sectionSum, section) => sectionSum + arr(section.boundary?.outerPolygon?.edge).length,
+        0
+      ),
+    0
+  );
+}
+
+function countStopLineCurves(cleanMap) {
+  return (
+    arr(cleanMap.signal).reduce((sum, item) => sum + arr(item.stopLine).length, 0) +
+    arr(cleanMap.stopSign).reduce((sum, item) => sum + arr(item.stopLine).length, 0) +
+    arr(cleanMap.yield).reduce((sum, item) => sum + arr(item.stopLine).length, 0)
+  );
+}
+
+function countBySeverity(warnings) {
+  return warnings.reduce((result, warning) => {
+    const severity = warning.severity || 'warning';
+    result[severity] = (result[severity] || 0) + 1;
+    return result;
+  }, {});
+}
+
+function buildContractMapping({ editor, apollo, editorKey, apolloKey, support, notes = [] }) {
+  const input = editor[editorKey] || 0;
+  const output = apollo[apolloKey] || 0;
+  let status = 'ok';
+  if (support === 'unsupported') {
+    status = input > 0 ? 'unsupported' : 'ok';
+  } else if (support === 'embedded') {
+    status = input > output ? 'warning' : 'ok';
+  } else if (input > output) {
+    status = 'warning';
+  }
+  return {
+    editor: editorKey,
+    apollo: apolloKey,
+    support,
+    input,
+    output,
+    status,
+    notes,
+  };
+}
+
+function buildConversionContract(editorMap, cleanMap, routingGraph, warnings) {
+  const editor = {
+    points: arr(editorMap.point).length,
+    boundaries: arr(editorMap.boundary).length,
+    roadBoundaries: arrFromKeys(editorMap, ['roadBoundary', 'road_boundary']).length,
+    lanes: arr(editorMap.lane).length,
+    junctions: arr(editorMap.junction).length,
+    crosswalks: arr(editorMap.crosswalk).length,
+    speedBumps: arrFromKeys(editorMap, ['speed_bump', 'speedBump']).length,
+    stopLines: arrFromKeys(editorMap, ['stopLine', 'stop_line']).length,
+    trafficSignals: arr(editorMap.trafficSignal).length,
+    stopSigns: arr(editorMap.stopSign).length,
+    yieldSigns: arr(editorMap.yieldSign).length,
+    parkingSpaces: arrFromKeys(editorMap, ['parkingSpace', 'parking_space']).length,
+    areas: arr(editorMap.area).length,
+    barrierGates: arrFromKeys(editorMap, ['barrierGate', 'barrier_gate']).length,
+  };
+  const apollo = {
+    lanes: arr(cleanMap.lane).length,
+    roads: arr(cleanMap.road).length,
+    roadBoundaryEdges: countRoadBoundaryEdges(cleanMap),
+    junctions: arr(cleanMap.junction).length,
+    crosswalks: arr(cleanMap.crosswalk).length,
+    speedBumps: arr(cleanMap.speedBump).length,
+    stopLineCurves: countStopLineCurves(cleanMap),
+    trafficSignals: arr(cleanMap.signal).length,
+    stopSigns: arr(cleanMap.stopSign).length,
+    yieldSigns: arr(cleanMap.yield).length,
+    parkingSpaces: arr(cleanMap.parkingSpace).length,
+    clearAreas: arr(cleanMap.clearArea).length,
+    overlaps: arr(cleanMap.overlap).length,
+    routingNodes: arr(routingGraph.node).length,
+    routingEdges: arr(routingGraph.edge).length,
+  };
+  const mappings = [
+    buildContractMapping({ editor, apollo, editorKey: 'lanes', apolloKey: 'lanes', support: 'full' }),
+    buildContractMapping({ editor, apollo, editorKey: 'roadBoundaries', apolloKey: 'roadBoundaryEdges', support: 'partial' }),
+    buildContractMapping({ editor, apollo, editorKey: 'junctions', apolloKey: 'junctions', support: 'full' }),
+    buildContractMapping({ editor, apollo, editorKey: 'crosswalks', apolloKey: 'crosswalks', support: 'full' }),
+    buildContractMapping({ editor, apollo, editorKey: 'speedBumps', apolloKey: 'speedBumps', support: 'full' }),
+    buildContractMapping({
+      editor,
+      apollo,
+      editorKey: 'stopLines',
+      apolloKey: 'stopLineCurves',
+      support: 'embedded',
+      notes: ['Apollo has no top-level stop_line; stop lines are embedded in signal, stop_sign, and yield.'],
+    }),
+    buildContractMapping({ editor, apollo, editorKey: 'trafficSignals', apolloKey: 'trafficSignals', support: 'full' }),
+    buildContractMapping({ editor, apollo, editorKey: 'stopSigns', apolloKey: 'stopSigns', support: 'full' }),
+    buildContractMapping({ editor, apollo, editorKey: 'yieldSigns', apolloKey: 'yieldSigns', support: 'full' }),
+    buildContractMapping({ editor, apollo, editorKey: 'parkingSpaces', apolloKey: 'parkingSpaces', support: 'full' }),
+    buildContractMapping({
+      editor,
+      apollo,
+      editorKey: 'areas',
+      apolloKey: 'clearAreas',
+      support: 'partial',
+      notes: ['Only non-driveable editor areas map to Apollo clear_area.'],
+    }),
+    buildContractMapping({
+      editor,
+      apollo,
+      editorKey: 'barrierGates',
+      apolloKey: 'barrierGates',
+      support: 'unsupported',
+      notes: ['Apollo HDMap has no direct barrier gate element; the editor keeps it in editor_map.json only.'],
+    }),
+  ];
+  return {
+    version: 1,
+    target: 'ApolloLite modules/common_msgs/map_msgs/map.proto',
+    editorCounts: editor,
+    apolloCounts: apollo,
+    warningCounts: countBySeverity(warnings),
+    mappings,
+  };
+}
+
 async function writeBinary(root, typeName, message, outputPath) {
   const Type = root.lookupType(typeName);
   const error = Type.verify(message);
@@ -865,6 +1225,8 @@ async function convertEditorMapToApolloPackage(options) {
   const mapMessage = createMapMessage(editorMap);
   const cleanMap = cleanMapForEncoding(mapMessage);
   const routingGraph = createRoutingGraph(mapMessage);
+  const warnings = mapMessage._conversionWarnings || [];
+  const contract = buildConversionContract(editorMap, cleanMap, routingGraph, warnings);
 
   await fs.copyFile(jsonPath, path.join(releaseDir, 'editor_map.json'));
   await fs.writeFile(path.join(releaseDir, 'base_map.txt'), `${objectToText(cleanMap)}\n`, 'utf8');
@@ -882,20 +1244,34 @@ async function convertEditorMapToApolloPackage(options) {
         converter: 'mapeditor-js-compat',
         nativeConverter: false,
         baseMapDir,
-        warnings: mapMessage._conversionWarnings || [],
-        files: ['editor_map.json', 'base_map.txt', 'base_map.bin', 'sim_map.txt', 'sim_map.bin', 'routing_map.txt', 'routing_map.bin'],
+        warnings,
+        contract,
+        files: [
+          'editor_map.json',
+          'base_map.txt',
+          'base_map.bin',
+          'sim_map.txt',
+          'sim_map.bin',
+          'routing_map.txt',
+          'routing_map.bin',
+        ],
         summary: {
           lanes: cleanMap.lane.length,
           roads: cleanMap.road.length,
+          roadBoundaryEdges: contract.apolloCounts.roadBoundaryEdges,
           crosswalks: cleanMap.crosswalk.length,
           junctions: cleanMap.junction.length,
           signals: cleanMap.signal.length,
           stopSigns: cleanMap.stopSign.length,
           yieldSigns: cleanMap.yield.length,
+          clearAreas: cleanMap.clearArea.length,
           speedBumps: cleanMap.speedBump.length,
           parkingSpaces: cleanMap.parkingSpace.length,
           routingNodes: routingGraph.node.length,
           routingEdges: routingGraph.edge.length,
+          warnings: warnings.length,
+          contractWarnings: contract.warningCounts.warning || 0,
+          contractErrors: contract.warningCounts.error || 0,
         },
       },
       null,

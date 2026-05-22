@@ -1,0 +1,164 @@
+const fs = require('fs/promises');
+const os = require('os');
+const path = require('path');
+const assert = require('assert');
+
+const { convertEditorMapToApolloPackage } = require('../backend/runtime/editorMapConverter');
+
+function point(id, x, y, type = 1) {
+  return {
+    id,
+    type,
+    position: { x, y },
+  };
+}
+
+function boundary(id, pointIds, type) {
+  return {
+    id,
+    type,
+    point_id: pointIds,
+  };
+}
+
+async function main() {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mapeditor-converter-contract-'));
+  const jsonPath = path.join(tmpDir, 'editor_map.json');
+  const releaseDir = path.join(tmpDir, 'release');
+
+  const editorMap = {
+    header: { version: 'contract-test' },
+    point: [
+      point('lane-left-a', 0, 2, 1),
+      point('lane-left-b', 30, 2, 1),
+      point('lane-right-a', 0, -2, 1),
+      point('lane-right-b', 30, -2, 1),
+      point('road-a', 0, 4, 39),
+      point('road-b', 30, 4, 39),
+      point('stop-a', 8, -2.5, 5),
+      point('stop-b', 8, 2.5, 5),
+      point('standalone-stop-a', 18, -2.5, 5),
+      point('standalone-stop-b', 18, 2.5, 5),
+      point('speed-a', 15, -2.5, 4),
+      point('speed-b', 15, 2.5, 4),
+      point('junction-a', 28, -4, 2),
+      point('junction-b', 36, -4, 2),
+      point('junction-c', 36, 4, 2),
+      point('junction-d', 28, 4, 2),
+      point('crosswalk-a', 10, -3, 3),
+      point('crosswalk-b', 12, -3, 3),
+      point('crosswalk-c', 12, 3, 3),
+      point('crosswalk-d', 10, 3, 3),
+      point('parking-a', 20, -6, 6),
+      point('parking-b', 26, -6, 6),
+      point('parking-c', 26, -3, 6),
+      point('parking-d', 20, -3, 6),
+      point('area-a', 4, -8, 48),
+      point('area-b', 12, -8, 48),
+      point('area-c', 12, -5, 48),
+      point('area-d', 4, -5, 48),
+      point('driveable-area-a', 4, 5, 48),
+      point('driveable-area-b', 12, 5, 48),
+      point('driveable-area-c', 12, 8, 48),
+      point('driveable-area-d', 4, 8, 48),
+      point('gate-a', 24, -2.5, 5),
+      point('gate-b', 24, 2.5, 5),
+    ],
+    boundary: [
+      boundary('lane-left', ['lane-left-a', 'lane-left-b'], 7),
+      boundary('lane-right', ['lane-right-a', 'lane-right-b'], 7),
+      boundary('stop-boundary', ['stop-a', 'stop-b'], 11),
+      boundary('standalone-stop-boundary', ['standalone-stop-a', 'standalone-stop-b'], 11),
+      boundary('speed-boundary', ['speed-a', 'speed-b'], 10),
+      boundary('junction-boundary', ['junction-a', 'junction-b', 'junction-c', 'junction-d', 'junction-a'], 8),
+      boundary('crosswalk-boundary', ['crosswalk-a', 'crosswalk-b', 'crosswalk-c', 'crosswalk-d', 'crosswalk-a'], 9),
+      boundary('parking-boundary', ['parking-a', 'parking-b', 'parking-c', 'parking-d', 'parking-a'], 12),
+      boundary('clear-area-boundary', ['area-a', 'area-b', 'area-c', 'area-d', 'area-a'], 50),
+      boundary(
+        'driveable-area-boundary',
+        ['driveable-area-a', 'driveable-area-b', 'driveable-area-c', 'driveable-area-d', 'driveable-area-a'],
+        50,
+      ),
+      boundary('gate-boundary', ['gate-a', 'gate-b'], 52),
+    ],
+    roadBoundary: [boundary('road-boundary', ['road-a', 'road-b'], 40)],
+    lane: [
+      {
+        id: 'lane-1',
+        left_boundary_id: 'lane-left',
+        right_boundary_id: 'lane-right',
+        width: 4,
+        attr: { speed: 8, direction: 1, prossibleDrivingDirection: 1, laneType: 1 },
+      },
+    ],
+    stopLine: [
+      { id: 'stop-1', boundaryId: 'stop-boundary', origin: 1 },
+      { id: 'standalone-stop-1', boundaryId: 'standalone-stop-boundary', origin: 0 },
+      { id: 'gate-stop-1', boundaryId: 'gate-boundary', origin: 3 },
+    ],
+    trafficSignal: [
+      {
+        id: 'signal-1',
+        stopLineId: 'stop-1',
+        center: { x: 8, y: 3 },
+        type: 4,
+        subSignal: [{ id: 'signal-1-0', type: 2 }],
+      },
+    ],
+    stopSign: [{ id: 'stop-sign-1', stopLineId: 'stop-1' }],
+    yieldSign: [{ id: 'yield-sign-1', stopLineId: 'stop-1' }],
+    speed_bump: [{ id: 'speed-1', boundaryId: 'speed-boundary' }],
+    junction: [{ id: 'junction-1', boundaryId: 'junction-boundary', attr: { type: 2 } }],
+    crosswalk: [{ id: 'crosswalk-1', boundaryId: 'crosswalk-boundary' }],
+    parkingSpace: [{ id: 'parking-1', boundaryId: 'parking-boundary', heading: 0 }],
+    area: [
+      { id: 'clear-area-1', boundaryId: 'clear-area-boundary', type: 2 },
+      { id: 'driveable-area-1', boundaryId: 'driveable-area-boundary', type: 1 },
+    ],
+    barrierGate: [{ id: 'gate-1', stopLineId: 'gate-stop-1', boundaryId: 'gate-boundary' }],
+  };
+
+  await fs.writeFile(jsonPath, JSON.stringify(editorMap), 'utf8');
+  await convertEditorMapToApolloPackage({ mapName: 'contract-test', jsonPath, releaseDir });
+
+  const manifest = JSON.parse(await fs.readFile(path.join(releaseDir, 'manifest.json'), 'utf8'));
+  const baseMapText = await fs.readFile(path.join(releaseDir, 'base_map.txt'), 'utf8');
+
+  assert.strictEqual(manifest.summary.lanes, 1);
+  assert.strictEqual(manifest.summary.roadBoundaryEdges, 1);
+  assert.strictEqual(manifest.summary.crosswalks, 1);
+  assert.strictEqual(manifest.summary.junctions, 1);
+  assert.strictEqual(manifest.summary.signals, 1);
+  assert.strictEqual(manifest.summary.stopSigns, 1);
+  assert.strictEqual(manifest.summary.yieldSigns, 1);
+  assert.strictEqual(manifest.summary.speedBumps, 1);
+  assert.strictEqual(manifest.summary.parkingSpaces, 1);
+  assert.strictEqual(manifest.summary.clearAreas, 1);
+  assert.ok(manifest.contract);
+  assert.strictEqual(manifest.contract.editorCounts.barrierGates, 1);
+  assert.strictEqual(manifest.contract.apolloCounts.roadBoundaryEdges, 1);
+  assert.strictEqual(manifest.contract.apolloCounts.stopLineCurves, 3);
+  assert.ok(manifest.contract.mappings.find((item) => item.editor === 'barrierGates' && item.status === 'unsupported'));
+  assert.ok(manifest.warnings.some((item) => item.code === 'barrier-gate-not-in-apollo-hdmap'));
+  assert.ok(manifest.warnings.some((item) => item.code === 'apollo-overlap-not-generated'));
+  assert.ok(manifest.warnings.some((item) => item.code === 'area-type-not-apollo-clear-area'));
+  assert.ok(manifest.warnings.some((item) => item.code === 'standalone-stop-line-not-exported'));
+  assert.match(baseMapText, /^signal \{/m);
+  assert.match(baseMapText, /^clear_area \{/m);
+  assert.match(baseMapText, /outer_polygon \{/);
+  assert.match(baseMapText, /^stop_sign \{/m);
+  assert.match(baseMapText, /^yield \{/m);
+
+  console.log(
+    JSON.stringify({
+      releaseDir,
+      summary: manifest.summary,
+      warnings: manifest.warnings.map((item) => item.code),
+    }),
+  );
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
