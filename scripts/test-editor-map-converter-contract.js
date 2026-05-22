@@ -134,13 +134,16 @@ async function main() {
   assert.strictEqual(manifest.summary.speedBumps, 1);
   assert.strictEqual(manifest.summary.parkingSpaces, 1);
   assert.strictEqual(manifest.summary.clearAreas, 1);
+  assert.strictEqual(manifest.summary.overlaps, 5);
   assert.ok(manifest.contract);
   assert.strictEqual(manifest.contract.editorCounts.barrierGates, 1);
   assert.strictEqual(manifest.contract.apolloCounts.roadBoundaryEdges, 1);
   assert.strictEqual(manifest.contract.apolloCounts.stopLineCurves, 3);
+  assert.strictEqual(manifest.contract.apolloCounts.overlaps, 5);
   assert.ok(manifest.contract.mappings.find((item) => item.editor === 'barrierGates' && item.status === 'unsupported'));
   assert.ok(manifest.warnings.some((item) => item.code === 'barrier-gate-not-in-apollo-hdmap'));
-  assert.ok(manifest.warnings.some((item) => item.code === 'apollo-overlap-not-generated'));
+  assert.ok(!manifest.warnings.some((item) => item.code === 'apollo-overlap-not-generated'));
+  assert.ok(!manifest.warnings.some((item) => item.code === 'overlap-not-found'));
   assert.ok(manifest.warnings.some((item) => item.code === 'area-type-not-apollo-clear-area'));
   assert.ok(manifest.warnings.some((item) => item.code === 'standalone-stop-line-not-exported'));
   assert.match(baseMapText, /^signal \{/m);
@@ -148,6 +151,13 @@ async function main() {
   assert.match(baseMapText, /outer_polygon \{/);
   assert.match(baseMapText, /^stop_sign \{/m);
   assert.match(baseMapText, /^yield \{/m);
+  assert.match(baseMapText, /^overlap \{/m);
+  assert.match(baseMapText, /lane_overlap_info \{/);
+  assert.match(baseMapText, /signal_overlap_info \{/);
+  assert.match(baseMapText, /stop_sign_overlap_info \{/);
+  assert.match(baseMapText, /yield_sign_overlap_info \{/);
+  assert.match(baseMapText, /crosswalk_overlap_info \{/);
+  assert.match(baseMapText, /speed_bump_overlap_info \{/);
 
   console.log(
     JSON.stringify({

@@ -227,6 +227,36 @@ function createProtoRoot() {
     ['overlapId', 2, 'Id', 'repeated'],
     ['polygon', 3, 'Polygon'],
   ]);
+  addType(hdmap, 'LaneOverlapInfo', [
+    ['startS', 1, 'double'],
+    ['endS', 2, 'double'],
+    ['isMerge', 3, 'bool'],
+    ['regionOverlapId', 4, 'Id'],
+  ]);
+  addType(hdmap, 'SignalOverlapInfo', []);
+  addType(hdmap, 'StopSignOverlapInfo', []);
+  addType(hdmap, 'CrosswalkOverlapInfo', []);
+  addType(hdmap, 'JunctionOverlapInfo', []);
+  addType(hdmap, 'YieldSignOverlapInfo', []);
+  addType(hdmap, 'ClearAreaOverlapInfo', []);
+  addType(hdmap, 'SpeedBumpOverlapInfo', []);
+  addType(hdmap, 'ParkingSpaceOverlapInfo', []);
+  addType(hdmap, 'ObjectOverlapInfo', [
+    ['id', 1, 'Id'],
+    ['laneOverlapInfo', 3, 'LaneOverlapInfo'],
+    ['signalOverlapInfo', 4, 'SignalOverlapInfo'],
+    ['stopSignOverlapInfo', 5, 'StopSignOverlapInfo'],
+    ['crosswalkOverlapInfo', 6, 'CrosswalkOverlapInfo'],
+    ['junctionOverlapInfo', 7, 'JunctionOverlapInfo'],
+    ['yieldSignOverlapInfo', 8, 'YieldSignOverlapInfo'],
+    ['clearAreaOverlapInfo', 9, 'ClearAreaOverlapInfo'],
+    ['speedBumpOverlapInfo', 10, 'SpeedBumpOverlapInfo'],
+    ['parkingSpaceOverlapInfo', 11, 'ParkingSpaceOverlapInfo'],
+  ]);
+  addType(hdmap, 'Overlap', [
+    ['id', 1, 'Id'],
+    ['object', 2, 'ObjectOverlapInfo', 'repeated'],
+  ]);
   addType(hdmap, 'BoundaryEdge', [
     ['curve', 1, 'Curve'],
     ['type', 2, 'Type'],
@@ -269,6 +299,7 @@ function createProtoRoot() {
     ['stopSign', 5, 'StopSign', 'repeated'],
     ['signal', 6, 'Signal', 'repeated'],
     ['yield', 7, 'YieldSign', 'repeated'],
+    ['overlap', 8, 'Overlap', 'repeated'],
     ['clearArea', 9, 'ClearArea', 'repeated'],
     ['speedBump', 10, 'SpeedBump', 'repeated'],
     ['road', 11, 'Road', 'repeated'],
@@ -356,6 +387,10 @@ function pointFromEditor(point) {
 
 function distance(a, b) {
   return Math.hypot(number(a.x) - number(b.x), number(a.y) - number(b.y));
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function polylineLength(points) {
@@ -511,6 +546,115 @@ function curveFromBoundaryId(boundaryId, boundaryIndex, pointIndex) {
   return points.length >= 2 ? curveFromPoints(points) : null;
 }
 
+function distancePointToSegment(point, start, end) {
+  const dx = number(end.x) - number(start.x);
+  const dy = number(end.y) - number(start.y);
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared <= 0) {
+    return distance(point, start);
+  }
+  const t = clamp(
+    ((number(point.x) - number(start.x)) * dx + (number(point.y) - number(start.y)) * dy) / lengthSquared,
+    0,
+    1
+  );
+  return distance(point, {
+    x: number(start.x) + dx * t,
+    y: number(start.y) + dy * t,
+    z: number(start.z) + (number(end.z) - number(start.z)) * t,
+  });
+}
+
+function distancePointToPolyline(point, points, closed = false) {
+  if (points.length === 0) {
+    return Infinity;
+  }
+  if (points.length === 1) {
+    return distance(point, points[0]);
+  }
+  let best = Infinity;
+  for (let i = 1; i < points.length; i += 1) {
+    best = Math.min(best, distancePointToSegment(point, points[i - 1], points[i]));
+  }
+  if (closed && points.length > 2) {
+    best = Math.min(best, distancePointToSegment(point, points[points.length - 1], points[0]));
+  }
+  return best;
+}
+
+function pointInPolygon(point, polygonPoints) {
+  if (polygonPoints.length < 3) {
+    return false;
+  }
+  let inside = false;
+  for (let i = 0, j = polygonPoints.length - 1; i < polygonPoints.length; j = i, i += 1) {
+    const a = polygonPoints[i];
+    const b = polygonPoints[j];
+    const aAbove = number(a.y) > number(point.y);
+    const bAbove = number(b.y) > number(point.y);
+    const edgeX =
+      ((number(b.x) - number(a.x)) * (number(point.y) - number(a.y))) / (number(b.y) - number(a.y) || Number.EPSILON) +
+      number(a.x);
+    const crosses = aAbove !== bAbove && number(point.x) < edgeX;
+    if (crosses) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function sampleLaneCenter(laneInfo, spacing = 0.5) {
+  const length = Math.max(0, number(laneInfo.proto?.length, polylineLength(laneInfo.center)));
+  const sampleCount = Math.max(2, Math.ceil(length / spacing) + 1);
+  return Array.from({ length: sampleCount }, (_unused, index) => {
+    const ratio = sampleCount === 1 ? 0 : index / (sampleCount - 1);
+    return {
+      point: interpolate(laneInfo.center, ratio),
+      s: length * ratio,
+    };
+  });
+}
+
+function rangeFromLaneSamples(laneInfo, predicate, padding) {
+  const length = Math.max(0, number(laneInfo.proto?.length, polylineLength(laneInfo.center)));
+  const hits = sampleLaneCenter(laneInfo).filter((sample) => predicate(sample.point));
+  if (hits.length === 0) {
+    return null;
+  }
+  const startS = clamp(Math.min(...hits.map((sample) => sample.s)) - padding, 0, length);
+  const endS = clamp(Math.max(...hits.map((sample) => sample.s)) + padding, 0, length);
+  return {
+    startS,
+    endS: Math.max(endS, Math.min(length, startS + 0.1)),
+  };
+}
+
+function overlapRangeForCurve(laneInfo, curvePoints) {
+  const clean = arr(curvePoints).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (clean.length < 2) {
+    return null;
+  }
+  const threshold = Math.max(0.75, Math.min(3, number(laneInfo.width, 3.5) / 2 + 0.35));
+  return rangeFromLaneSamples(
+    laneInfo,
+    (point) => distancePointToPolyline(point, clean, false) <= threshold,
+    Math.min(1.5, threshold / 2)
+  );
+}
+
+function overlapRangeForPolygon(laneInfo, polygonPoints) {
+  const clean = arr(polygonPoints).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (clean.length < 3) {
+    return null;
+  }
+  const threshold = Math.max(0.5, Math.min(2.5, number(laneInfo.width, 3.5) / 2));
+  return rangeFromLaneSamples(
+    laneInfo,
+    (point) => pointInPolygon(point, clean) || distancePointToPolyline(point, clean, true) <= threshold,
+    Math.min(1.5, threshold / 2)
+  );
+}
+
 function centerLineFromLane(lane, boundaryIndex, pointIndex) {
   const inlinePointIds = arr(lane.points || lane.point_id);
   if (inlinePointIds.length >= 2) {
@@ -637,6 +781,7 @@ function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
     laneInfos.push({
       source: lane,
       center,
+      width,
       start: center[0],
       end: center[center.length - 1],
       proto: {
@@ -646,6 +791,7 @@ function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
         rightBoundary,
         length,
         speedLimit: number(lane.speed_limit ?? lane.attr?.speed, 40),
+        overlapId: [],
         predecessorId: [],
         successorId: [],
         leftSample: [
@@ -734,6 +880,110 @@ function roadBoundaryFromEditor(editorMap, boundaryIndex, pointIndex, conversion
     : null;
 }
 
+const OVERLAP_TARGETS = [
+  {
+    key: 'signal',
+    element: 'trafficSignal',
+    infoField: 'signalOverlapInfo',
+    geometryKey: '_overlapCurvePoints',
+    rangeFactory: overlapRangeForCurve,
+  },
+  {
+    key: 'stopSign',
+    element: 'stopSign',
+    infoField: 'stopSignOverlapInfo',
+    geometryKey: '_overlapCurvePoints',
+    rangeFactory: overlapRangeForCurve,
+  },
+  {
+    key: 'yield',
+    element: 'yieldSign',
+    infoField: 'yieldSignOverlapInfo',
+    geometryKey: '_overlapCurvePoints',
+    rangeFactory: overlapRangeForCurve,
+  },
+  {
+    key: 'crosswalk',
+    element: 'crosswalk',
+    infoField: 'crosswalkOverlapInfo',
+    geometryKey: '_overlapPolygonPoints',
+    rangeFactory: overlapRangeForPolygon,
+  },
+  {
+    key: 'speedBump',
+    element: 'speedBump',
+    infoField: 'speedBumpOverlapInfo',
+    geometryKey: '_overlapCurvePoints',
+    rangeFactory: overlapRangeForCurve,
+  },
+];
+
+function objectIdValue(object) {
+  return String(object?.id?.id || object?.id || '');
+}
+
+function addOverlapId(target, overlapId) {
+  if (!target.overlapId) {
+    target.overlapId = [];
+  }
+  if (!target.overlapId.some((item) => item.id === overlapId)) {
+    target.overlapId.push(id(overlapId));
+  }
+}
+
+function createLaneObjectOverlap(laneInfo, object, target, range) {
+  const laneId = String(laneInfo.source.id || laneInfo.proto.id?.id || '');
+  const objectId = objectIdValue(object);
+  const overlapId = `${target.element}_${objectId}_${laneId}`;
+  addOverlapId(laneInfo.proto, overlapId);
+  addOverlapId(object, overlapId);
+  return {
+    id: id(overlapId),
+    object: [
+      {
+        id: id(laneId),
+        laneOverlapInfo: {
+          startS: range.startS,
+          endS: range.endS,
+          isMerge: false,
+        },
+      },
+      {
+        id: id(objectId),
+        [target.infoField]: {},
+      },
+    ],
+  };
+}
+
+function buildOverlaps(mapMessage, laneInfos, conversionWarnings) {
+  const overlaps = [];
+  for (const target of OVERLAP_TARGETS) {
+    for (const object of arr(mapMessage[target.key])) {
+      let linkedLaneCount = 0;
+      const geometry = object[target.geometryKey] || [];
+      for (const laneInfo of laneInfos) {
+        const range = target.rangeFactory(laneInfo, geometry);
+        if (!range) {
+          continue;
+        }
+        overlaps.push(createLaneObjectOverlap(laneInfo, object, target, range));
+        linkedLaneCount += 1;
+      }
+      if (linkedLaneCount === 0) {
+        addConversionWarning(conversionWarnings, {
+          severity: 'warning',
+          code: 'overlap-not-found',
+          element: target.element,
+          id: objectIdValue(object),
+          message: `${target.element} ${objectIdValue(object)} was exported but no nearby lane overlap could be inferred.`,
+        });
+      }
+    }
+  }
+  return overlaps;
+}
+
 function createMapMessage(editorMap) {
   const pointIndex = buildPointIndex(editorMap);
   const boundaryIndex = buildBoundaryIndex(editorMap);
@@ -748,6 +998,7 @@ function createMapMessage(editorMap) {
       const half = 0.3;
       const stopLineBoundaryId = resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex);
       const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex);
+      const stopLinePoints = pointsFromBoundary(boundaryIndex.get(String(stopLineBoundaryId)), pointIndex, false);
       if (!stopLine) {
         addConversionWarning(conversionWarnings, {
           severity: 'error',
@@ -775,6 +1026,7 @@ function createMapMessage(editorMap) {
         })),
         type: number(item.type, 1),
         stopLine: [stopLine],
+        _overlapCurvePoints: stopLinePoints,
       };
     })
     .filter(Boolean);
@@ -787,22 +1039,6 @@ function createMapMessage(editorMap) {
       message: `Barrier gate ${item.id || ''} is retained in editor_map.json but Apollo HDMap has no direct barrier gate element.`,
     });
   });
-  const overlapDependentCount =
-    arr(editorMap.trafficSignal).length +
-    arr(editorMap.stopSign).length +
-    arr(editorMap.yieldSign).length +
-    arr(editorMap.crosswalk).length +
-    arrFromKeys(editorMap, ['speed_bump', 'speedBump']).length;
-  if (overlapDependentCount > 0) {
-    addConversionWarning(conversionWarnings, {
-      severity: 'warning',
-      code: 'apollo-overlap-not-generated',
-      element: 'overlap',
-      id: 'map',
-      message:
-        'Apollo overlap records are not generated yet; traffic signs, signals, crosswalks, and speed bumps are exported geometrically but not lane-overlap linked.',
-    });
-  }
   const referencedStopLineIds = new Set(
     [
       ...arr(editorMap.trafficSignal),
@@ -827,7 +1063,7 @@ function createMapMessage(editorMap) {
     }
   });
 
-  return {
+  const mapMessage = {
     header: createHeader(editorMap),
     lane: laneInfos.map((item) => item.proto),
     crosswalk: arr(editorMap.crosswalk)
@@ -846,6 +1082,7 @@ function createMapMessage(editorMap) {
         return {
           id: id(item.id),
           polygon,
+          _overlapPolygonPoints: polygon.point,
         };
       })
       .filter(Boolean),
@@ -882,7 +1119,11 @@ function createMapMessage(editorMap) {
           });
           return null;
         }
-        return { id: id(item.id), position: [curve] };
+        return {
+          id: id(item.id),
+          position: [curve],
+          _overlapCurvePoints: pointsFromBoundary(boundaryIndex.get(String(item.boundaryId)), pointIndex, false),
+        };
       })
       .filter(Boolean),
     stopSign: arr(editorMap.stopSign)
@@ -899,7 +1140,14 @@ function createMapMessage(editorMap) {
           });
           return null;
         }
-        return stopLine ? { id: id(item.id), stopLine: [stopLine], type: 1 } : null;
+        return stopLine
+          ? {
+              id: id(item.id),
+              stopLine: [stopLine],
+              type: 1,
+              _overlapCurvePoints: pointsFromBoundary(boundaryIndex.get(String(stopLineBoundaryId)), pointIndex, false),
+            }
+          : null;
       })
       .filter(Boolean),
     yield: arr(editorMap.yieldSign)
@@ -916,7 +1164,13 @@ function createMapMessage(editorMap) {
           });
           return null;
         }
-        return stopLine ? { id: id(item.id), stopLine: [stopLine] } : null;
+        return stopLine
+          ? {
+              id: id(item.id),
+              stopLine: [stopLine],
+              _overlapCurvePoints: pointsFromBoundary(boundaryIndex.get(String(stopLineBoundaryId)), pointIndex, false),
+            }
+          : null;
       })
       .filter(Boolean),
     signal: signals,
@@ -992,6 +1246,8 @@ function createMapMessage(editorMap) {
     _laneInfos: laneInfos,
     _conversionWarnings: conversionWarnings,
   };
+  mapMessage.overlap = buildOverlaps(mapMessage, laneInfos, conversionWarnings);
+  return mapMessage;
 }
 
 function createRoutingGraph(mapMessage) {
@@ -1075,7 +1331,21 @@ function objectToText(object, level = 0, fieldMap = {}) {
 
 function cleanMapForEncoding(mapMessage) {
   const { _laneInfos, _conversionWarnings, ...payload } = mapMessage;
-  return payload;
+  return stripPrivateFields(payload);
+}
+
+function stripPrivateFields(value) {
+  if (Array.isArray(value)) {
+    return value.map(stripPrivateFields);
+  }
+  if (!value || typeof value !== 'object' || Buffer.isBuffer(value) || value instanceof Uint8Array) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !key.startsWith('_'))
+      .map(([key, nestedValue]) => [key, stripPrivateFields(nestedValue)])
+  );
 }
 
 function countRoadBoundaryEdges(cleanMap) {
@@ -1267,6 +1537,7 @@ async function convertEditorMapToApolloPackage(options) {
           clearAreas: cleanMap.clearArea.length,
           speedBumps: cleanMap.speedBump.length,
           parkingSpaces: cleanMap.parkingSpace.length,
+          overlaps: cleanMap.overlap.length,
           routingNodes: routingGraph.node.length,
           routingEdges: routingGraph.edge.length,
           warnings: warnings.length,
