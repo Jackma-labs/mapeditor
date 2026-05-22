@@ -113,6 +113,12 @@ const APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS = 20000;
 const APOLLOLITE_STATE_FILE = 'apollolite_current_map.json';
 const APOLLOLITE_ROUTING_LOG_SCAN_LIMIT = 800;
 const APOLLOLITE_RECENT_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME = 'mapeditor_traffic_light_sim';
+const APOLLOLITE_TRAFFIC_LIGHT_SIM_DIR = '/apollo/data/log/mapeditor_runtime';
+const APOLLOLITE_TRAFFIC_LIGHT_SIM_SCRIPT = `${APOLLOLITE_TRAFFIC_LIGHT_SIM_DIR}/${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME}.py`;
+const APOLLOLITE_TRAFFIC_LIGHT_SIM_IDS = `${APOLLOLITE_TRAFFIC_LIGHT_SIM_DIR}/traffic_light_ids.json`;
+const APOLLOLITE_TRAFFIC_LIGHT_SIM_LOG = `${APOLLOLITE_TRAFFIC_LIGHT_SIM_DIR}/traffic_light_sim.log`;
+const APOLLOLITE_TRAFFIC_LIGHT_CHANNEL = '/apollo/perception/traffic_light';
 
 function normalizeZipOpenError(error, label) {
   const message = String(error?.message || error || '');
@@ -1028,6 +1034,309 @@ async function writeApolloLiteCurrentMapState(config, state) {
   };
   await fsp.writeFile(getApolloLiteCurrentMapStatePath(config), JSON.stringify(payload, null, 2), 'utf8');
   return payload;
+}
+
+function normalizeApolloLiteTrafficLightColor(value) {
+  const color = String(value || 'GREEN').trim().toUpperCase();
+  if (['RED', 'YELLOW', 'GREEN', 'BLACK', 'UNKNOWN'].includes(color)) {
+    return color;
+  }
+  return 'GREEN';
+}
+
+function parseApolloLiteSignalIdsFromBaseMapText(text) {
+  const ids = [];
+  const lines = String(text || '').split(/\r?\n/u);
+  let signalDepth = 0;
+  let pendingTopLevelId = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (signalDepth === 0 && trimmed === 'signal {') {
+      signalDepth = 1;
+      pendingTopLevelId = false;
+      continue;
+    }
+    if (signalDepth === 0) {
+      continue;
+    }
+    if (signalDepth === 1 && trimmed === 'id {') {
+      pendingTopLevelId = true;
+    } else if (pendingTopLevelId) {
+      const idMatch = trimmed.match(/^id:\s*"([^"]+)"/u);
+      if (idMatch) {
+        ids.push(idMatch[1]);
+        pendingTopLevelId = false;
+      }
+    }
+    const opens = (line.match(/\{/gu) || []).length;
+    const closes = (line.match(/\}/gu) || []).length;
+    signalDepth += opens - closes;
+    if (signalDepth <= 0) {
+      signalDepth = 0;
+      pendingTopLevelId = false;
+    }
+  }
+  return ids;
+}
+
+async function readApolloLiteTrafficSignalIdsFromDir(mapDir) {
+  if (!mapDir) {
+    return [];
+  }
+  const editorMapPath = path.join(mapDir, 'editor_map.json');
+  if (await pathExists(editorMapPath)) {
+    try {
+      const editorMap = JSON.parse((await fsp.readFile(editorMapPath, 'utf8')).replace(/^\uFEFF/u, ''));
+      const ids = arr(editorMap.trafficSignal)
+        .map((item) => item?.id)
+        .filter((value) => value !== undefined && value !== null && String(value).trim())
+        .map((value) => String(value));
+      if (ids.length > 0) {
+        return ids;
+      }
+    } catch (error) {
+      // Fall back to base_map.txt parsing below.
+    }
+  }
+  const baseMapTextPath = path.join(mapDir, 'base_map.txt');
+  if (await pathExists(baseMapTextPath)) {
+    return parseApolloLiteSignalIdsFromBaseMapText(await fsp.readFile(baseMapTextPath, 'utf8'));
+  }
+  return [];
+}
+
+async function readApolloLiteTrafficSignalIds(config, apolloLite) {
+  const currentState = await resolveApolloLiteCurrentMapState(config, apolloLite);
+  const candidateDirs = [
+    currentState?.targetDir,
+    currentState?.sourceDir,
+    mapApolloContainerPathToHost(apolloLite.root, currentState?.flagMapDir || apolloLite.defaultMapFlag?.mapDir || ''),
+  ]
+    .filter(Boolean)
+    .map((item) => path.resolve(item));
+  const uniqueDirs = [...new Set(candidateDirs)];
+  for (const dir of uniqueDirs) {
+    const ids = await readApolloLiteTrafficSignalIdsFromDir(dir);
+    if (ids.length > 0) {
+      return {
+        ids: [...new Set(ids)],
+        sourceDir: dir,
+        currentMapState: currentState,
+      };
+    }
+  }
+  return {
+    ids: [],
+    sourceDir: uniqueDirs[0] || '',
+    currentMapState: currentState,
+  };
+}
+
+function buildApolloLiteTrafficLightSimScript() {
+  return `#!/usr/bin/env python3
+import argparse
+import json
+import signal
+import time
+
+from cyber.python.cyber_py3 import cyber
+from modules.common_msgs.perception_msgs import traffic_light_detection_pb2 as tl
+
+RUNNING = True
+
+def handle_signal(_signum, _frame):
+    global RUNNING
+    RUNNING = False
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--ids-file', required=True)
+    parser.add_argument('--color', default='GREEN')
+    parser.add_argument('--interval', type=float, default=0.1)
+    parser.add_argument('--remaining-time', type=float, default=30.0)
+    args = parser.parse_args()
+
+    with open(args.ids_file, 'r', encoding='utf-8') as handle:
+        signal_ids = [str(item) for item in json.load(handle) if str(item)]
+
+    color_map = {
+        'UNKNOWN': tl.TrafficLight.UNKNOWN,
+        'RED': tl.TrafficLight.RED,
+        'YELLOW': tl.TrafficLight.YELLOW,
+        'GREEN': tl.TrafficLight.GREEN,
+        'BLACK': tl.TrafficLight.BLACK,
+    }
+    color_name = str(args.color or 'GREEN').upper()
+    color = color_map.get(color_name, tl.TrafficLight.GREEN)
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+    cyber.init()
+    node = cyber.Node('${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME}')
+    writer = node.create_writer('${APOLLOLITE_TRAFFIC_LIGHT_CHANNEL}', tl.TrafficLightDetection, 10)
+    seq = 0
+    print('publishing traffic lights:', signal_ids, 'color:', color_name, flush=True)
+    while RUNNING:
+        message = tl.TrafficLightDetection()
+        now = time.time()
+        message.header.timestamp_sec = now
+        message.header.module_name = '${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME}'
+        message.header.sequence_num = seq
+        message.contain_lights = True
+        message.camera_id = 'mapeditor'
+        for signal_id in signal_ids:
+            light = message.traffic_light.add()
+            light.id = signal_id
+            light.color = color
+            light.confidence = 1.0
+            light.tracking_time = now
+            light.blink = False
+            light.remaining_time = args.remaining_time
+        writer.write(message)
+        seq += 1
+        time.sleep(max(0.02, args.interval))
+    cyber.shutdown()
+
+if __name__ == '__main__':
+    main()
+`;
+}
+
+async function getApolloLiteTrafficLightSimulationStatus(config) {
+  const apolloLite = await getApolloLiteStatus(config);
+  const containerName = await resolveApolloLiteDockerContainer(apolloLite);
+  const signalInfo = await readApolloLiteTrafficSignalIds(config, apolloLite).catch((error) => ({
+    ids: [],
+    sourceDir: '',
+    error: error.message,
+  }));
+  if (!containerName) {
+    return {
+      available: false,
+      running: false,
+      containerName: '',
+      channel: APOLLOLITE_TRAFFIC_LIGHT_CHANNEL,
+      signalIds: signalInfo.ids || [],
+      signalSourceDir: signalInfo.sourceDir || '',
+      message: 'ApolloLite docker container was not found',
+    };
+  }
+  const command = [
+    `pgrep -af ${quoteShell(`[${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME[0]}]${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME.slice(1)}.py`)} || true`,
+    `tail -n 20 ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_LOG)} 2>/dev/null || true`,
+  ].join('; ');
+  const result = await runCommand('docker', ['exec', '-u', 'dell', containerName, 'bash', '-lc', command], {
+    timeoutMs: 5000,
+  }).catch((error) => ({
+    stdout: '',
+    stderr: error.message,
+    code: 1,
+  }));
+  const sections = String(result.stdout || '').split(/\r?\n/u);
+  const processLines = sections.filter((line) => line.includes(APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME) && line.includes('.py'));
+  return {
+    available: result.code === 0,
+    running: processLines.length > 0,
+    containerName,
+    channel: APOLLOLITE_TRAFFIC_LIGHT_CHANNEL,
+    signalIds: signalInfo.ids || [],
+    signalSourceDir: signalInfo.sourceDir || '',
+    processes: processLines,
+    logTail: sections.slice(processLines.length).filter(Boolean).slice(-20),
+    message:
+      processLines.length > 0
+        ? `traffic light simulation is publishing ${signalInfo.ids?.length || 0} signal(s)`
+        : `traffic light simulation is stopped; ${signalInfo.ids?.length || 0} signal(s) found in current map`,
+  };
+}
+
+async function stopApolloLiteTrafficLightSimulation(config, progress = async () => {}) {
+  const apolloLite = await getApolloLiteStatus(config);
+  const containerName = await resolveApolloLiteDockerContainer(apolloLite);
+  if (!containerName) {
+    return {
+      stopped: false,
+      running: false,
+      containerName: '',
+      message: 'ApolloLite docker container was not found',
+    };
+  }
+  await progress('Stopping ApolloLite traffic light simulation');
+  await runCommand(
+    'docker',
+    [
+      'exec',
+      '-u',
+      'dell',
+      containerName,
+      'bash',
+      '-lc',
+      `pkill -f ${quoteShell(`${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME}.py`)} || true`,
+    ],
+    { timeoutMs: 5000 }
+  );
+  const status = await getApolloLiteTrafficLightSimulationStatus(config);
+  return {
+    ...status,
+    stopped: true,
+  };
+}
+
+async function startApolloLiteTrafficLightSimulation(config, params = {}, progress = async () => {}) {
+  const apolloLite = await getApolloLiteStatus(config);
+  if (!apolloLite.enabled || !apolloLite.simulationReady) {
+    throw new Error('ApolloLite simulation is not ready');
+  }
+  const containerName = await resolveApolloLiteDockerContainer(apolloLite);
+  if (!containerName) {
+    throw new Error('ApolloLite docker container was not found');
+  }
+  const signalInfo = await readApolloLiteTrafficSignalIds(config, apolloLite);
+  if (signalInfo.ids.length === 0) {
+    throw new Error('当前 ApolloLite 地图没有 trafficSignal；请先发布包含红绿灯的标注地图，或检查红绿灯是否已保存并发布。');
+  }
+  const color = normalizeApolloLiteTrafficLightColor(params.color);
+  const interval = Math.max(0.02, Math.min(2, number(params.interval, 0.1)));
+  await progress(`Starting ApolloLite traffic light simulation: ${signalInfo.ids.length} signal(s), ${color}`);
+  const scriptBase64 = Buffer.from(buildApolloLiteTrafficLightSimScript(), 'utf8').toString('base64');
+  const idsBase64 = Buffer.from(JSON.stringify(signalInfo.ids), 'utf8').toString('base64');
+  const startCommand = [
+    `mkdir -p ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_DIR)}`,
+    `pkill -f ${quoteShell(`${APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME}.py`)} || true`,
+    `printf %s ${quoteShell(scriptBase64)} | base64 -d > ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_SCRIPT)}`,
+    `printf %s ${quoteShell(idsBase64)} | base64 -d > ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_IDS)}`,
+    `chmod +x ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_SCRIPT)}`,
+    [
+      'nohup',
+      'bash',
+      '-lc',
+      quoteShell(
+        [
+          'cd /apollo',
+          'source cyber/setup.bash >/dev/null 2>&1',
+          `exec python3 ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_SCRIPT)} --ids-file ${quoteShell(
+            APOLLOLITE_TRAFFIC_LIGHT_SIM_IDS
+          )} --color ${quoteShell(color)} --interval ${interval}`,
+        ].join(' && ')
+      ),
+      `> ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_LOG)} 2>&1 < /dev/null & echo $!`,
+    ].join(' '),
+  ].join(' && ');
+  const result = await runCommand('docker', ['exec', '-u', 'dell', containerName, 'bash', '-lc', startCommand], {
+    timeoutMs: 8000,
+  });
+  await delay(800);
+  const status = await getApolloLiteTrafficLightSimulationStatus(config);
+  if (!status.running) {
+    throw new Error(`traffic light simulation did not start: ${status.logTail?.join('\n') || result.stderr || result.stdout}`);
+  }
+  return {
+    ...status,
+    color,
+    signalIds: signalInfo.ids,
+    signalSourceDir: signalInfo.sourceDir,
+    pid: result.stdout.trim().split(/\r?\n/u).pop() || '',
+  };
 }
 
 async function scoreApolloLiteMapDirEntry(root, mapDir, index) {
@@ -2526,6 +2835,10 @@ async function resetApolloLiteSimulationSession(config, progress = async () => {
     await updateApolloLiteDefaultMapFlag(apolloLite, targetMapName);
   }
   const dreamviewRuntime = await ensureApolloLiteDreamviewReachable(apolloLite, progress);
+  await progress('Stopping stale ApolloLite PNC stack before reset');
+  const pncCleanup = await stopApolloLiteStaleSimulationProcesses(apolloLite, progress).catch((error) => ({
+    error: error.message,
+  }));
   await progress('Starting stable ApolloLite PNC stack');
   const pncStack = await startApolloLiteStablePncStack(apolloLite, progress);
 
@@ -2568,6 +2881,7 @@ async function resetApolloLiteSimulationSession(config, progress = async () => {
     ready: after.ready === true,
     targetMapName,
     dreamviewRuntime,
+    pncCleanup,
     pncStack,
     wsUrl,
     mapSwitch,
@@ -2868,6 +3182,17 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
   }
   await progress('Starting stable ApolloLite PNC stack');
   const pncStack = await startApolloLiteStablePncStack(apolloLite, progress);
+  const trafficLightSimulation = await startApolloLiteTrafficLightSimulation(
+    config,
+    { color: params.trafficLightColor || 'GREEN' },
+    progress
+  ).catch((error) => ({
+    skipped: true,
+    error: error.message,
+  }));
+  if (trafficLightSimulation?.skipped) {
+    await progress(`Traffic light simulation skipped: ${trafficLightSimulation.error}`);
+  }
   await progress('Building route from staged Apollo map');
   const route = await buildApolloLiteSimulationRoute(stage.targetDir, startPose);
   route.mapName = stage.apolloLiteMapName || stage.mapName;
@@ -2894,6 +3219,7 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
     dreamviewRuntime,
     components,
     pncStack,
+    trafficLightSimulation,
     route,
     dreamview,
     motion,
@@ -7406,6 +7732,9 @@ module.exports = {
   repairApolloLiteRuntime,
   resetApolloLiteSimulationSession,
   getApolloLiteWorkflow,
+  getApolloLiteTrafficLightSimulationStatus,
+  startApolloLiteTrafficLightSimulation,
+  stopApolloLiteTrafficLightSimulation,
   getDeployConfig,
   discoverEdgeMapRoot,
   configureEdgeDeploy,

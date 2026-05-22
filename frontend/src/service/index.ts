@@ -184,6 +184,24 @@ class FileService {
         });
     }
 
+    async getApolloLiteTrafficLightSimulationStatus() {
+        return this.requestJson('/runtime/apollolite/traffic-light-sim');
+    }
+
+    async startApolloLiteTrafficLightSimulation(color: string = 'GREEN') {
+        return this.requestJson('/runtime/apollolite/traffic-light-sim/start', {
+            method: 'POST',
+            body: JSON.stringify({ color }),
+        });
+    }
+
+    async stopApolloLiteTrafficLightSimulation() {
+        return this.requestJson('/runtime/apollolite/traffic-light-sim/stop', {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
+    }
+
     async getEditorMapLocks() {
         return this.requestJson('/runtime/editor-map-locks');
     }

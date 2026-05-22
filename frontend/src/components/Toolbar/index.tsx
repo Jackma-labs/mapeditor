@@ -609,6 +609,59 @@ export default function Index(prop: ToolbarProps) {
         });
     };
 
+    const startApolloLiteTrafficLightSimulation = () => {
+        Modal.confirm({
+            title: '启动绿灯仿真',
+            content:
+                '用于开发测试：系统会读取当前 ApolloLite 地图中的红绿灯 ID，并向 Apollo 发布全绿灯色，避免 Planning 因未知灯色在停止线前一直等待。',
+            okText: '启动全绿',
+            cancelText: '取消',
+            onOk: async () => {
+                try {
+                    const response = await FileService.startApolloLiteTrafficLightSimulation('GREEN');
+                    if (response?.code !== 0) {
+                        throw new Error(response?.message || '启动绿灯仿真失败');
+                    }
+                    const result = response?.data || {};
+                    Modal.success({
+                        title: '绿灯仿真已启动',
+                        width: 640,
+                        content: (
+                            <div className="runtime-status-modal">
+                                <p>{`通道: ${result.channel || '/apollo/perception/traffic_light'}`}</p>
+                                <p>{`红绿灯数量: ${(result.signalIds || []).length}`}</p>
+                                <p>{`当前地图目录: ${result.signalSourceDir || ''}`}</p>
+                            </div>
+                        ),
+                    });
+                } catch (error: any) {
+                    Modal.error({
+                        title: '绿灯仿真启动失败',
+                        content: error?.message || 'Unknown error',
+                    });
+                }
+            },
+        });
+    };
+
+    const stopApolloLiteTrafficLightSimulation = async () => {
+        try {
+            const response = await FileService.stopApolloLiteTrafficLightSimulation();
+            if (response?.code !== 0) {
+                throw new Error(response?.message || '停止绿灯仿真失败');
+            }
+            Modal.success({
+                title: '绿灯仿真已停止',
+                content: response?.data?.message || 'ApolloLite traffic light simulation stopped.',
+            });
+        } catch (error: any) {
+            Modal.error({
+                title: '绿灯仿真停止失败',
+                content: error?.message || 'Unknown error',
+            });
+        }
+    };
+
     const showApolloLiteWorkflow = async () => {
         try {
             const response = await FileService.getApolloLiteWorkflow();
@@ -878,6 +931,12 @@ export default function Index(prop: ToolbarProps) {
             case 'apollolite-reset-simulation':
                 resetApolloLiteSimulation();
                 break;
+            case 'apollolite-traffic-light-green':
+                startApolloLiteTrafficLightSimulation();
+                break;
+            case 'apollolite-traffic-light-stop':
+                stopApolloLiteTrafficLightSimulation();
+                break;
             case 'apollolite-workflow':
                 showApolloLiteWorkflow();
                 break;
@@ -1033,6 +1092,30 @@ export default function Index(prop: ToolbarProps) {
                                 />
                             ),
                             key: 'apollolite-reset-simulation',
+                            disabled: !canEdit,
+                        },
+                        {
+                            label: (
+                                <FileMenuLabel
+                                    title="启动绿灯仿真"
+                                    description={
+                                        canEdit
+                                            ? '向 Apollo 发布当前地图红绿灯全绿状态，便于开发测试连续跑图'
+                                            : '需要编辑权限'
+                                    }
+                                />
+                            ),
+                            key: 'apollolite-traffic-light-green',
+                            disabled: !canEdit,
+                        },
+                        {
+                            label: (
+                                <FileMenuLabel
+                                    title="停止绿灯仿真"
+                                    description={canEdit ? '停止开发测试用的红绿灯状态发布器' : '需要编辑权限'}
+                                />
+                            ),
+                            key: 'apollolite-traffic-light-stop',
                             disabled: !canEdit,
                         },
                     ],

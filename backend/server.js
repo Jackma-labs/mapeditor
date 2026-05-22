@@ -1993,6 +1993,49 @@ app.post('/runtime/apollolite/reset-simulation-job', requirePermission('canEdit'
   }
 });
 
+app.get('/runtime/apollolite/traffic-light-sim', async (_req, res) => {
+  try {
+    const result = await runtime.getApolloLiteTrafficLightSimulationStatus(config);
+    res.status(result.available ? 200 : 500).json({
+      code: result.available ? 0 : 15060,
+      message: result.message || (result.available ? 'Success' : 'Traffic light simulation status unavailable'),
+      data: result,
+    });
+  } catch (error) {
+    sendError(res, 500, 15060, error.message);
+  }
+});
+
+app.post('/runtime/apollolite/traffic-light-sim/start', requirePermission('canEdit'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await runtime.startApolloLiteTrafficLightSimulation(config, {
+      color: body.color || 'GREEN',
+      interval: body.interval,
+    });
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    sendError(res, 500, 15061, error.message);
+  }
+});
+
+app.post('/runtime/apollolite/traffic-light-sim/stop', requirePermission('canEdit'), async (_req, res) => {
+  try {
+    const result = await runtime.stopApolloLiteTrafficLightSimulation(config);
+    res.json({
+      code: 0,
+      message: 'Success',
+      data: result,
+    });
+  } catch (error) {
+    sendError(res, 500, 15062, error.message);
+  }
+});
+
 app.post('/runtime/apollolite-stage-map-job', requirePermission('canDeploy'), async (req, res) => {
   try {
     const activeJob = findActiveHeavyRuntimeJob();
