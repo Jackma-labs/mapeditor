@@ -1050,7 +1050,7 @@ function getApolloLiteTrafficLightSimProcessPattern() {
 
 function buildApolloLiteTrafficLightSimKillCommand(includeShell = false) {
   const commandPattern = includeShell ? '($2 ~ /^python/ || $2 ~ /^bash/)' : '$2 ~ /^python/';
-  return `ps -eo pid=,comm=,args= | awk '${commandPattern} && $0 ~ /mapeditor_traffic_light_sim[.]py/ {print $1}' | xargs -r kill || true`;
+  return `self=$$; ps -eo pid=,comm=,args= | awk -v self="$self" '${commandPattern} && $1 != self && $0 ~ /mapeditor_traffic_light_sim[.]py/ {print $1}' | xargs -r kill || true`;
 }
 
 function buildApolloLiteTrafficLightSimProcessListCommand() {
@@ -1322,12 +1322,13 @@ async function startApolloLiteTrafficLightSimulation(config, params = {}, progre
   const idsBase64 = Buffer.from(JSON.stringify(signalInfo.ids), 'utf8').toString('base64');
   const startCommand = [
     `mkdir -p ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_DIR)}`,
-    buildApolloLiteTrafficLightSimKillCommand(),
+    buildApolloLiteTrafficLightSimKillCommand(true),
     `printf %s ${quoteShell(scriptBase64)} | base64 -d > ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_SCRIPT)}`,
     `printf %s ${quoteShell(idsBase64)} | base64 -d > ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_IDS)}`,
     `chmod +x ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_SCRIPT)}`,
     [
-      'nohup',
+      'setsid',
+      '-f',
       'bash',
       '-lc',
       quoteShell(
@@ -1339,8 +1340,10 @@ async function startApolloLiteTrafficLightSimulation(config, params = {}, progre
           )} --color ${quoteShell(color)} --interval ${interval}`,
         ].join(' && ')
       ),
-      `> ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_LOG)} 2>&1 < /dev/null & sim_pid=$!; disown "$sim_pid" 2>/dev/null || true; echo "$sim_pid"`,
+      `> ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_LOG)} 2>&1 < /dev/null`,
     ].join(' '),
+    'sleep 0.3',
+    "ps -eo pid=,comm=,args= | awk '$2 ~ /^python/ && $0 ~ /mapeditor_traffic_light_sim[.]py/ {print $1}' | tail -n 1",
   ].join(' && ');
   const result = await runCommand('docker', ['exec', '-u', 'dell', containerName, 'bash', '-lc', startCommand], {
     timeoutMs: 8000,
@@ -2881,6 +2884,11 @@ async function resetApolloLiteSimulationSession(config, progress = async () => {
   } finally {
     ws.close();
   }
+  await progress('Normalizing ApolloLite PNC stack after Dreamview reset');
+  const postWsPncCleanup = await stopApolloLiteStaleSimulationProcesses(apolloLite, progress).catch((error) => ({
+    error: error.message,
+  }));
+  const postWsPncStack = await startApolloLiteStablePncStack(apolloLite, progress);
   const resetAt = new Date().toISOString();
   if (currentMapState || targetMapName) {
     await writeApolloLiteCurrentMapState(config, {
@@ -2903,6 +2911,8 @@ async function resetApolloLiteSimulationSession(config, progress = async () => {
     dreamviewRuntime,
     pncCleanup,
     pncStack,
+    postWsPncCleanup,
+    postWsPncStack,
     wsUrl,
     mapSwitch,
     modeSwitch,

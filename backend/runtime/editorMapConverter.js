@@ -731,9 +731,31 @@ function turnFromEditor(lane) {
 
 function directionFromEditor(lane) {
   const value = lane?.attr?.prossibleDrivingDirection;
-  if (value === 2) return LANE_DIRECTION.BACKWARD;
   if (value === 3) return LANE_DIRECTION.BIDIRECTION;
+  // The editor reverses/swaps lane boundaries for reverse-drawn lanes before
+  // export, so Apollo should see the generated central curve as drivable
+  // forward unless the lane is explicitly bidirectional.
   return LANE_DIRECTION.FORWARD;
+}
+
+function widthSamplesFromGeometry(center, boundaryPoints, fallbackWidth, spacing = 5) {
+  const length = polylineLength(center);
+  const sampleCount = Math.max(2, Math.ceil(length / spacing) + 1);
+  return Array.from({ length: sampleCount }, (_unused, index) => {
+    const ratio = sampleCount === 1 ? 0 : index / (sampleCount - 1);
+    const point = interpolate(center, ratio);
+    const measuredWidth = distancePointToPolyline(point, boundaryPoints, false);
+    const width = Number.isFinite(measuredWidth) && measuredWidth > 0 ? measuredWidth : fallbackWidth;
+    return {
+      s: length * ratio,
+      width: clamp(width, 0.2, 12),
+    };
+  });
+}
+
+function speedLimitFromEditor(lane) {
+  const raw = number(lane.speed_limit ?? lane.attr?.speed, 40);
+  return raw > 25 ? raw / 3.6 : raw;
 }
 
 function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
@@ -778,6 +800,17 @@ function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
       });
       continue;
     }
+    const leftBoundaryPoints = pointsFromBoundary(
+      boundaryIndex.get(String(lane.left_boundary_id || lane.leftBoundaryId)),
+      pointIndex,
+      Boolean(lane.left_boundary_reverse || lane.leftBoundaryReverse)
+    );
+    const rightBoundaryPoints = pointsFromBoundary(
+      boundaryIndex.get(String(lane.right_boundary_id || lane.rightBoundaryId)),
+      pointIndex,
+      Boolean(lane.right_boundary_reverse || lane.rightBoundaryReverse)
+    );
+    const fallbackHalfWidth = width > 0 ? width / 2 : 1.75;
     laneInfos.push({
       source: lane,
       center,
@@ -790,18 +823,12 @@ function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
         leftBoundary,
         rightBoundary,
         length,
-        speedLimit: number(lane.speed_limit ?? lane.attr?.speed, 40),
+        speedLimit: speedLimitFromEditor(lane),
         overlapId: [],
         predecessorId: [],
         successorId: [],
-        leftSample: [
-          { s: 0, width: width / 2 },
-          { s: length, width: width / 2 },
-        ],
-        rightSample: [
-          { s: 0, width: width / 2 },
-          { s: length, width: width / 2 },
-        ],
+        leftSample: widthSamplesFromGeometry(center, leftBoundaryPoints, fallbackHalfWidth),
+        rightSample: widthSamplesFromGeometry(center, rightBoundaryPoints, fallbackHalfWidth),
         type: laneTypeFromEditor(lane),
         turn: turnFromEditor(lane),
         direction: directionFromEditor(lane),
