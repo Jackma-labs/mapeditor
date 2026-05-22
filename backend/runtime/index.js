@@ -1877,15 +1877,16 @@ async function startApolloLiteStablePncStack(apolloLite, progress = async () => 
     };
   }
   await progress(`Starting stable ApolloLite PNC stack: ${containerName}`);
-  const launchCommands = APOLLOLITE_STABLE_PNC_LAUNCHES.map((item) =>
-    `if ! pgrep -f '${item.dagPattern}' >/dev/null 2>&1; then nohup cyber_launch start ${item.launch} >/apollo/data/log/${item.logName} 2>&1 < /dev/null & fi`
-  );
+  const launchCommands = APOLLOLITE_STABLE_PNC_LAUNCHES.flatMap((item) => [
+    `if ! pgrep -f '${item.dagPattern}' >/dev/null 2>&1; then nohup cyber_launch start ${item.launch} >/apollo/data/log/${item.logName} 2>&1 < /dev/null & fi`,
+    'sleep 1',
+  ]);
   const command = [
     'cd /apollo',
     'source scripts/apollo_base.sh >/dev/null 2>&1 || true',
     'mkdir -p /apollo/data/log',
     ...launchCommands,
-    'sleep 1',
+    'sleep 2',
     "ps -eo pid,user,cmd | grep -E 'routing\\.dag|planning\\.dag|control\\.dag|mpc_module\\.dag|lateral_longitudinal_module\\.dag' | grep -v grep || true",
   ].join('; ');
   const result = await runCommand('docker', ['exec', '-u', '1000', containerName, 'bash', '-lc', command], {
@@ -1962,7 +1963,8 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
     "pkill -f '[d]reamview/launch/dreamview.launch' || true",
     'pkill -x dreamview || true',
     'sleep 1',
-    'nohup /apollo/bazel-bin/cyber/tools/cyber_launch/cyber_launch start /apollo/modules/dreamview/launch/dreamview.launch >/apollo/data/log/mapeditor_dreamview/dreamview_restart.log 2>&1 &',
+    "if [ ! -d /apollo/modules/dreamview/frontend/dist ]; then asset_dir=$(find /apollo/.cache -path '*dreamview_frontend_assets*/dist' -type d 2>/dev/null | head -n 1); if [ -n \"$asset_dir\" ]; then mkdir -p /apollo/modules/dreamview/frontend; ln -snf \"$asset_dir\" /apollo/modules/dreamview/frontend/dist; fi; fi",
+    'nohup /apollo/bazel-bin/modules/dreamview/dreamview --flagfile=/apollo/modules/dreamview/conf/dreamview.conf --server_ports=8888 --static_file_dir=/apollo/modules/dreamview/frontend/dist >/apollo/data/log/mapeditor_dreamview/dreamview_restart.log 2>&1 &',
   ].join(' && ');
   const startedAt = new Date().toISOString();
   await runCommand('docker', ['exec', containerName, 'bash', '-lc', command], {
@@ -2517,13 +2519,13 @@ async function resetApolloLiteSimulationSession(config, progress = async () => {
   if (!apolloLite.enabled) {
     throw new Error('ApolloLite is disabled');
   }
-  const dreamviewRuntime = await ensureApolloLiteDreamviewReachable(apolloLite, progress);
   const currentMapState = await resolveApolloLiteCurrentMapState(config, apolloLite);
   const targetMapName = currentMapState?.apolloLiteMapName || apolloLite.defaultMapName || '';
   if (targetMapName) {
     await progress(`Normalizing ApolloLite map_dir before simulation reset: ${targetMapName}`);
     await updateApolloLiteDefaultMapFlag(apolloLite, targetMapName);
   }
+  const dreamviewRuntime = await ensureApolloLiteDreamviewReachable(apolloLite, progress);
   await progress('Starting stable ApolloLite PNC stack');
   const pncStack = await startApolloLiteStablePncStack(apolloLite, progress);
 
@@ -2562,7 +2564,7 @@ async function resetApolloLiteSimulationSession(config, progress = async () => {
     ready: false,
     error: error.message,
   }));
-  return {
+  const result = {
     ready: after.ready === true,
     targetMapName,
     dreamviewRuntime,
@@ -2573,6 +2575,16 @@ async function resetApolloLiteSimulationSession(config, progress = async () => {
     resetAt,
     after,
   };
+  if (after.ready !== true) {
+    const failedCheck = (after.checks || []).find((check) => check.status !== 'ok');
+    const message = failedCheck
+      ? `ApolloLite simulation reset is incomplete: ${failedCheck.name}: ${failedCheck.message}`
+      : after.error || 'ApolloLite simulation reset is incomplete';
+    const error = new Error(message);
+    error.result = result;
+    throw error;
+  }
+  return result;
 }
 
 async function getApolloLiteWorkflow(config) {

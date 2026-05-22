@@ -9,6 +9,9 @@ LOG_DIR="${MAP_APOLLOLITE_DREAMVIEW_LOG_DIR:-/apollo/data/log/mapeditor_dreamvie
 CONTAINER_HOME="${MAP_APOLLOLITE_CONTAINER_HOME:-/home/dell}"
 DREAMVIEW_CONF="${MAP_APOLLOLITE_DREAMVIEW_CONF:-/apollo/modules/dreamview/conf/dreamview.conf}"
 DREAMVIEW_SPAWN_MODE="${MAP_APOLLOLITE_SIM_CONTROL_SPAWN_MODE:-legacy}"
+DREAMVIEW_PORT="${MAP_APOLLOLITE_DREAMVIEW_PORT:-8888}"
+DREAMVIEW_BIN="${MAP_APOLLOLITE_DREAMVIEW_BIN:-${APOLLO_ROOT}/bazel-bin/modules/dreamview/dreamview}"
+DREAMVIEW_STATIC_DIR="${MAP_APOLLOLITE_DREAMVIEW_STATIC_DIR:-${APOLLO_ROOT}/modules/dreamview/frontend/dist}"
 
 container_exists() {
   docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER}"
@@ -57,8 +60,24 @@ start_container() {
 
 run_dreamview() {
   local command="$1"
-  docker exec -u "${CONTAINER_USER}" "${CONTAINER}" bash -lc \
-    "export HOME='${CONTAINER_HOME}' USER=dell LOGNAME=dell XDG_CONFIG_HOME='${CONTAINER_HOME}/.config'; cd '${APOLLO_ROOT}' && mkdir -p '${LOG_DIR}' \"\${HOME}/.apollo/dreamview/plugins\" && ./scripts/dreamview.sh ${command}"
+  case "${command}" in
+    start)
+      docker exec -u "${CONTAINER_USER}" "${CONTAINER}" bash -lc \
+        "export HOME='${CONTAINER_HOME}' USER=dell LOGNAME=dell XDG_CONFIG_HOME='${CONTAINER_HOME}/.config'; cd '${APOLLO_ROOT}'; source '${APOLLO_ROOT}/scripts/apollo_base.sh' >/dev/null 2>&1 || true; mkdir -p '${LOG_DIR}' \"\${HOME}/.apollo/dreamview/plugins\"; if [ ! -d '${DREAMVIEW_STATIC_DIR}' ]; then asset_dir=\$(find '${APOLLO_ROOT}/.cache' -path '*dreamview_frontend_assets*/dist' -type d 2>/dev/null | head -n 1); if [ -n \"\${asset_dir}\" ]; then mkdir -p \"\$(dirname '${DREAMVIEW_STATIC_DIR}')\"; ln -snf \"\${asset_dir}\" '${DREAMVIEW_STATIC_DIR}'; fi; fi; pkill -f '[d]reamview/launch/dreamview.launch' || true; pkill -x dreamview || true; sleep 1; nohup '${DREAMVIEW_BIN}' --flagfile='${DREAMVIEW_CONF}' --server_ports='${DREAMVIEW_PORT}' --static_file_dir='${DREAMVIEW_STATIC_DIR}' >'${LOG_DIR}/dreamview_direct.log' 2>&1 &"
+      ;;
+    stop)
+      docker exec -u "${CONTAINER_USER}" "${CONTAINER}" bash -lc \
+        "pkill -f '[d]reamview/launch/dreamview.launch' || true; pkill -x dreamview || true"
+      ;;
+    status)
+      docker exec "${CONTAINER}" bash -lc \
+        "ps -e -o pid,cmd | grep -E 'dreamview|cyber_launch' | grep -v grep || true"
+      ;;
+    *)
+      echo "Unsupported Dreamview command: ${command}" >&2
+      return 2
+      ;;
+  esac
 }
 
 ensure_dreamview_flags() {
@@ -91,8 +110,7 @@ case "${ACTION}" in
       echo "container stopped"
       exit 3
     fi
-    docker exec "${CONTAINER}" bash -lc \
-      "ps -e -o pid,cmd | grep -E 'dreamview|cyber_launch' | grep -v grep || true"
+    run_dreamview status
     ;;
   *)
     echo "Usage: $0 {start|stop|status}" >&2

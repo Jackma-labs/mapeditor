@@ -626,6 +626,40 @@ function createMapMessage(editorMap) {
   const boundaryIndex = buildBoundaryIndex(editorMap);
   const laneInfos = buildLanes(editorMap, boundaryIndex, pointIndex);
   const laneIds = laneInfos.map((item) => id(item.source.id));
+  const conversionWarnings = [];
+  const signals = arr(editorMap.trafficSignal)
+    .map((item) => {
+      const center = pointFromEditor(item.center || {});
+      const half = 0.3;
+      const stopLine = curveFromBoundaryId(item.stopLineId || item.boundaryId, boundaryIndex, pointIndex);
+      if (!stopLine) {
+        conversionWarnings.push({
+          code: 'signal-missing-stop-line',
+          id: String(item.id || ''),
+          message: `Traffic signal ${item.id || ''} was skipped because Apollo requires a valid stop_line.`,
+        });
+        return null;
+      }
+      return {
+        id: id(item.id),
+        boundary: {
+          point: [
+            { x: center.x - half, y: center.y - half, z: center.z },
+            { x: center.x + half, y: center.y - half, z: center.z },
+            { x: center.x + half, y: center.y + half, z: center.z },
+            { x: center.x - half, y: center.y + half, z: center.z },
+          ],
+        },
+        subsignal: arr(item.subSignal || item.subSignals).map((subSignal) => ({
+          id: id(subSignal.id),
+          type: number(subSignal.type, 1),
+          location: center,
+        })),
+        type: number(item.type, 1),
+        stopLine: [stopLine],
+      };
+    })
+    .filter(Boolean);
 
   return {
     header: createHeader(editorMap),
@@ -661,29 +695,7 @@ function createMapMessage(editorMap) {
         return stopLine ? { id: id(item.id), stopLine: [stopLine] } : null;
       })
       .filter(Boolean),
-    signal: arr(editorMap.trafficSignal).map((item) => {
-      const center = pointFromEditor(item.center || {});
-      const half = 0.3;
-      const stopLine = curveFromBoundaryId(item.stopLineId || item.boundaryId, boundaryIndex, pointIndex);
-      return {
-        id: id(item.id),
-        boundary: {
-          point: [
-            { x: center.x - half, y: center.y - half, z: center.z },
-            { x: center.x + half, y: center.y - half, z: center.z },
-            { x: center.x + half, y: center.y + half, z: center.z },
-            { x: center.x - half, y: center.y + half, z: center.z },
-          ],
-        },
-        subsignal: arr(item.subSignal || item.subSignals).map((subSignal) => ({
-          id: id(subSignal.id),
-          type: number(subSignal.type, 1),
-          location: center,
-        })),
-        type: number(item.type, 1),
-        stopLine: stopLine ? [stopLine] : [],
-      };
-    }),
+    signal: signals,
     parkingSpace: arr(editorMap.parkingSpace)
       .map((item) => ({
         id: id(item.id),
@@ -707,6 +719,7 @@ function createMapMessage(editorMap) {
           ]
         : [],
     _laneInfos: laneInfos,
+    _conversionWarnings: conversionWarnings,
   };
 }
 
@@ -790,7 +803,7 @@ function objectToText(object, level = 0, fieldMap = {}) {
 }
 
 function cleanMapForEncoding(mapMessage) {
-  const { _laneInfos, ...payload } = mapMessage;
+  const { _laneInfos, _conversionWarnings, ...payload } = mapMessage;
   return payload;
 }
 
@@ -829,6 +842,7 @@ async function convertEditorMapToApolloPackage(options) {
         converter: 'mapeditor-js-compat',
         nativeConverter: false,
         baseMapDir,
+        warnings: mapMessage._conversionWarnings || [],
         files: ['editor_map.json', 'base_map.txt', 'base_map.bin', 'sim_map.txt', 'sim_map.bin', 'routing_map.txt', 'routing_map.bin'],
         summary: {
           lanes: cleanMap.lane.length,
