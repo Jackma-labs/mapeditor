@@ -8395,7 +8395,7 @@ function buildEdgeDreamviewPreflightCommand() {
     'test -x /apollo/bazel-bin/cyber/tools/cyber_launch/cyber_launch',
     'test -f /apollo/modules/dreamview/launch/dreamview.launch',
     'test -x /apollo/bazel-bin/modules/dreamview/dreamview',
-  ].join(' && ');
+  ].join('\n');
 }
 
 function buildEdgeDreamviewSwitchCommand(mapDir) {
