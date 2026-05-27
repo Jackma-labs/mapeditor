@@ -1262,7 +1262,7 @@
 
     .edge-deploy-overview {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
         gap: 10px;
         margin-bottom: 16px;
     }
@@ -1410,6 +1410,43 @@
         font-size: 13px;
     }
 
+    .edge-deploy-runtime-summary {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) 120px minmax(0, 1fr);
+        gap: 10px;
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border: 1px solid rgba(92, 129, 200, 0.44);
+        border-radius: 6px;
+        background: rgba(32, 42, 60, 0.82);
+
+        div {
+            min-width: 0;
+        }
+
+        span,
+        strong {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        span {
+            margin-bottom: 4px;
+            color: #8f9db3;
+            font-size: 12px;
+            line-height: 16px;
+        }
+
+        strong {
+            color: #dce8f8;
+            font-size: 12px;
+            font-weight: 500;
+            line-height: 18px;
+        }
+    }
+
     .edge-deploy-checks-title {
         display: flex;
         align-items: center;
@@ -1473,6 +1510,10 @@
         }
 
         .edge-deploy-map-summary {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        .edge-deploy-runtime-summary {
             grid-template-columns: minmax(0, 1fr);
         }
     }

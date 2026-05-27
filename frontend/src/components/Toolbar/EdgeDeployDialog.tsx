@@ -122,9 +122,11 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     );
     const selectableMaps = useMemo(() => releasedMaps.filter((item: any) => item.selectable), [releasedMaps]);
     const preflightChecks = useMemo(() => getChecks(preflight), [preflight]);
+    const runtimeCheck = useMemo(() => getCheck(preflight, 'edge-runtime-status'), [preflight]);
     const dreamviewCheck = useMemo(() => getCheck(preflight, 'edge-dreamview-hmi'), [preflight]);
     const coordinateCheck = useMemo(() => getCheck(preflight, 'selected-map-coordinates'), [preflight]);
     const vehiclePoseCheck = useMemo(() => getCheck(preflight, 'selected-map-vehicle-pose'), [preflight]);
+    const runtimeDetails = runtimeCheck?.details || null;
     const vehiclePoseDetails = vehiclePoseCheck?.details || coordinateCheck?.details?.vehiclePoseValidation || null;
     const coordinateBounds = coordinateCheck?.details?.localBounds || null;
     const readyCheckCount = preflightChecks.filter((item: any) => item.status === 'ok').length;
@@ -352,6 +354,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         >
             <Form form={form} layout="vertical" className="edge-deploy-form">
                 <div className="edge-deploy-overview">
+                    <div className={`edge-deploy-metric ${runtimeCheck?.status || 'idle'}`}>
+                        <span>边缘实际加载</span>
+                        <strong>{runtimeDetails?.map_name || runtimeDetails?.flag_map_dir || '待预检'}</strong>
+                    </div>
                     <div className={`edge-deploy-metric ${dreamviewCheck?.status || 'idle'}`}>
                         <span>Dreamview 当前地图</span>
                         <strong>{dreamviewCheck?.details?.currentMap || '待预检'}</strong>
@@ -501,6 +507,22 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                     <section className="edge-deploy-section">
                         <div className="edge-deploy-section-title">执行状态</div>
                         {jobText ? <div className="edge-deploy-job">{jobText}</div> : null}
+                        {runtimeDetails ? (
+                            <div className="edge-deploy-runtime-summary">
+                                <div>
+                                    <span>flag map_dir</span>
+                                    <strong>{runtimeDetails.flag_map_dir || '-'}</strong>
+                                </div>
+                                <div>
+                                    <span>Dreamview HTTP</span>
+                                    <strong>{runtimeDetails.dreamview_http || '-'}</strong>
+                                </div>
+                                <div>
+                                    <span>坐标范围</span>
+                                    <strong>{runtimeDetails.coordinate_bounds || '-'}</strong>
+                                </div>
+                            </div>
+                        ) : null}
                         {preflight ? (
                             <div className="edge-deploy-checks">
                                 <div className="edge-deploy-checks-title">
