@@ -2,6 +2,7 @@ import React from 'react';
 import { ObjectType, ThreeElementType } from 'src/interface/commonInterFace';
 import { useManagerStore } from 'src/store';
 import * as THREE from 'three';
+import { canPickThreeElementType } from './editorLayerUtil';
 
 export const disposeMesh = (mesh: THREE.Mesh | THREE.Line, scene: THREE.Scene) => {
     if (!mesh) {
@@ -54,8 +55,13 @@ export const getPickupObject = (
     pointer.y = -((e.clientY - domRect.top) / dom.clientHeight) * 2 + 1;
 
     raycaster.setFromCamera(pointer, camera);
+    const { editorLayers } = useManagerStore.getState().mapState;
     const objects = scene.children.filter(
-        (item) => objectType.includes(item.userData?.type) && item.name !== 'dragControlGroup',
+        (item) =>
+            item.visible !== false &&
+            objectType.includes(item.userData?.type) &&
+            item.name !== 'dragControlGroup' &&
+            canPickThreeElementType(editorLayers, item.userData?.type),
     );
     if (objects.length === 0) {
         return null;

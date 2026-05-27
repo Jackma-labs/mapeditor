@@ -6,6 +6,7 @@ import { getPointsBox } from 'src/threeUtil/RotateControl/util';
 import { throttle } from 'lodash';
 import PubSub from 'pubsub-js';
 import { configureTextureForWebGL1 } from 'src/utils/textureUtil';
+import { applyEditorLayerVisibility } from 'src/utils/editorLayerUtil';
 import CameraControl from '../threeUtil/cameraControl';
 import { baseHttpURL } from '../config/index';
 
@@ -244,6 +245,7 @@ export default class BaseMap {
         this.position.copy(this.camera.position);
         await this.drawTile(tiles)
             .then(() => {
+                applyEditorLayerVisibility(useManagerStore.getState().mapState);
                 this.renderer();
             })
             .catch((err) => {
@@ -333,6 +335,7 @@ export default class BaseMap {
             this.allElementsToOffset();
         }
         useManagerStore.getState().resetCommand();
+        applyEditorLayerVisibility(useManagerStore.getState().mapState);
         this.renderer();
         this.loading = false;
     }
@@ -412,6 +415,7 @@ export default class BaseMap {
 
         await this.drawTile(tiles)
             .then(() => {
+                applyEditorLayerVisibility(useManagerStore.getState().mapState);
                 this.renderer();
             })
             .catch((err) => {

@@ -36,6 +36,11 @@ import { message as messageFunc } from '../../components/Message/index';
 import { addSignHandle } from '../sign/addSignHandle';
 import { addAreaClickHandle } from '../area/addAreaHandle';
 import { addBarrierGateHandle } from '../barrierGate/addBarrierGateHandle';
+import {
+    canEditMapElementType,
+    getEditorLayerForMapElementType,
+    getEditorLayerLabel,
+} from '../../utils/editorLayerUtil';
 
 export function getIntersectionsOfLineAndBoundary(
     lineStart: THREE.Vector3,
@@ -280,6 +285,17 @@ export function clickHandle(
 
     // 如果处于绘制阶段，则执行绘制逻辑
     if (drawElementType) {
+        if (!canEditMapElementType(newState.editorLayers, drawElementType)) {
+            const layerLabel = getEditorLayerLabel(getEditorLayerForMapElementType(drawElementType));
+            messageFunc(
+                {
+                    type: 'warning',
+                    content: `${layerLabel || '当前'}图层已隐藏或锁定，不能继续绘制。`,
+                },
+                100,
+            );
+            return;
+        }
         if (drawElementType === MapElementType.Lane) {
             addLaneClickHandle(vector2TransTpVector3(worldVector, mapElementZ[ThreeElementType.LanePoint]));
         }

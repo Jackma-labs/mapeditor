@@ -10,6 +10,7 @@ import { ParkingSpace } from './parkingSpaceInterFace';
 import { SpeedBump } from './speedBumpInterFace';
 import { StopLine } from './stopLineInterFace';
 import { TrafficSignal, TrafficSubSignal, Type as TrafficLightType } from './trafficSignal';
+import { EditorLayerMap } from './layerInterface';
 
 export interface MapState {
     points: {
@@ -48,6 +49,7 @@ export interface MapState {
         signType: SignType;
     };
     currentPickElement: { id: string; type: ThreeElementType; threeObject: ThreeObject }[];
+    editorLayers: EditorLayerMap;
     junctions: {
         [id: string]: Junction;
     };

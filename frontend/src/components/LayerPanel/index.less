@@ -1,0 +1,119 @@
+.editor-layer-panel {
+    position: absolute;
+    left: 16px;
+    top: 16px;
+    z-index: 9;
+    width: 318px;
+    max-width: calc(100% - 64px);
+    border: 1px solid rgba(102, 116, 140, 0.55);
+    border-radius: 8px;
+    background: rgba(18, 23, 33, 0.96);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    color: #dbe7f7;
+    user-select: none;
+
+    &.is-collapsed {
+        width: auto;
+    }
+}
+
+.editor-layer-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 40px;
+    padding: 0 10px 0 12px;
+    border-bottom: 1px solid rgba(75, 88, 108, 0.7);
+
+    strong {
+        color: #ffffff;
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 20px;
+    }
+}
+
+.editor-layer-collapse {
+    height: 28px;
+    padding: 0 9px;
+    border: 1px solid #3a465a;
+    border-radius: 5px;
+    background: #202838;
+    color: #c8d6ea;
+    font-size: 12px;
+    cursor: pointer;
+
+    &:hover {
+        border-color: #3288fa;
+        color: #ffffff;
+    }
+}
+
+.editor-layer-list {
+    display: flex;
+    flex-direction: column;
+    padding: 6px;
+}
+
+.editor-layer-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 36px repeat(3, 30px);
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+    padding: 3px 4px 3px 8px;
+    border-radius: 6px;
+
+    &:hover {
+        background: rgba(52, 63, 82, 0.7);
+    }
+
+    button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 5px;
+        background: transparent;
+        color: #8796ad;
+        cursor: pointer;
+
+        &:hover:not(:disabled),
+        &.active {
+            border-color: #3e6db5;
+            color: #ffffff;
+            background: #1f365d;
+        }
+
+        &.locked {
+            border-color: #7a4b35;
+            color: #ffbc78;
+            background: #32241d;
+        }
+
+        &:disabled {
+            cursor: not-allowed;
+            opacity: 0.35;
+        }
+    }
+}
+
+.editor-layer-name {
+    min-width: 0;
+    overflow: hidden;
+    color: #d9e4f4;
+    font-size: 13px;
+    line-height: 18px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.editor-layer-count {
+    color: #7f8fa7;
+    font-size: 12px;
+    line-height: 18px;
+    text-align: right;
+}

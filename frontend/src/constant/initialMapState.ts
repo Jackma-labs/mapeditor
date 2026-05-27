@@ -6,6 +6,7 @@ import { JunctionType } from 'src/interface/junctionInterFace';
 import { LaneBoundaryType, LaneDireaciotn, LaneType, ProssibleDrivingDirection } from 'src/interface/laneInterFace';
 import { MapState } from 'src/interface/mapStateInterface';
 import { TrafficSubSignalType, Type } from 'src/interface/trafficSignal';
+import { createDefaultEditorLayers } from 'src/constant/editorLayers';
 import * as THREE from 'three';
 
 export const initialMapState: MapState = {
@@ -60,6 +61,7 @@ export const initialMapState: MapState = {
         signType: SignType.StopSign,
     },
     currentPickElement: [],
+    editorLayers: createDefaultEditorLayers(),
     baseMapDir: '',
     hdMapFile: '',
     scene: new THREE.Scene(),

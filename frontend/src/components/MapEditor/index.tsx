@@ -23,6 +23,7 @@ import { comparePointsWithPreCheck } from 'src/diff/compareWithPreCheck';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer';
 import { updateElements } from 'src/diff/updateElement';
 import { initialMapState } from 'src/constant/initialMapState';
+import { applyEditorLayerVisibility, filterPickElementsByEditorLayers } from 'src/utils/editorLayerUtil';
 import _ from 'lodash';
 import initThree from '../../threeUtil/initThree';
 import CameraControl from '../../threeUtil/cameraControl';
@@ -32,6 +33,7 @@ import './index.less';
 import BezierCurve3Control from '../../threeUtil/BezierCurve3Control';
 import noData from '../../assets/images/no_attr.png';
 import noPermission from '../../assets/images/no_permission.png';
+import LayerPanel from '../LayerPanel';
 
 export default function MapEditor() {
     const [mapState, setMapState, undo, redo, dataImport] = useManagerStore((state) => [
@@ -167,6 +169,7 @@ export default function MapEditor() {
     useEffect(() => {
         if (mapState.needRender) {
             updateElements();
+            applyEditorLayerVisibility(mapState);
             render();
             setMapState({
                 ...mapState,
@@ -238,7 +241,10 @@ export default function MapEditor() {
                     supportsPointSize: data.json?.type === 'point_cloud',
                 }));
                 setShowRemind(false);
-                baseMap.renderMap(data.dir, data.json, data.options || {});
+                baseMap.renderMap(data.dir, data.json, data.options || {}).then(() => {
+                    applyEditorLayerVisibility(useManagerStore.getState().mapState);
+                    render();
+                });
             });
             PubSub.subscribe('renderHDMap', (_name, data: any) => {
                 // 当切换标注地图的时候，不可以回退和重做了
@@ -263,6 +269,19 @@ export default function MapEditor() {
             });
         }
     }, []);
+    useEffect(() => {
+        const filteredPickElements = filterPickElementsByEditorLayers(mapState, mapState.currentPickElement);
+        if (filteredPickElements.length !== mapState.currentPickElement.length) {
+            setMapState({
+                ...mapState,
+                currentPickElement: filteredPickElements,
+                needRender: true,
+            });
+            return;
+        }
+        applyEditorLayerVisibility(mapState);
+        render();
+    }, [mapState.editorLayers]);
     // 监听键盘交互
     useEffect(() => {
         if (!registed.current) {
@@ -419,6 +438,7 @@ export default function MapEditor() {
         <div id="map-editor-container" onClick={handleClick} onMouseUp={handleMouseup} onDoubleClick={handleDbclick}>
             <div id="webgl" />
             <MapEditorBtn />
+            <LayerPanel />
             {baseMapUi.dir && (
                 <div
                     className="basemap-layer-panel"

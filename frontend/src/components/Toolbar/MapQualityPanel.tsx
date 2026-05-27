@@ -8,8 +8,8 @@ import { ThreeElementType } from 'src/interface/commonInterFace';
 import { useManagerStore } from 'src/store';
 import { inspectMapQuality, MapQualityIssue, MapQualityReport, pickElementFromIssue } from 'src/quality/mapQuality';
 import { ApplyMapQualityRepairsCommand, buildMapQualityRepairActions } from 'src/quality/mapQualityRepair';
+import { QUALITY_OVERLAY_GROUP_NAME, applyEditorLayerVisibility } from 'src/utils/editorLayerUtil';
 
-const OVERLAY_GROUP_NAME = '__map_quality_overlay__';
 const QUALITY_FOCUS_MIN_EXTENT = 45;
 
 type WorkflowStepStatus = 'pass' | 'warning' | 'error';
@@ -230,7 +230,7 @@ function renderQualityOverlay(mapState: MapState, issues: MapQualityIssue[], sel
     if (!scene) {
         return;
     }
-    const oldGroup = scene.getObjectByName(OVERLAY_GROUP_NAME);
+    const oldGroup = scene.getObjectByName(QUALITY_OVERLAY_GROUP_NAME);
     if (oldGroup) {
         scene.remove(oldGroup);
         oldGroup.traverse((object: any) => {
@@ -243,7 +243,7 @@ function renderQualityOverlay(mapState: MapState, issues: MapQualityIssue[], sel
         return;
     }
     const group = new THREE.Group();
-    group.name = OVERLAY_GROUP_NAME;
+    group.name = QUALITY_OVERLAY_GROUP_NAME;
     issues.slice(0, 120).forEach((issue) => {
         const color = getIssueColor(issue, selectedIssueId);
         const { target } = issue;
@@ -264,6 +264,7 @@ function renderQualityOverlay(mapState: MapState, issues: MapQualityIssue[], sel
         }
     });
     scene.add(group);
+    applyEditorLayerVisibility(mapState);
     PubSub.publish('render');
 }
 
@@ -272,7 +273,7 @@ function clearQualityOverlay(mapState: MapState) {
     if (!scene) {
         return;
     }
-    const oldGroup = scene.getObjectByName(OVERLAY_GROUP_NAME);
+    const oldGroup = scene.getObjectByName(QUALITY_OVERLAY_GROUP_NAME);
     if (oldGroup) {
         scene.remove(oldGroup);
         oldGroup.traverse((object: any) => {
