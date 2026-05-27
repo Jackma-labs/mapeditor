@@ -1409,7 +1409,9 @@ async function listReleasedMaps(config) {
       'base_map.bin',
       'base_map.txt',
       'routing_map.bin',
+      'routing_map.txt',
       'sim_map.bin',
+      'sim_map.txt',
     ];
     const sizeBytes = await getDirectorySize(mapDir);
     const missingExpectedFiles = expectedFiles.filter((fileName) => !files.includes(fileName));
@@ -8740,7 +8742,7 @@ async function deployReleasedMap(config, params = {}) {
       throw new Error('edgeDeploy.host and edgeDeploy.user are required');
     }
     await progress(`Running edge preflight: ${config.edgeDeploy.user}@${config.edgeDeploy.host}`);
-    const preflight = await preflightEdgeDeploy(config);
+    const preflight = await preflightEdgeDeploy(config, { mapName });
     if (!preflight.ready) {
       const failedChecks = preflight.checks
         .filter((check) => check.status === 'error')
