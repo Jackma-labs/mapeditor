@@ -815,8 +815,8 @@ async function validateReleasedMapAgainstEdgePose(config, sourceDir) {
       message: 'nearest lane centerline could not be computed',
     };
   }
-  const warningDistanceMeters = Number(config.edgeDeploy.vehicleLaneWarningDistanceMeters || 2);
-  const errorDistanceMeters = Number(config.edgeDeploy.vehicleLaneErrorDistanceMeters || 8);
+  const warningDistanceMeters = Number(config.edgeDeploy.vehicleLaneWarningDistanceMeters || 1);
+  const errorDistanceMeters = Number(config.edgeDeploy.vehicleLaneErrorDistanceMeters || 5);
   const status =
     nearest.distanceMeters > errorDistanceMeters
       ? 'error'
