@@ -8385,6 +8385,10 @@ function dockerExecCommand(container, command) {
 function buildEdgeDreamviewPreflightCommand() {
   return [
     'set -e',
+    'if [ -x /apollo/scripts/landing_edge_runtime.sh ]; then',
+    '  /apollo/scripts/landing_edge_runtime.sh status >/dev/null',
+    '  exit 0',
+    'fi',
     'test -f /apollo/cyber/setup.bash',
     'test -d /apollo/modules/common/data',
     'test -w /apollo/modules/common/data',
@@ -8404,6 +8408,10 @@ function buildEdgeDreamviewSwitchCommand(mapDir) {
     'FLAG=/apollo/modules/common/data/global_flagfile.txt',
     'BIN=/apollo/bazel-bin/modules/dreamview/dreamview',
     'LOG=/apollo/data/log/mapeditor_dreamview_restart.log',
+    'if [ -x /apollo/scripts/landing_edge_runtime.sh ]; then',
+    '  /apollo/scripts/landing_edge_runtime.sh switch-map "$MAP_DIR"',
+    '  exit 0',
+    'fi',
     '. "$SETUP"',
     '[ -d "$MAP_DIR" ] || { echo "missing map dir: $MAP_DIR" >&2; exit 2; }',
     'mkdir -p "$(dirname "$FLAG")" "$(dirname "$LOG")"',
