@@ -8272,6 +8272,28 @@ async function preflightEdgeDeploy(config, params = {}) {
     }
   }
 
+  try {
+    const currentMap = await readEdgeRuntimeCurrentMap(config);
+    const runtimeOk = currentMap.map_exists !== 'no' && currentMap.dreamview_http === 'ok';
+    const mapText = currentMap.map_name || currentMap.flag_map_dir || 'unknown';
+    const httpText = currentMap.dreamview_http || 'unknown';
+    addCheck(
+      'edge-runtime-status',
+      runtimeOk,
+      'warning',
+      `Edge runtime current map: ${mapText}; Dreamview HTTP ${httpText}`,
+      currentMap
+    );
+  } catch (error) {
+    addCheck(
+      'edge-runtime-status',
+      false,
+      'warning',
+      'Edge runtime current map status is not readable',
+      error.message
+    );
+  }
+
   if (deployConfig.autoSwitchDreamview) {
     try {
       const command = buildEdgeDreamviewPreflightCommand();
@@ -8466,6 +8488,47 @@ async function readEdgeDreamviewFlagMapDir(config) {
     timeoutMs: 10000,
   });
   return String(result.stdout || '').trim().split(/\r?\n/u).filter(Boolean).pop() || '';
+}
+
+function parseKeyValueOutput(output = '') {
+  return String(output || '')
+    .split(/\r?\n/u)
+    .reduce((result, line) => {
+      const match = line.match(/^([A-Za-z0-9_.-]+)=(.*)$/u);
+      if (match) {
+        result[match[1]] = match[2];
+      }
+      return result;
+    }, {});
+}
+
+async function readEdgeRuntimeCurrentMap(config) {
+  const command = [
+    'set +e',
+    'if [ -x /apollo/scripts/landing_edge_runtime.sh ]; then',
+    '  /apollo/scripts/landing_edge_runtime.sh current-map 2>/dev/null && exit 0',
+    '  /apollo/scripts/landing_edge_runtime.sh status',
+    '  exit 0',
+    'fi',
+    'FLAG=/apollo/modules/common/data/global_flagfile.txt',
+    'MAP_DIR=""',
+    '[ -f "$FLAG" ] && MAP_DIR=$(grep \'^--map_dir=\' "$FLAG" | tail -1 | sed \'s/^--map_dir=//\')',
+    'printf "flag_map_dir=%s\\n" "$MAP_DIR"',
+    'printf "resolved_map_dir=%s\\n" "$(readlink -f "$MAP_DIR" 2>/dev/null || true)"',
+    'printf "map_name=%s\\n" "$(basename "$MAP_DIR" 2>/dev/null || true)"',
+    'if [ -n "$MAP_DIR" ] && [ -d "$MAP_DIR" ]; then printf "map_exists=yes\\n"; else printf "map_exists=no\\n"; fi',
+    'printf "dreamview_http=%s\\n" "$(curl -fsS http://127.0.0.1:8888/ >/dev/null 2>&1 && printf ok || printf error)"',
+    'printf "dreamview_pids=%s\\n" "$(pgrep -x dreamview 2>/dev/null | tr \'\\n\' \' \' | sed \'s/[[:space:]]*$//\')"',
+  ].join('\n');
+  const container = String(config.edgeDeploy.dockerContainer || '').trim();
+  const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
+    timeoutMs: 15000,
+  });
+  return {
+    ...parseKeyValueOutput(result.stdout),
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
 }
 
 async function readEdgeDreamviewHmiStatus(config) {

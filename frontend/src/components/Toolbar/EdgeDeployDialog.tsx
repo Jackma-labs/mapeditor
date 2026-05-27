@@ -102,6 +102,7 @@ const checkTitleMap: Record<string, string> = {
     'host-upload-root': '上传目录',
     'target-map-root': '地图目录',
     'edge-docker-container': 'Docker 容器',
+    'edge-runtime-status': '边缘运行状态',
     'edge-dreamview-switch': 'Dreamview 切换',
     'edge-dreamview-hmi': 'Dreamview 当前地图',
     'selected-map-coordinates': '发布包坐标',
