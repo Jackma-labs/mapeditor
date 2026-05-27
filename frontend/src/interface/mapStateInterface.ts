@@ -82,6 +82,10 @@ export interface MapState {
     hdMapFile: string;
     hdBasemapCenter: THREE.Vector2;
     imageBasemapCenter: THREE.Vector2;
+    coordinateFrame: string;
+    targetCrs: any;
+    apolloOrigin: { x: number; y: number; z?: number } | null;
+    coordinateAnchor: any;
     onsave: boolean;
     holdCtrl: boolean;
     holdShift: boolean;

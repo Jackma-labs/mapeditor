@@ -1,5 +1,5 @@
 import { searchBoundaryByBoundaryId } from 'src/utils/search/boundarySearch';
-import { searchPointIdsFromBoundaryId } from 'src/utils/search/pointSearch';
+import { searchPointByPointId, searchPointIdsFromBoundaryId } from 'src/utils/search/pointSearch';
 import { getElementColorAndOpacity, laneBoundaryColor } from 'src/constant/color';
 import { InterActiveType, ThreeElementType, ThreeObject } from 'src/interface/commonInterFace';
 import { contrlPointSearch, objectSearch } from 'src/utils/search/objectSearch';
@@ -21,12 +21,15 @@ export function drawBoundary(boundaryId: string, interActiveType: InterActiveTyp
     const positions: THREE.Vector3[] = [];
     pointIds.forEach((id) => {
         const pointMesh = objectSearch(ThreeObject.Point, id);
-        if (pointMesh) {
-            positions.push(new THREE.Vector3(pointMesh.position.x, pointMesh.position.y, mapElementZ[boundary.type]));
+        const pointPosition = pointMesh?.position || searchPointByPointId(id)?.position;
+        if (pointPosition) {
+            positions.push(new THREE.Vector3(pointPosition.x, pointPosition.y, mapElementZ[boundary.type]));
         }
     });
     if (positions.length < 2) {
-        console.warn(`Boundary ${boundaryId} has less than 2 points`);
+        if (pointIds.length >= 2) {
+            console.warn(`Boundary ${boundaryId} has ${positions.length} drawable points`);
+        }
         return null;
     }
 

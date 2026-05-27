@@ -5,12 +5,30 @@ import * as turf from '@turf/turf';
 import { getPointsBox } from 'src/threeUtil/RotateControl/util';
 import { throttle } from 'lodash';
 import PubSub from 'pubsub-js';
+import { configureTextureForWebGL1 } from 'src/utils/textureUtil';
 import CameraControl from '../threeUtil/cameraControl';
 import { baseHttpURL } from '../config/index';
 
 export interface TileItem {
     offset_x: string;
     offset_y: string;
+}
+
+interface CameraMovePadding {
+    top?: number;
+    right?: number;
+    bottom?: number;
+    left?: number;
+}
+
+interface CameraMovePayload {
+    coordinates: number[][];
+    padding?: CameraMovePadding;
+    minExtent?: number;
+}
+
+function isCameraMovePayload(value: number[][] | CameraMovePayload): value is CameraMovePayload {
+    return Boolean(value && !Array.isArray(value) && Array.isArray((value as CameraMovePayload).coordinates));
 }
 
 const layerMaterialStyles: { [key: string]: { color: number; opacity: number } } = {
@@ -96,7 +114,9 @@ export default class BaseMap {
             }, 100),
         );
 
-        PubSub.subscribe('cameraMove', (_name, datas: number[][]) => this.cameraMoveToHdMapcenter(datas));
+        PubSub.subscribe('cameraMove', (_name, payload: number[][] | CameraMovePayload) =>
+            this.cameraMoveToHdMapcenter(payload),
+        );
         PubSub.subscribe('fitBaseMap', () => this.fitCurrentMap());
         PubSub.subscribe('baseMapOpacity', (_name, opacity: number) => {
             this.transparency(opacity);
@@ -321,16 +341,44 @@ export default class BaseMap {
         return vec1.x === vec2.x && vec1.y === vec2.y;
     }
 
-    public cameraMoveToHdMapcenter(coordinates: number[][]) {
+    public cameraMoveToHdMapcenter(payload: number[][] | CameraMovePayload) {
+        const coordinates = isCameraMovePayload(payload) ? payload.coordinates : payload;
+        if (!Array.isArray(coordinates) || coordinates.length < 3) {
+            return;
+        }
+        const padding = isCameraMovePayload(payload) ? payload.padding || {} : {};
+        const minExtent = isCameraMovePayload(payload) ? Number(payload.minExtent) || 0 : 0;
         const polygon = turf.polygon([coordinates.concat([coordinates[0]])]);
         const centroid = turf.centroid(polygon);
-        const centerPosition = new THREE.Vector3(centroid.geometry.coordinates[0], centroid.geometry.coordinates[1], 0);
-        // @haoxiaojie 临时修改，后面优化一下
-        this.control.cameraControls.moveTo(centerPosition.x, centerPosition.y, centerPosition.z, false);
         const [minX, minY, maxX, maxY] = getPointsBox(coordinates.concat([coordinates[0]]));
-        const width = maxX - minX;
-        const height = maxY - minY;
-        this.control.adapter(Math.max(width, height));
+        const width = Math.max(0.001, maxX - minX);
+        const height = Math.max(0.001, maxY - minY);
+
+        const canvasWidth = Math.max(1, this.render.domElement.clientWidth);
+        const canvasHeight = Math.max(1, this.render.domElement.clientHeight);
+        const safeLeft = Math.max(0, Number(padding.left) || 0);
+        const safeRight = Math.max(0, Number(padding.right) || 0);
+        const safeTop = Math.max(0, Number(padding.top) || 0);
+        const safeBottom = Math.max(0, Number(padding.bottom) || 0);
+        const safeWidth = Math.max(1, canvasWidth - safeLeft - safeRight);
+        const safeHeight = Math.max(1, canvasHeight - safeTop - safeBottom);
+        const aspect = canvasWidth / canvasHeight;
+
+        const fitHeightForWidth = (width * canvasWidth) / (Math.max(0.001, aspect) * safeWidth);
+        const fitHeightForHeight = (height * canvasHeight) / safeHeight;
+        const visibleHeight = Math.max(minExtent, fitHeightForWidth, fitHeightForHeight) * 1.15;
+        const visibleWidth = visibleHeight * aspect;
+        const safeCenterX = safeLeft + safeWidth / 2;
+        const safeCenterY = safeTop + safeHeight / 2;
+        const offsetPixelX = safeCenterX - canvasWidth / 2;
+        const offsetPixelY = safeCenterY - canvasHeight / 2;
+        const centerPosition = new THREE.Vector3(centroid.geometry.coordinates[0], centroid.geometry.coordinates[1], 0);
+        const targetX = centerPosition.x - (offsetPixelX / canvasWidth) * visibleWidth;
+        const targetY = centerPosition.y + (offsetPixelY / canvasHeight) * visibleHeight;
+
+        this.control.adapter(visibleHeight);
+        this.control.cameraControls.moveTo(targetX, targetY, centerPosition.z, false);
+        this.renderer();
     }
 
     public fitCurrentMap() {
@@ -424,6 +472,7 @@ export default class BaseMap {
             loader.load(
                 url,
                 (texture) => {
+                    configureTextureForWebGL1(texture);
                     this.addTile(
                         tileSize,
                         texture,
@@ -542,8 +591,6 @@ export default class BaseMap {
                 [coor3.x, coor3.y],
                 [coor4.x, coor4.y],
             ];
-            console.log('scale:', this.scale, 'range:', range, 'distance:', pixel * resolution);
-
             const isInside = this.isInside(position.x, position.y, range, squarePoints);
 
             return this.scale === 0 ? true : isInside;

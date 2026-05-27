@@ -12,6 +12,7 @@ DREAMVIEW_SPAWN_MODE="${MAP_APOLLOLITE_SIM_CONTROL_SPAWN_MODE:-legacy}"
 DREAMVIEW_PORT="${MAP_APOLLOLITE_DREAMVIEW_PORT:-8888}"
 DREAMVIEW_BIN="${MAP_APOLLOLITE_DREAMVIEW_BIN:-${APOLLO_ROOT}/bazel-bin/modules/dreamview/dreamview}"
 DREAMVIEW_STATIC_DIR="${MAP_APOLLOLITE_DREAMVIEW_STATIC_DIR:-${APOLLO_ROOT}/modules/dreamview/frontend/dist}"
+DREAMVIEW_LOG_MAX_MB="${MAP_APOLLOLITE_DREAMVIEW_LOG_MAX_MB:-50}"
 
 container_exists() {
   docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER}"
@@ -80,6 +81,11 @@ run_dreamview() {
   esac
 }
 
+rotate_dreamview_logs() {
+  docker exec -u "0" "${CONTAINER}" bash -lc \
+    "mkdir -p '${LOG_DIR}'; find '${LOG_DIR}' -maxdepth 1 -type f \( -name 'dreamview_*.log' -o -name 'direct_dreamview.log' \) -size +${DREAMVIEW_LOG_MAX_MB}M -exec sh -c ': > \"\$1\"' _ {} \; 2>/dev/null || true"
+}
+
 ensure_dreamview_flags() {
   docker exec -u "0" "${CONTAINER}" bash -lc \
     "set -e; touch '${DREAMVIEW_CONF}'; grep -v '^--sim_control_spawn_mode=' '${DREAMVIEW_CONF}' > /tmp/mapeditor_dreamview.conf; printf '%s\n' '--sim_control_spawn_mode=${DREAMVIEW_SPAWN_MODE}' >> /tmp/mapeditor_dreamview.conf; cp /tmp/mapeditor_dreamview.conf '${DREAMVIEW_CONF}'; chown ${CONTAINER_USER}:${CONTAINER_USER} '${DREAMVIEW_CONF}' || true"
@@ -89,6 +95,7 @@ case "${ACTION}" in
   start)
     start_container
     ensure_dreamview_flags
+    rotate_dreamview_logs
     set +e
     output="$(run_dreamview start 2>&1)"
     rc=$?

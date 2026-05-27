@@ -7,6 +7,16 @@ import { removeAllElement } from 'src/utils/threeObjectUtil';
 import { create } from 'zustand';
 import { cloneDeep } from 'lodash';
 
+const APOLLO_TARGET_CRS = {
+    datum: 'WGS84',
+    projection: 'UTM',
+    zone: 50,
+    hemisphere: 'north',
+    epsg: 'EPSG:32650',
+    proj4: '+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs',
+    unit: 'meter',
+};
+
 interface ManagerStore {
     mapState: MapState;
     commands: any[];
@@ -131,6 +141,10 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             signs,
             areas,
             barrierGates,
+            coordinateFrame,
+            targetCrs,
+            apolloOrigin,
+            coordinateAnchor,
         } = loadHdmp(json);
         let newState = get().mapState;
 
@@ -156,6 +170,10 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             signs,
             areas,
             barrierGates,
+            coordinateFrame: coordinateFrame || 'LOCAL_ENU_METERS',
+            targetCrs: targetCrs || APOLLO_TARGET_CRS,
+            apolloOrigin: apolloOrigin || null,
+            coordinateAnchor: coordinateAnchor || null,
         };
         if (
             hdBasemapCenter &&
@@ -233,12 +251,25 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             signs,
             areas,
             barrierGates,
+            coordinateFrame,
+            targetCrs,
+            apolloOrigin,
+            coordinateAnchor,
         } = get().mapState;
+        const publishCoordinateFrame = coordinateFrame || 'LOCAL_ENU_METERS';
+        const publishTargetCrs = targetCrs || APOLLO_TARGET_CRS;
+        const publishAnchor = coordinateAnchor || (apolloOrigin ? { source: 'apolloOrigin', utm: apolloOrigin } : null);
         const data = {
             header: {
                 version: '1.0',
                 date: `${new Date().getTime()}`,
+                origin: apolloOrigin || undefined,
+                projection: { proj: publishTargetCrs.proj4 },
             },
+            sourceCrs: publishCoordinateFrame,
+            targetCrs: publishTargetCrs,
+            apolloOrigin: apolloOrigin || undefined,
+            anchor: publishAnchor || undefined,
             point: Object.keys(points).map((item: string) => {
                 const { id, type, position } = points[item];
                 const handlePosition = { x: Number(position.x.toFixed(4)), y: Number(position.y.toFixed(4)) };

@@ -30,6 +30,26 @@ const EDITOR_AREA_TYPE = {
   UNDRIVEABLE: 2,
   CUSTOM: 3,
 };
+const APOLLO_SIM_MIN_TURN_RADIUS = 4.5;
+const APOLLO_SIM_TURN_SPEED_LAT_ACCEL = 1.05;
+const APOLLO_SIM_TURN_SPEED_MIN_MPS = 1.8;
+const APOLLO_SIM_U_TURN_SPEED_MAX_MPS = 2.4;
+const APOLLO_SIM_SHARP_TURN_SPEED_MAX_MPS = 3.2;
+const APOLLO_SIM_MEDIUM_TURN_SPEED_MAX_MPS = 4.2;
+const APOLLO_SIM_SOFT_TURN_SPEED_MAX_MPS = 5.2;
+const APOLLO_SIM_CENTER_SMOOTH_MIN_LENGTH = 5;
+const APOLLO_SIM_CENTER_SMOOTH_MAX_DEVIATION = 3.5;
+const APOLLO_SIM_CENTER_SMOOTH_SAMPLE_COUNT = 17;
+const APOLLO_SIM_CENTER_HEADING_RELAX_DEGREES = [-12, -8, -4, 0, 4, 8, 12];
+const APOLLO_TARGET_CRS = {
+  datum: 'WGS84',
+  projection: 'UTM',
+  zone: 50,
+  hemisphere: 'north',
+  epsg: 'EPSG:32650',
+  proj4: '+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs',
+  unit: 'meter',
+};
 
 function addType(parent, name, fields) {
   const type = new protobuf.Type(name);
@@ -376,13 +396,320 @@ function number(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function pointFromEditor(point) {
+function coordinateFromArray(value) {
+  if (Array.isArray(value) && value.length >= 2) {
+    return {
+      x: number(value[0], NaN),
+      y: number(value[1], NaN),
+      z: number(value[2], 0),
+    };
+  }
+  if (value && typeof value === 'object') {
+    const source = value.position || value;
+    return {
+      x: number(source.x ?? source.lng ?? source.lon ?? source.longitude, NaN),
+      y: number(source.y ?? source.lat ?? source.latitude, NaN),
+      z: number(source.z ?? source.height, 0),
+    };
+  }
+  return null;
+}
+
+function finiteCoordinate(value) {
+  return value && Number.isFinite(value.x) && Number.isFinite(value.y) ? value : null;
+}
+
+function normalizeCoordinateFrame(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  if (!raw) {
+    return null;
+  }
+  if (['APOLLO_UTM_ZONE_50', 'UTM_ZONE_50', 'EPSG:32650', 'WGS84_UTM_ZONE_50'].includes(raw)) {
+    return 'APOLLO_UTM_ZONE_50';
+  }
+  if (['LOCAL_ENU_METERS', 'LOCAL_ENU', 'LOCAL', 'EDITOR_LOCAL', 'BASE_MAP_XY'].includes(raw)) {
+    return 'LOCAL_ENU_METERS';
+  }
+  if (['WGS84_LON_LAT', 'WGS84', 'EPSG:4326', 'LON_LAT', 'LONGITUDE_LATITUDE'].includes(raw)) {
+    return 'WGS84_LON_LAT';
+  }
+  if (['SCREEN_PIXELS', 'SCREEN', 'PIXELS', 'CANVAS_PIXELS'].includes(raw)) {
+    return 'SCREEN_PIXELS';
+  }
+  return raw;
+}
+
+function coordinateFrameFromEditorMap(editorMap) {
+  return normalizeCoordinateFrame(
+    editorMap.sourceCrs ||
+      editorMap.source_crs ||
+      editorMap.coordinateFrame ||
+      editorMap.coordinate_frame ||
+      editorMap.coordinateMetadata?.sourceCrs ||
+      editorMap.coordinateMetadata?.source_crs ||
+      editorMap.coordinateMetadata?.coordinateFrame ||
+      editorMap.coordinate?.sourceCrs ||
+      editorMap.coordinate?.frame
+  );
+}
+
+function coordinateFromNestedKeys(source, keys) {
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+  for (const key of keys) {
+    const coordinate = finiteCoordinate(coordinateFromArray(source[key]));
+    if (coordinate) {
+      return coordinate;
+    }
+  }
+  return null;
+}
+
+function coordinatesNearlyEqual(a, b, tolerance = 0.001) {
+  return (
+    finiteCoordinate(a) &&
+    finiteCoordinate(b) &&
+    Math.abs(a.x - b.x) <= tolerance &&
+    Math.abs(a.y - b.y) <= tolerance &&
+    Math.abs((a.z || 0) - (b.z || 0)) <= tolerance
+  );
+}
+
+function firstAnchorUtmFromEditorMap(editorMap) {
+  const anchorSources = [
+    editorMap.anchor,
+    editorMap.coordinateAnchor,
+    editorMap.coordinate_anchor,
+    editorMap.coordinateMetadata?.anchor,
+    editorMap.coordinate?.anchor,
+  ].filter(Boolean);
+  for (const anchor of anchorSources) {
+    const coordinate = coordinateFromNestedKeys(anchor, ['utm', 'apolloUtm', 'apollo_utm', 'origin']);
+    if (coordinate) {
+      return {
+        coordinate,
+        source: typeof anchor.source === 'string' && anchor.source.trim() ? anchor.source.trim() : 'anchor.utm',
+      };
+    }
+  }
+  return null;
+}
+
+function anchorUtmFromEditorMap(editorMap) {
+  const anchorUtm = firstAnchorUtmFromEditorMap(editorMap);
+  const direct = coordinateFromNestedKeys(editorMap, [
+    'apolloOrigin',
+    'apollo_origin',
+    'utmOrigin',
+    'utm_origin',
+    'mapOrigin',
+    'map_origin',
+    'coordinateOrigin',
+    'coordinate_origin',
+  ]);
+  if (direct) {
+    return {
+      coordinate: direct,
+      source: anchorUtm && coordinatesNearlyEqual(anchorUtm.coordinate, direct) ? anchorUtm.source : 'origin',
+    };
+  }
+  const headerOrigin = finiteCoordinate(coordinateFromArray(editorMap.header?.origin));
+  if (headerOrigin) {
+    return { coordinate: headerOrigin, source: 'header.origin' };
+  }
+  if (anchorUtm) {
+    return anchorUtm;
+  }
+  if (editorMap.basemapCenterIsApolloOrigin === true || editorMap.basemap_center_is_apollo_origin === true) {
+    const baseMapCenter = finiteCoordinate(coordinateFromArray(editorMap.basemapCenter || editorMap.baseMapCenter));
+    if (baseMapCenter) {
+      return { coordinate: baseMapCenter, source: 'basemapCenter(explicit)' };
+    }
+  }
+  return null;
+}
+
+function shouldTreatAnchorAsTargetCenter(editorMap, anchorUtm) {
+  if (!anchorUtm) {
+    return false;
+  }
+  if (anchorUtm.source === 'imported_origin') {
+    return true;
+  }
+  if (anchorUtm.source !== 'origin') {
+    return false;
+  }
+  return !coordinateFrameFromEditorMap(editorMap) && !firstAnchorUtmFromEditorMap(editorMap);
+}
+
+function wgs84LonLatToUtmZone50(lon, lat, z = 0) {
+  const a = 6378137;
+  const f = 1 / 298.257223563;
+  const k0 = 0.9996;
+  const e = Math.sqrt(f * (2 - f));
+  const eSq = e * e;
+  const ePrimeSq = eSq / (1 - eSq);
+  const lonOrigin = 117;
+  const latRad = (lat * Math.PI) / 180;
+  const lonRad = (lon * Math.PI) / 180;
+  const lonOriginRad = (lonOrigin * Math.PI) / 180;
+  const n = a / Math.sqrt(1 - eSq * Math.sin(latRad) * Math.sin(latRad));
+  const t = Math.tan(latRad) * Math.tan(latRad);
+  const c = ePrimeSq * Math.cos(latRad) * Math.cos(latRad);
+  const aa = Math.cos(latRad) * (lonRad - lonOriginRad);
+  const m =
+    a *
+    ((1 - eSq / 4 - (3 * eSq * eSq) / 64 - (5 * eSq * eSq * eSq) / 256) * latRad -
+      ((3 * eSq) / 8 + (3 * eSq * eSq) / 32 + (45 * eSq * eSq * eSq) / 1024) * Math.sin(2 * latRad) +
+      ((15 * eSq * eSq) / 256 + (45 * eSq * eSq * eSq) / 1024) * Math.sin(4 * latRad) -
+      ((35 * eSq * eSq * eSq) / 3072) * Math.sin(6 * latRad));
+  const x =
+    k0 *
+      n *
+      (aa +
+        ((1 - t + c) * aa ** 3) / 6 +
+        ((5 - 18 * t + t * t + 72 * c - 58 * ePrimeSq) * aa ** 5) / 120) +
+    500000;
+  let y =
+    k0 *
+    (m +
+      n *
+        Math.tan(latRad) *
+        ((aa * aa) / 2 +
+          ((5 - t + 9 * c + 4 * c * c) * aa ** 4) / 24 +
+          ((61 - 58 * t + t * t + 600 * c - 330 * ePrimeSq) * aa ** 6) / 720));
+  if (lat < 0) {
+    y += 10000000;
+  }
+  return { x, y, z };
+}
+
+function rawPointFromEditor(point) {
   const position = point?.position || point || {};
   return {
     x: number(position.x),
     y: number(position.y),
     z: number(position.z),
   };
+}
+
+function createCoordinateTransform(editorMap) {
+  const rawPoints = arr(editorMap.point).map(rawPointFromEditor);
+  if (rawPoints.length === 0) {
+    return null;
+  }
+  const bounds = {
+    left: Math.min(...rawPoints.map((point) => point.x)),
+    right: Math.max(...rawPoints.map((point) => point.x)),
+    bottom: Math.min(...rawPoints.map((point) => point.y)),
+    top: Math.max(...rawPoints.map((point) => point.y)),
+  };
+  const localCenter = {
+    x: (bounds.left + bounds.right) / 2,
+    y: (bounds.bottom + bounds.top) / 2,
+    z: 0,
+  };
+  const sourceCrs = coordinateFrameFromEditorMap(editorMap) || 'LOCAL_ENU_METERS';
+  if (sourceCrs === 'APOLLO_UTM_ZONE_50') {
+    return {
+      mode: 'pass-through',
+      source: 'apollo-utm-zone-50',
+      sourceCrs,
+      targetCrs: APOLLO_TARGET_CRS,
+      origin: null,
+      targetCenter: localCenter,
+      localCenter,
+      offset: { x: 0, y: 0, z: 0 },
+    };
+  }
+  if (sourceCrs === 'WGS84_LON_LAT') {
+    const convertedPoints = rawPoints.map((point) => wgs84LonLatToUtmZone50(point.x, point.y, point.z));
+    const targetBounds = {
+      left: Math.min(...convertedPoints.map((point) => point.x)),
+      right: Math.max(...convertedPoints.map((point) => point.x)),
+      bottom: Math.min(...convertedPoints.map((point) => point.y)),
+      top: Math.max(...convertedPoints.map((point) => point.y)),
+    };
+    return {
+      mode: 'wgs84-to-utm-zone-50',
+      source: 'wgs84-lon-lat',
+      sourceCrs,
+      targetCrs: APOLLO_TARGET_CRS,
+      origin: null,
+      targetCenter: {
+        x: (targetBounds.left + targetBounds.right) / 2,
+        y: (targetBounds.bottom + targetBounds.top) / 2,
+        z: 0,
+      },
+      localCenter,
+      offset: { x: 0, y: 0, z: 0 },
+    };
+  }
+  const explicitCenter = [
+    editorMap.apolloCenter,
+    editorMap.apollo_center,
+    editorMap.utmCenter,
+    editorMap.utm_center,
+    editorMap.mapCenter,
+    editorMap.map_center,
+    editorMap.coordinateCenter,
+    editorMap.coordinate_center,
+    editorMap.header?.center,
+  ]
+    .map(coordinateFromArray)
+    .map(finiteCoordinate)
+    .find(Boolean);
+  const anchorUtm = anchorUtmFromEditorMap(editorMap);
+  const legacyAnchorAsCenter = shouldTreatAnchorAsTargetCenter(editorMap, anchorUtm);
+  const origin = anchorUtm && !legacyAnchorAsCenter ? anchorUtm.coordinate : null;
+  const targetCenter = explicitCenter || (legacyAnchorAsCenter ? anchorUtm.coordinate : null);
+  if (!origin && !targetCenter) {
+    return null;
+  }
+  const offset = targetCenter
+    ? {
+        x: targetCenter.x - localCenter.x,
+        y: targetCenter.y - localCenter.y,
+        z: targetCenter.z - localCenter.z,
+      }
+    : {
+        x: origin.x,
+        y: origin.y,
+        z: origin.z,
+      };
+  return {
+    mode: 'offset',
+    source: explicitCenter ? 'center' : legacyAnchorAsCenter ? `${anchorUtm.source}:target-center` : anchorUtm?.source || 'origin',
+    sourceCrs,
+    targetCrs: APOLLO_TARGET_CRS,
+    origin: origin || null,
+    targetCenter: targetCenter || {
+      x: localCenter.x + offset.x,
+      y: localCenter.y + offset.y,
+      z: localCenter.z + offset.z,
+    },
+    localCenter,
+    offset,
+  };
+}
+
+function applyCoordinateTransform(point, transform) {
+  if (!transform) {
+    return point;
+  }
+  if (transform.mode === 'wgs84-to-utm-zone-50') {
+    return wgs84LonLatToUtmZone50(point.x, point.y, point.z);
+  }
+  return {
+    x: point.x + transform.offset.x,
+    y: point.y + transform.offset.y,
+    z: point.z + transform.offset.z,
+  };
+}
+
+function pointFromEditor(point, transform = null) {
+  return applyCoordinateTransform(rawPointFromEditor(point), transform);
 }
 
 function distance(a, b) {
@@ -445,10 +772,55 @@ function cubicBezier(p0, p1, p2, p3, t) {
   };
 }
 
-function buildPointIndex(editorMap) {
+function headingBetween(start, end) {
+  return Math.atan2(number(end.y) - number(start.y), number(end.x) - number(start.x));
+}
+
+function normalizeAngle(angle) {
+  let result = angle;
+  while (result > Math.PI) {
+    result -= Math.PI * 2;
+  }
+  while (result < -Math.PI) {
+    result += Math.PI * 2;
+  }
+  return result;
+}
+
+function laneTurnMetrics(points) {
+  if (points.length < 3) {
+    return {
+      minRadius: Infinity,
+      maxHeadingDelta: 0,
+      netHeadingDelta: 0,
+    };
+  }
+  let maxCurvature = 0;
+  let maxHeadingDelta = 0;
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const previousHeading = headingBetween(points[i - 1], points[i]);
+    const nextHeading = headingBetween(points[i], points[i + 1]);
+    const headingDelta = Math.abs(normalizeAngle(nextHeading - previousHeading));
+    const localLength = (distance(points[i - 1], points[i]) + distance(points[i], points[i + 1])) / 2;
+    const curvature = localLength > 0 ? headingDelta / localLength : 0;
+    if (curvature > maxCurvature) {
+      maxCurvature = curvature;
+      maxHeadingDelta = headingDelta;
+    }
+  }
+  return {
+    minRadius: maxCurvature > 0 ? 1 / maxCurvature : Infinity,
+    maxHeadingDelta,
+    netHeadingDelta: Math.abs(
+      normalizeAngle(headingBetween(points[points.length - 2], points[points.length - 1]) - headingBetween(points[0], points[1]))
+    ),
+  };
+}
+
+function buildPointIndex(editorMap, transform = null) {
   const result = new Map();
   for (const point of arr(editorMap.point)) {
-    result.set(String(point.id), pointFromEditor(point));
+    result.set(String(point.id), pointFromEditor(point, transform));
   }
   return result;
 }
@@ -499,7 +871,27 @@ function boundaryPointIds(boundary) {
   return arr(boundary?.point_id || boundary?.pointIds);
 }
 
-function pointsFromBoundary(boundary, pointIndex, reverse = false) {
+function laneEndpointPointIds(lane, boundaryIndex, endpoint) {
+  const leftBoundary = boundaryIndex.get(String(lane.left_boundary_id || lane.leftBoundaryId));
+  const rightBoundary = boundaryIndex.get(String(lane.right_boundary_id || lane.rightBoundaryId));
+  const leftPointIds = boundaryPointIds(leftBoundary).map((pointId) => String(pointId));
+  const rightPointIds = boundaryPointIds(rightBoundary).map((pointId) => String(pointId));
+  if (leftPointIds.length === 0 || rightPointIds.length === 0) {
+    return [null, null];
+  }
+  const leftReverse = Boolean(lane.left_boundary_reverse || lane.leftBoundaryReverse);
+  const rightReverse = Boolean(lane.right_boundary_reverse || lane.rightBoundaryReverse);
+  const isStart = endpoint === 'start';
+  const leftIndex = (isStart && leftReverse) || (!isStart && !leftReverse) ? leftPointIds.length - 1 : 0;
+  const rightIndex = (isStart && rightReverse) || (!isStart && !rightReverse) ? rightPointIds.length - 1 : 0;
+  return [leftPointIds[leftIndex] || null, rightPointIds[rightIndex] || null];
+}
+
+function sameEndpointPointPair(left, right) {
+  return Boolean(left?.[0] && left?.[1] && left[0] === right?.[0] && left[1] === right?.[1]);
+}
+
+function pointsFromBoundary(boundary, pointIndex, reverse = false, transform = null) {
   if (!boundary) {
     return [];
   }
@@ -507,7 +899,7 @@ function pointsFromBoundary(boundary, pointIndex, reverse = false) {
     .map((pointId) => pointIndex.get(String(pointId)))
     .filter(Boolean);
   const ordered = reverse ? points.reverse() : points;
-  const controls = arr(boundary.controlsPosition).map(pointFromEditor);
+  const controls = arr(boundary.controlsPosition).map((point) => pointFromEditor(point, transform));
   if (ordered.length >= 2 && controls.length >= 2) {
     return Array.from({ length: 17 }, (_unused, index) =>
       cubicBezier(ordered[0], controls[0], controls[1], ordered[ordered.length - 1], index / 16)
@@ -536,13 +928,13 @@ function curveFromPoints(points) {
   };
 }
 
-function polygonFromBoundaryId(boundaryId, boundaryIndex, pointIndex) {
-  const points = pointsFromBoundary(boundaryIndex.get(String(boundaryId)), pointIndex, false);
+function polygonFromBoundaryId(boundaryId, boundaryIndex, pointIndex, transform = null) {
+  const points = pointsFromBoundary(boundaryIndex.get(String(boundaryId)), pointIndex, false, transform);
   return points.length >= 3 ? { point: points } : null;
 }
 
-function curveFromBoundaryId(boundaryId, boundaryIndex, pointIndex) {
-  const points = pointsFromBoundary(boundaryIndex.get(String(boundaryId)), pointIndex, false);
+function curveFromBoundaryId(boundaryId, boundaryIndex, pointIndex, transform = null) {
+  const points = pointsFromBoundary(boundaryIndex.get(String(boundaryId)), pointIndex, false, transform);
   return points.length >= 2 ? curveFromPoints(points) : null;
 }
 
@@ -580,6 +972,185 @@ function distancePointToPolyline(point, points, closed = false) {
     best = Math.min(best, distancePointToSegment(point, points[points.length - 1], points[0]));
   }
   return best;
+}
+
+function signedLateralDistance(point, start, end) {
+  const dx = number(end.x) - number(start.x);
+  const dy = number(end.y) - number(start.y);
+  const length = Math.hypot(dx, dy);
+  if (length <= 0) {
+    return 0;
+  }
+  return (dx * (number(point.y) - number(start.y)) - dy * (number(point.x) - number(start.x))) / length;
+}
+
+function nearestPolylinePoint(point, points) {
+  let best = {
+    point: null,
+    distance: Infinity,
+  };
+  for (let i = 0; i < points.length; i += 1) {
+    const candidate = points[i];
+    const currentDistance = distance(point, candidate);
+    if (currentDistance < best.distance) {
+      best = {
+        point: candidate,
+        distance: currentDistance,
+      };
+    }
+  }
+  return best;
+}
+
+function cubicCenterCandidate(start, end, startHeading, endHeading, startControl, endControl) {
+  const startTangent = {
+    x: Math.cos(startHeading),
+    y: Math.sin(startHeading),
+    z: 0,
+  };
+  const endTangent = {
+    x: Math.cos(endHeading),
+    y: Math.sin(endHeading),
+    z: 0,
+  };
+  const control1 = {
+    x: start.x + startTangent.x * startControl,
+    y: start.y + startTangent.y * startControl,
+    z: start.z,
+  };
+  const control2 = {
+    x: end.x - endTangent.x * endControl,
+    y: end.y - endTangent.y * endControl,
+    z: end.z,
+  };
+  return Array.from({ length: APOLLO_SIM_CENTER_SMOOTH_SAMPLE_COUNT }, (_unused, index) =>
+    cubicBezier(start, control1, control2, end, index / (APOLLO_SIM_CENTER_SMOOTH_SAMPLE_COUNT - 1))
+  );
+}
+
+function centerlineStaysInsideLane(candidate, original, leftBoundaryPoints, rightBoundaryPoints, laneWidth) {
+  const maxDeviation = Math.max(APOLLO_SIM_CENTER_SMOOTH_MAX_DEVIATION, laneWidth / 2);
+  for (let index = 0; index < candidate.length; index += 1) {
+    const point = candidate[index];
+    if (distancePointToPolyline(point, original, false) > maxDeviation) {
+      return false;
+    }
+    const previous = candidate[Math.max(0, index - 1)];
+    const next = candidate[Math.min(candidate.length - 1, index + 1)];
+    const left = nearestPolylinePoint(point, leftBoundaryPoints);
+    const right = nearestPolylinePoint(point, rightBoundaryPoints);
+    if (!left.point || !right.point) {
+      return false;
+    }
+    const leftSide = signedLateralDistance(left.point, previous, next);
+    const rightSide = signedLateralDistance(right.point, previous, next);
+    if (leftSide <= 0.15 || rightSide >= -0.15) {
+      return false;
+    }
+    if (left.distance < 0.4 || right.distance < 0.4) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function smoothCenterlineForApolloPlanning(center, leftBoundaryPoints, rightBoundaryPoints, lane, width, conversionWarnings) {
+  const originalLength = polylineLength(center);
+  const originalMetrics = laneTurnMetrics(center);
+  if (
+    center.length < 4 ||
+    originalLength < APOLLO_SIM_CENTER_SMOOTH_MIN_LENGTH ||
+    originalMetrics.minRadius >= APOLLO_SIM_MIN_TURN_RADIUS ||
+    originalMetrics.netHeadingDelta < Math.PI / 6
+  ) {
+    return center;
+  }
+
+  const start = center[0];
+  const end = center[center.length - 1];
+  const startHeading = headingBetween(center[0], center[1]);
+  const endHeading = headingBetween(center[center.length - 2], center[center.length - 1]);
+  const chord = distance(start, end);
+  const maxControl = Math.max(3, Math.min(originalLength * 1.4, Math.max(chord * 1.8, 8)));
+  const findBestCandidate = (headingOffsets) => {
+    let bestCandidate = null;
+    for (const startHeadingOffset of headingOffsets) {
+      for (const endHeadingOffset of headingOffsets) {
+        for (let startControl = 1; startControl <= maxControl; startControl += 0.5) {
+          for (let endControl = 1; endControl <= maxControl; endControl += 0.5) {
+            const candidate = cubicCenterCandidate(
+              start,
+              end,
+              startHeading + startHeadingOffset,
+              endHeading + endHeadingOffset,
+              startControl,
+              endControl
+            );
+            const candidateLength = polylineLength(candidate);
+            if (candidateLength < chord * 0.98 || candidateLength > originalLength * 1.35) {
+              continue;
+            }
+            if (!centerlineStaysInsideLane(candidate, center, leftBoundaryPoints, rightBoundaryPoints, width)) {
+              continue;
+            }
+            const metrics = laneTurnMetrics(candidate);
+            if (metrics.minRadius <= originalMetrics.minRadius * 1.08) {
+              continue;
+            }
+            const headingPenalty = (Math.abs(startHeadingOffset) + Math.abs(endHeadingOffset)) * 0.5;
+            const score = metrics.minRadius - Math.abs(candidateLength - originalLength) * 0.02 - headingPenalty;
+            if (!bestCandidate || score > bestCandidate.score) {
+              bestCandidate = {
+                candidate,
+                metrics,
+                startHeadingOffset,
+                endHeadingOffset,
+                score,
+              };
+            }
+          }
+        }
+      }
+    }
+    return bestCandidate;
+  };
+  let best = findBestCandidate([0]);
+  if (!best || best.metrics.minRadius < APOLLO_SIM_MIN_TURN_RADIUS + 0.5) {
+    const relaxedHeadingOffsets = APOLLO_SIM_CENTER_HEADING_RELAX_DEGREES.map((degrees) => (degrees * Math.PI) / 180);
+    const relaxedBest = findBestCandidate(relaxedHeadingOffsets);
+    if (relaxedBest && (!best || relaxedBest.metrics.minRadius > best.metrics.minRadius)) {
+      best = relaxedBest;
+    }
+  }
+
+  if (!best || best.metrics.minRadius < Math.min(APOLLO_SIM_MIN_TURN_RADIUS * 0.85, originalMetrics.minRadius * 1.2)) {
+    addConversionWarning(conversionWarnings, {
+      severity: 'warning',
+      code: 'lane-turn-radius-too-tight',
+      element: 'lane',
+      id: lane.id,
+      message: `Lane ${lane.id || ''} has a tight Apollo centerline radius and could not be smoothed safely.`,
+      details: {
+        minRadius: Number(originalMetrics.minRadius.toFixed(2)),
+      },
+    });
+    return center;
+  }
+
+  addConversionWarning(conversionWarnings, {
+    severity: 'info',
+    code: 'lane-centerline-smoothed-for-planning',
+    element: 'lane',
+    id: lane.id,
+    message: `Lane ${lane.id || ''} centerline was smoothed for Apollo planning.`,
+    details: {
+      originalMinRadius: Number(originalMetrics.minRadius.toFixed(2)),
+      smoothedMinRadius: Number(best.metrics.minRadius.toFixed(2)),
+      startHeadingOffsetDegrees: Number(((best.startHeadingOffset * 180) / Math.PI).toFixed(1)),
+      endHeadingOffsetDegrees: Number(((best.endHeadingOffset * 180) / Math.PI).toFixed(1)),
+    },
+  });
+  return best.candidate;
 }
 
 function pointInPolygon(point, polygonPoints) {
@@ -655,7 +1226,7 @@ function overlapRangeForPolygon(laneInfo, polygonPoints) {
   );
 }
 
-function centerLineFromLane(lane, boundaryIndex, pointIndex) {
+function centerLineFromLane(lane, boundaryIndex, pointIndex, transform = null) {
   const inlinePointIds = arr(lane.points || lane.point_id);
   if (inlinePointIds.length >= 2) {
     return inlinePointIds.map((pointId) => pointIndex.get(String(pointId))).filter(Boolean);
@@ -664,12 +1235,14 @@ function centerLineFromLane(lane, boundaryIndex, pointIndex) {
   const left = pointsFromBoundary(
     boundaryIndex.get(String(lane.left_boundary_id || lane.leftBoundaryId)),
     pointIndex,
-    Boolean(lane.left_boundary_reverse || lane.leftBoundaryReverse)
+    Boolean(lane.left_boundary_reverse || lane.leftBoundaryReverse),
+    transform
   );
   const right = pointsFromBoundary(
     boundaryIndex.get(String(lane.right_boundary_id || lane.rightBoundaryId)),
     pointIndex,
-    Boolean(lane.right_boundary_reverse || lane.rightBoundaryReverse)
+    Boolean(lane.right_boundary_reverse || lane.rightBoundaryReverse),
+    transform
   );
   if (left.length > 0 && right.length > 0) {
     const count = Math.max(left.length, right.length, 2);
@@ -684,9 +1257,9 @@ function centerLineFromLane(lane, boundaryIndex, pointIndex) {
   return left.length > 0 ? left : right;
 }
 
-function laneBoundaryFromId(boundaryId, boundaryIndex, pointIndex, reverse, virtual = false) {
+function laneBoundaryFromId(boundaryId, boundaryIndex, pointIndex, reverse, virtual = false, transform = null) {
   const boundary = boundaryIndex.get(String(boundaryId));
-  const points = pointsFromBoundary(boundary, pointIndex, reverse);
+  const points = pointsFromBoundary(boundary, pointIndex, reverse, transform);
   if (points.length < 2) {
     return null;
   }
@@ -753,16 +1326,65 @@ function widthSamplesFromGeometry(center, boundaryPoints, fallbackWidth, spacing
   });
 }
 
-function speedLimitFromEditor(lane) {
+function baseSpeedLimitFromEditor(lane) {
   const raw = number(lane.speed_limit ?? lane.attr?.speed, 40);
   return raw > 25 ? raw / 3.6 : raw;
 }
 
-function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
+function turnSpeedLimitForApollo(baseSpeedLimit, lane, center, conversionWarnings) {
+  const metrics = laneTurnMetrics(center);
+  const turn = turnFromEditor(lane);
+  const turnAngle = Math.max(metrics.netHeadingDelta, metrics.maxHeadingDelta);
+  const isTurningLane =
+    turn !== LANE_TURN.NO_TURN || turnAngle >= Math.PI / 12 || metrics.minRadius < 30;
+  if (!isTurningLane) {
+    return baseSpeedLimit;
+  }
+
+  let cap = APOLLO_SIM_SOFT_TURN_SPEED_MAX_MPS;
+  if (turn === LANE_TURN.U_TURN || turnAngle >= (Math.PI * 2) / 3) {
+    cap = APOLLO_SIM_U_TURN_SPEED_MAX_MPS;
+  } else if (turnAngle >= Math.PI / 3 || metrics.minRadius < 8) {
+    cap = APOLLO_SIM_SHARP_TURN_SPEED_MAX_MPS;
+  } else if (turnAngle >= Math.PI / 6 || metrics.minRadius < 14) {
+    cap = APOLLO_SIM_MEDIUM_TURN_SPEED_MAX_MPS;
+  }
+
+  const radiusSpeed = Number.isFinite(metrics.minRadius)
+    ? Math.sqrt(Math.max(1, metrics.minRadius) * APOLLO_SIM_TURN_SPEED_LAT_ACCEL)
+    : cap;
+  const minSpeed = Math.min(APOLLO_SIM_TURN_SPEED_MIN_MPS, baseSpeedLimit);
+  const limitedSpeed = clamp(Math.min(baseSpeedLimit, cap, radiusSpeed), minSpeed, baseSpeedLimit);
+  if (limitedSpeed < baseSpeedLimit - 0.05) {
+    addConversionWarning(conversionWarnings, {
+      severity: 'info',
+      code: 'lane-turn-speed-limited',
+      element: 'lane',
+      id: lane.id,
+      message: `Lane ${lane.id || ''} speed limit was reduced for smoother Apollo turning.`,
+      details: {
+        originalSpeedMps: Number(baseSpeedLimit.toFixed(2)),
+        limitedSpeedMps: Number(limitedSpeed.toFixed(2)),
+        turnAngleDegrees: Number(((turnAngle * 180) / Math.PI).toFixed(1)),
+        minRadius: Number.isFinite(metrics.minRadius) ? Number(metrics.minRadius.toFixed(2)) : null,
+      },
+    });
+  }
+  return limitedSpeed;
+}
+
+function speedLimitFromEditor(lane, center, conversionWarnings) {
+  const baseSpeedLimit = baseSpeedLimitFromEditor(lane);
+  return center?.length >= 3
+    ? turnSpeedLimitForApollo(baseSpeedLimit, lane, center, conversionWarnings)
+    : baseSpeedLimit;
+}
+
+function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings, transform = null) {
   const laneInfos = [];
   for (const lane of arr(editorMap.lane)) {
-    const center = centerLineFromLane(lane, boundaryIndex, pointIndex);
-    if (center.length < 2) {
+    const rawCenter = centerLineFromLane(lane, boundaryIndex, pointIndex, transform);
+    if (rawCenter.length < 2) {
       addConversionWarning(conversionWarnings, {
         severity: 'error',
         code: 'lane-missing-centerline',
@@ -772,19 +1394,22 @@ function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
       });
       continue;
     }
-    const length = polylineLength(center);
     const width = Math.max(0, number(lane.width, 3.5));
     const leftBoundary = laneBoundaryFromId(
       lane.left_boundary_id || lane.leftBoundaryId,
       boundaryIndex,
       pointIndex,
-      Boolean(lane.left_boundary_reverse || lane.leftBoundaryReverse)
+      Boolean(lane.left_boundary_reverse || lane.leftBoundaryReverse),
+      false,
+      transform
     );
     const rightBoundary = laneBoundaryFromId(
       lane.right_boundary_id || lane.rightBoundaryId,
       boundaryIndex,
       pointIndex,
-      Boolean(lane.right_boundary_reverse || lane.rightBoundaryReverse)
+      Boolean(lane.right_boundary_reverse || lane.rightBoundaryReverse),
+      false,
+      transform
     );
     if (!leftBoundary || !rightBoundary) {
       addConversionWarning(conversionWarnings, {
@@ -803,27 +1428,40 @@ function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
     const leftBoundaryPoints = pointsFromBoundary(
       boundaryIndex.get(String(lane.left_boundary_id || lane.leftBoundaryId)),
       pointIndex,
-      Boolean(lane.left_boundary_reverse || lane.leftBoundaryReverse)
+      Boolean(lane.left_boundary_reverse || lane.leftBoundaryReverse),
+      transform
     );
     const rightBoundaryPoints = pointsFromBoundary(
       boundaryIndex.get(String(lane.right_boundary_id || lane.rightBoundaryId)),
       pointIndex,
-      Boolean(lane.right_boundary_reverse || lane.rightBoundaryReverse)
+      Boolean(lane.right_boundary_reverse || lane.rightBoundaryReverse),
+      transform
     );
     const fallbackHalfWidth = width > 0 ? width / 2 : 1.75;
+    const center = smoothCenterlineForApolloPlanning(
+      rawCenter,
+      leftBoundaryPoints,
+      rightBoundaryPoints,
+      lane,
+      width,
+      conversionWarnings
+    );
+    const length = polylineLength(center);
     laneInfos.push({
       source: lane,
       center,
       width,
       start: center[0],
       end: center[center.length - 1],
+      startPointIds: laneEndpointPointIds(lane, boundaryIndex, 'start'),
+      endPointIds: laneEndpointPointIds(lane, boundaryIndex, 'end'),
       proto: {
         id: id(lane.id),
         centralCurve: curveFromPoints(center),
         leftBoundary,
         rightBoundary,
         length,
-        speedLimit: speedLimitFromEditor(lane),
+        speedLimit: speedLimitFromEditor(lane, center, conversionWarnings),
         overlapId: [],
         predecessorId: [],
         successorId: [],
@@ -841,17 +1479,30 @@ function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
       if (current === candidate) {
         continue;
       }
-      if (distance(current.end, candidate.start) <= 0.5) {
+      if (sameEndpointPointPair(current.endPointIds, candidate.startPointIds)) {
         current.proto.successorId.push(id(candidate.source.id));
         candidate.proto.predecessorId.push(id(current.source.id));
+      } else if (distance(current.end, candidate.start) <= 0.5) {
+        addConversionWarning(conversionWarnings, {
+          severity: 'warning',
+          code: 'lane-endpoints-near-but-not-topologically-connected',
+          element: 'lane',
+          id: current.source.id,
+          message: `Lane ${current.source.id || ''} endpoint is close to lane ${candidate.source.id || ''}, but their endpoint point IDs are not shared; no Apollo successor edge was created.`,
+          details: {
+            sourceEndPointIds: current.endPointIds,
+            targetStartPointIds: candidate.startPointIds,
+            distance: Number(distance(current.end, candidate.start).toFixed(3)),
+          },
+        });
       }
     }
   }
   return laneInfos;
 }
 
-function computeBounds(editorMap) {
-  const points = arr(editorMap.point).map(pointFromEditor);
+function computeBounds(editorMap, transform = null) {
+  const points = arr(editorMap.point).map((point) => pointFromEditor(point, transform));
   if (points.length === 0) {
     return {};
   }
@@ -863,7 +1514,7 @@ function computeBounds(editorMap) {
   };
 }
 
-function createHeader(editorMap) {
+function createHeader(editorMap, transform = null) {
   const header = editorMap.header || {};
   return {
     version: bytes(header.version || '1.0'),
@@ -874,14 +1525,14 @@ function createHeader(editorMap) {
     revMajor: bytes('1'),
     revMinor: bytes('0'),
     vendor: bytes('mapeditor'),
-    ...computeBounds(editorMap),
+    ...computeBounds(editorMap, transform),
   };
 }
 
-function roadBoundaryFromEditor(editorMap, boundaryIndex, pointIndex, conversionWarnings) {
+function roadBoundaryFromEditor(editorMap, boundaryIndex, pointIndex, conversionWarnings, transform = null) {
   const edges = arrFromKeys(editorMap, ['roadBoundary', 'road_boundary'])
     .map((item) => {
-      const curve = curveFromBoundaryId(item.id, boundaryIndex, pointIndex);
+      const curve = curveFromBoundaryId(item.id, boundaryIndex, pointIndex, transform);
       if (!curve) {
         addConversionWarning(conversionWarnings, {
           severity: 'warning',
@@ -1012,20 +1663,61 @@ function buildOverlaps(mapMessage, laneInfos, conversionWarnings) {
 }
 
 function createMapMessage(editorMap) {
-  const pointIndex = buildPointIndex(editorMap);
+  const coordinateTransform = createCoordinateTransform(editorMap);
+  const pointIndex = buildPointIndex(editorMap, coordinateTransform);
   const boundaryIndex = buildBoundaryIndex(editorMap);
   const stopLineIndex = buildStopLineIndex(editorMap);
   const conversionWarnings = [];
-  const laneInfos = buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings);
+  const sourceCrs = coordinateFrameFromEditorMap(editorMap) || 'LOCAL_ENU_METERS';
+  if (!coordinateTransform && sourceCrs !== 'APOLLO_UTM_ZONE_50') {
+    const rawPoints = arr(editorMap.point).map(rawPointFromEditor);
+    const maxAbs = rawPoints.reduce((max, point) => Math.max(max, Math.abs(point.x), Math.abs(point.y)), 0);
+    addConversionWarning(conversionWarnings, {
+      severity: sourceCrs === 'SCREEN_PIXELS' || maxAbs < 10000 ? 'error' : 'warning',
+      code: 'apollo-coordinate-anchor-missing',
+      element: 'map',
+      id: '',
+      message:
+        'Apollo coordinate anchor is missing. Configure apolloOrigin/utmOrigin or mark points as APOLLO_UTM_ZONE_50 before publishing.',
+      details: {
+        sourceCrs,
+        maxAbsCoordinate: Number(maxAbs.toFixed(3)),
+      },
+    });
+  }
+  if (coordinateTransform) {
+    addConversionWarning(conversionWarnings, {
+      severity: 'info',
+      code: 'apollo-coordinate-offset-applied',
+      element: 'map',
+      id: '',
+      message: `Apollo coordinates were offset from editor-local coordinates using ${coordinateTransform.source}.`,
+      details: {
+        source: coordinateTransform.source,
+        sourceCrs: coordinateTransform.sourceCrs,
+        targetCrs: coordinateTransform.targetCrs,
+        offsetX: Number(coordinateTransform.offset.x.toFixed(6)),
+        offsetY: Number(coordinateTransform.offset.y.toFixed(6)),
+        targetCenterX: Number(coordinateTransform.targetCenter.x.toFixed(6)),
+        targetCenterY: Number(coordinateTransform.targetCenter.y.toFixed(6)),
+      },
+    });
+  }
+  const laneInfos = buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings, coordinateTransform);
   const laneIds = laneInfos.map((item) => id(item.source.id));
-  const roadBoundary = roadBoundaryFromEditor(editorMap, boundaryIndex, pointIndex, conversionWarnings);
+  const roadBoundary = roadBoundaryFromEditor(editorMap, boundaryIndex, pointIndex, conversionWarnings, coordinateTransform);
   const signals = arr(editorMap.trafficSignal)
     .map((item) => {
-      const center = pointFromEditor(item.center || {});
+      const center = pointFromEditor(item.center || {}, coordinateTransform);
       const half = 0.3;
       const stopLineBoundaryId = resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex);
-      const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex);
-      const stopLinePoints = pointsFromBoundary(boundaryIndex.get(String(stopLineBoundaryId)), pointIndex, false);
+      const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex, coordinateTransform);
+      const stopLinePoints = pointsFromBoundary(
+        boundaryIndex.get(String(stopLineBoundaryId)),
+        pointIndex,
+        false,
+        coordinateTransform
+      );
       if (!stopLine) {
         addConversionWarning(conversionWarnings, {
           severity: 'error',
@@ -1091,11 +1783,11 @@ function createMapMessage(editorMap) {
   });
 
   const mapMessage = {
-    header: createHeader(editorMap),
+    header: createHeader(editorMap, coordinateTransform),
     lane: laneInfos.map((item) => item.proto),
     crosswalk: arr(editorMap.crosswalk)
       .map((item) => {
-        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex);
+        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex, coordinateTransform);
         if (!polygon) {
           addConversionWarning(conversionWarnings, {
             severity: 'warning',
@@ -1115,7 +1807,7 @@ function createMapMessage(editorMap) {
       .filter(Boolean),
     junction: arr(editorMap.junction)
       .map((item) => {
-        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex);
+        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex, coordinateTransform);
         if (!polygon) {
           addConversionWarning(conversionWarnings, {
             severity: 'warning',
@@ -1135,7 +1827,7 @@ function createMapMessage(editorMap) {
       .filter(Boolean),
     speedBump: arrFromKeys(editorMap, ['speed_bump', 'speedBump'])
       .map((item) => {
-        const curve = curveFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex);
+        const curve = curveFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex, coordinateTransform);
         if (!curve) {
           addConversionWarning(conversionWarnings, {
             severity: 'warning',
@@ -1149,14 +1841,19 @@ function createMapMessage(editorMap) {
         return {
           id: id(item.id),
           position: [curve],
-          _overlapCurvePoints: pointsFromBoundary(boundaryIndex.get(String(item.boundaryId)), pointIndex, false),
+          _overlapCurvePoints: pointsFromBoundary(
+            boundaryIndex.get(String(item.boundaryId)),
+            pointIndex,
+            false,
+            coordinateTransform
+          ),
         };
       })
       .filter(Boolean),
     stopSign: arr(editorMap.stopSign)
       .map((item) => {
         const stopLineBoundaryId = resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex);
-        const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex);
+        const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex, coordinateTransform);
         if (!stopLine) {
           addConversionWarning(conversionWarnings, {
             severity: 'warning',
@@ -1172,7 +1869,12 @@ function createMapMessage(editorMap) {
               id: id(item.id),
               stopLine: [stopLine],
               type: 1,
-              _overlapCurvePoints: pointsFromBoundary(boundaryIndex.get(String(stopLineBoundaryId)), pointIndex, false),
+              _overlapCurvePoints: pointsFromBoundary(
+                boundaryIndex.get(String(stopLineBoundaryId)),
+                pointIndex,
+                false,
+                coordinateTransform
+              ),
             }
           : null;
       })
@@ -1180,7 +1882,7 @@ function createMapMessage(editorMap) {
     yield: arr(editorMap.yieldSign)
       .map((item) => {
         const stopLineBoundaryId = resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex);
-        const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex);
+        const stopLine = curveFromBoundaryId(stopLineBoundaryId, boundaryIndex, pointIndex, coordinateTransform);
         if (!stopLine) {
           addConversionWarning(conversionWarnings, {
             severity: 'warning',
@@ -1195,7 +1897,12 @@ function createMapMessage(editorMap) {
           ? {
               id: id(item.id),
               stopLine: [stopLine],
-              _overlapCurvePoints: pointsFromBoundary(boundaryIndex.get(String(stopLineBoundaryId)), pointIndex, false),
+              _overlapCurvePoints: pointsFromBoundary(
+                boundaryIndex.get(String(stopLineBoundaryId)),
+                pointIndex,
+                false,
+                coordinateTransform
+              ),
             }
           : null;
       })
@@ -1203,7 +1910,7 @@ function createMapMessage(editorMap) {
     signal: signals,
     parkingSpace: arrFromKeys(editorMap, ['parkingSpace', 'parking_space'])
       .map((item) => {
-        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex);
+        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex, coordinateTransform);
         if (!polygon) {
           addConversionWarning(conversionWarnings, {
             severity: 'warning',
@@ -1237,7 +1944,7 @@ function createMapMessage(editorMap) {
           });
           return null;
         }
-        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex);
+        const polygon = polygonFromBoundaryId(item.boundaryId, boundaryIndex, pointIndex, coordinateTransform);
         if (!polygon) {
           addConversionWarning(conversionWarnings, {
             severity: 'warning',
@@ -1272,6 +1979,7 @@ function createMapMessage(editorMap) {
         : [],
     _laneInfos: laneInfos,
     _conversionWarnings: conversionWarnings,
+    _coordinateTransform: coordinateTransform,
   };
   mapMessage.overlap = buildOverlaps(mapMessage, laneInfos, conversionWarnings);
   return mapMessage;
@@ -1523,6 +2231,7 @@ async function convertEditorMapToApolloPackage(options) {
   const cleanMap = cleanMapForEncoding(mapMessage);
   const routingGraph = createRoutingGraph(mapMessage);
   const warnings = mapMessage._conversionWarnings || [];
+  const coordinateTransform = mapMessage._coordinateTransform || null;
   const contract = buildConversionContract(editorMap, cleanMap, routingGraph, warnings);
 
   await fs.copyFile(jsonPath, path.join(releaseDir, 'editor_map.json'));
@@ -1541,6 +2250,35 @@ async function convertEditorMapToApolloPackage(options) {
         converter: 'mapeditor-js-compat',
         nativeConverter: false,
         baseMapDir,
+        targetCrs: APOLLO_TARGET_CRS,
+        sourceCrs: coordinateTransform?.sourceCrs || coordinateFrameFromEditorMap(editorMap) || 'LOCAL_ENU_METERS',
+        anchor: coordinateTransform?.origin
+          ? {
+              source: coordinateTransform.source,
+              utm: coordinateTransform.origin,
+            }
+          : null,
+        bounds: {
+          xMin: cleanMap.header?.left ?? null,
+          xMax: cleanMap.header?.right ?? null,
+          yMin: cleanMap.header?.bottom ?? null,
+          yMax: cleanMap.header?.top ?? null,
+        },
+        coordinateTransform: coordinateTransform
+          ? {
+              source: coordinateTransform.source,
+              sourceCrs: coordinateTransform.sourceCrs,
+              targetCrs: coordinateTransform.targetCrs,
+              offset: {
+                x: coordinateTransform.offset.x,
+                y: coordinateTransform.offset.y,
+                z: coordinateTransform.offset.z,
+              },
+              origin: coordinateTransform.origin,
+              localCenter: coordinateTransform.localCenter,
+              targetCenter: coordinateTransform.targetCenter,
+            }
+          : null,
         warnings,
         contract,
         files: [

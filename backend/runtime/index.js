@@ -10,6 +10,7 @@ const { pipeline } = require('stream/promises');
 const unzipper = require('unzipper');
 const { PNG } = require('pngjs');
 const WebSocketClient = require('ws');
+const { Client: SshClient } = require('ssh2');
 const { convertEditorMapToApolloPackage } = require('./editorMapConverter');
 const { runCommand } = require('./process');
 const { generateAssistDrawingCandidates } = require('./assistDrawingCandidates');
@@ -45,6 +46,13 @@ const APOLLOLITE_RUNTIME_FILE_GROUPS = [
 ];
 const APOLLOLITE_TRACE_FILES = ['editor_map.json'];
 const APOLLOLITE_GLOBAL_FLAGFILE = 'modules/common/data/global_flagfile.txt';
+const APOLLOLITE_PLANNING_CONF = 'modules/planning/conf/planning.conf';
+const APOLLOLITE_REQUIRED_SIMULATION_PLANNING_FLAGS = [
+  {
+    flag: '--enable_smooth_reference_line',
+    value: 'false',
+  },
+];
 const APOLLOLITE_CYBER_LAUNCH_CANDIDATES = [
   'bazel-bin/cyber/tools/cyber_launch/cyber_launch',
   'bazel-bin/cyber/tools/cyber_launch/cyber_launch.exe',
@@ -109,7 +117,8 @@ const APOLLOLITE_PNC_DAG_PATTERNS = [
 const APOLLOLITE_DREAMVIEW_HTTP_TIMEOUT_MS = 1500;
 const APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS = 5000;
 const APOLLOLITE_SIM_MOTION_TIMEOUT_MS = 15000;
-const APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS = 20000;
+const APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS = 45000;
+const APOLLOLITE_DREAMVIEW_LOG_MAX_MB = 50;
 const APOLLOLITE_STATE_FILE = 'apollolite_current_map.json';
 const APOLLOLITE_ROUTING_LOG_SCAN_LIMIT = 800;
 const APOLLOLITE_RECENT_FAILURE_WINDOW_MS = 15 * 60 * 1000;
@@ -213,17 +222,31 @@ function createConfigWithEdgeDeploy(config, edgeDeploy) {
 function normalizeEdgeDeployParams(config, params = {}) {
   const host = String(params.host ?? config.edgeDeploy.host ?? '').trim();
   const user = String(params.user ?? config.edgeDeploy.user ?? '').trim();
+  const rawPassword =
+    params.password === undefined || params.password === '' ? config.edgeDeploy.password ?? '' : params.password;
+  const password = String(rawPassword || '').trim();
   const port = Number(params.port ?? config.edgeDeploy.port ?? 22) || 22;
   const targetMapRoot = String(params.targetMapRoot ?? config.edgeDeploy.targetMapRoot ?? '').trim();
   const postDeployCommand = String(params.postDeployCommand ?? config.edgeDeploy.postDeployCommand ?? '').trim();
+  const dockerContainer = String(params.dockerContainer ?? config.edgeDeploy.dockerContainer ?? '').trim();
+  const nativeMapTools =
+    params.nativeMapTools !== undefined ? Boolean(params.nativeMapTools) : config.edgeDeploy.nativeMapTools !== false;
+  const autoSwitchDreamview =
+    params.autoSwitchDreamview !== undefined
+      ? Boolean(params.autoSwitchDreamview)
+      : config.edgeDeploy.autoSwitchDreamview !== false;
   const mode = params.mode || (host && user ? 'ssh' : 'disabled');
   return {
     mode,
     host,
     user,
+    password,
     port,
     targetMapRoot,
     postDeployCommand,
+    dockerContainer,
+    nativeMapTools,
+    autoSwitchDreamview,
   };
 }
 
@@ -283,7 +306,7 @@ async function discoverEdgeMapRoot(config, params = {}) {
     'for root in /apollo "$HOME/apollo" /opt/apollo; do if [ -d "$root" ] && mkdir -p "$root/modules/map/data" 2>/dev/null; then printf \'%s\\n\' "$root/modules/map/data"; exit 0; fi; done',
     'exit 2',
   ].join('; ');
-  const result = await runCommand('ssh', [...buildSshBaseArgs(deployConfig), remoteCommand], {
+  const result = await runEdgeSshCommand(deployConfig, remoteCommand, {
     timeoutMs: 15000,
   });
   const targetMapRoot = result.stdout.trim().split(/\r?\n/).filter(Boolean)[0] || '';
@@ -316,16 +339,24 @@ async function configureEdgeDeploy(config, params = {}) {
   config.edgeDeploy.mode = next.mode;
   config.edgeDeploy.host = next.host;
   config.edgeDeploy.user = next.user;
+  config.edgeDeploy.password = next.password;
   config.edgeDeploy.port = next.port;
   config.edgeDeploy.targetMapRoot = next.targetMapRoot || '/apollo/modules/map/data';
   config.edgeDeploy.postDeployCommand = next.postDeployCommand;
+  config.edgeDeploy.dockerContainer = next.dockerContainer;
+  config.edgeDeploy.nativeMapTools = next.nativeMapTools;
+  config.edgeDeploy.autoSwitchDreamview = next.autoSwitchDreamview;
   const envPath = await updateEnvServer(config, {
     MAP_EDGE_DEPLOY_MODE: config.edgeDeploy.mode,
     MAP_EDGE_HOST: config.edgeDeploy.host,
     MAP_EDGE_USER: config.edgeDeploy.user,
+    MAP_EDGE_PASSWORD: config.edgeDeploy.password,
     MAP_EDGE_PORT: config.edgeDeploy.port,
     MAP_EDGE_TARGET_MAP_ROOT: config.edgeDeploy.targetMapRoot,
     MAP_EDGE_POST_DEPLOY_COMMAND: config.edgeDeploy.postDeployCommand,
+    MAP_EDGE_DOCKER_CONTAINER: config.edgeDeploy.dockerContainer,
+    MAP_EDGE_NATIVE_MAP_TOOLS: config.edgeDeploy.nativeMapTools === false ? 'false' : 'true',
+    MAP_EDGE_AUTO_SWITCH_DREAMVIEW: config.edgeDeploy.autoSwitchDreamview === false ? 'false' : 'true',
   });
   return {
     deployConfig: getDeployConfig(config),
@@ -357,10 +388,367 @@ function buildScpBaseArgs(config) {
   return args;
 }
 
+function hasEdgePassword(config) {
+  return Boolean(String(config.edgeDeploy?.password || '').trim());
+}
+
+function createEdgeSshConnection(config) {
+  const conn = new SshClient();
+  const options = {
+    host: config.edgeDeploy.host,
+    port: config.edgeDeploy.port || 22,
+    username: config.edgeDeploy.user,
+    password: config.edgeDeploy.password,
+    readyTimeout: 10000,
+  };
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const rejectOnce = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    };
+    conn.once('ready', () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      conn.removeListener('error', rejectOnce);
+      conn.removeListener('close', onCloseBeforeReady);
+      conn.on('error', () => {});
+      resolve(conn);
+    });
+    const onCloseBeforeReady = () => rejectOnce(new Error('SSH connection closed before ready'));
+    conn.once('error', rejectOnce);
+    conn.once('close', onCloseBeforeReady);
+    conn.connect(options);
+  });
+}
+
+async function runEdgeSshCommand(config, command, options = {}) {
+  if (!hasEdgePassword(config)) {
+    return runCommand('ssh', [...buildSshBaseArgs(config), command], options);
+  }
+  const timeoutMs = options.timeoutMs || 30000;
+  const conn = await createEdgeSshConnection(config);
+  return new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const settle = (callback) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      conn.removeListener('error', onConnectionError);
+      conn.removeListener('close', onConnectionClose);
+      conn.end();
+      callback();
+    };
+    const onConnectionError = (error) => {
+      settle(() => reject(error));
+    };
+    const onConnectionClose = () => {
+      settle(() => reject(new Error(`SSH connection closed before command finished: ${command}`)));
+    };
+    const timer = setTimeout(() => {
+      settle(() => reject(new Error(`command timed out after ${timeoutMs}ms: ${command}`)));
+    }, timeoutMs);
+    conn.on('error', onConnectionError);
+    conn.once('close', onConnectionClose);
+    conn.exec(command, (error, stream) => {
+      if (error) {
+        settle(() => reject(error));
+        return;
+      }
+      stream.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
+      stream.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      stream.on('error', (streamError) => {
+        settle(() => reject(streamError));
+      });
+      stream.on('close', (code, signal) => {
+        const result = { command: 'ssh', args: [command], code: code || 0, signal, stdout, stderr };
+        if ((code || 0) !== 0) {
+          const err = new Error(`command exited with code ${code}: ${command}\n${stderr || stdout}`.trim());
+          err.result = result;
+          settle(() => reject(err));
+          return;
+        }
+        settle(() => resolve(result));
+      });
+    });
+  });
+}
+
+function sftpMkdir(sftp, remoteDir) {
+  return new Promise((resolve) => {
+    sftp.mkdir(remoteDir, (error) => {
+      resolve(!error);
+    });
+  });
+}
+
+function sftpFastPut(sftp, localPath, remotePath) {
+  return new Promise((resolve, reject) => {
+    sftp.fastPut(localPath, remotePath, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function uploadDirectoryWithSftp(config, localDir, remoteParentDir) {
+  if (!hasEdgePassword(config)) {
+    const copyTarget = `${buildEdgeTarget(config)}:${remoteParentDir}/`;
+    return runCommand('scp', [...buildScpBaseArgs(config), '-r', localDir, copyTarget], {
+      timeoutMs: 10 * 60 * 1000,
+    });
+  }
+  await runEdgeSshCommand(config, `mkdir -p ${quoteShell(remoteParentDir)}`, { timeoutMs: 30000 });
+  const conn = await createEdgeSshConnection(config);
+  const startedAt = Date.now();
+  let fileCount = 0;
+  let byteCount = 0;
+  try {
+    const sftp = await new Promise((resolve, reject) => {
+      conn.sftp((error, client) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(client);
+      });
+    });
+    const uploadDir = async (sourceDir, targetDir) => {
+      await sftpMkdir(sftp, targetDir);
+      const entries = await fsp.readdir(sourceDir, { withFileTypes: true });
+      for (const entry of entries) {
+        const sourcePath = path.join(sourceDir, entry.name);
+        const targetPath = `${targetDir}/${entry.name}`;
+        if (entry.isDirectory()) {
+          await uploadDir(sourcePath, targetPath);
+          continue;
+        }
+        if (entry.isFile()) {
+          const stat = await fsp.stat(sourcePath);
+          await sftpFastPut(sftp, sourcePath, targetPath);
+          fileCount += 1;
+          byteCount += stat.size;
+        }
+      }
+    };
+    await uploadDir(localDir, `${remoteParentDir}/${path.basename(localDir)}`);
+    return {
+      command: 'sftp',
+      args: [localDir, remoteParentDir],
+      code: 0,
+      signal: null,
+      stdout: `uploaded ${fileCount} files, ${byteCount} bytes in ${Date.now() - startedAt}ms`,
+      stderr: '',
+    };
+  } finally {
+    conn.end();
+  }
+}
+
 function createDeploymentId(prefix = 'deploy') {
   return `${prefix}-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random()
     .toString(36)
     .slice(2, 8)}`;
+}
+
+function summarizeCoordinateBounds(points) {
+  if (!points.length) {
+    return null;
+  }
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    spanX: maxX - minX,
+    spanY: maxY - minY,
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2,
+    pointCount: points.length,
+  };
+}
+
+function parseApolloMapCoordinateBounds(text) {
+  const points = [];
+  let pendingX = null;
+  const pattern = /\b([xy]):\s*(-?\d+(?:\.\d+)?)/g;
+  let match = null;
+  while ((match = pattern.exec(String(text || '')))) {
+    const axis = match[1];
+    const value = Number(match[2]);
+    if (!Number.isFinite(value)) {
+      continue;
+    }
+    if (axis === 'x') {
+      pendingX = value;
+      continue;
+    }
+    if (axis === 'y' && Number.isFinite(pendingX)) {
+      points.push({ x: pendingX, y: value });
+      pendingX = null;
+    }
+  }
+  return summarizeCoordinateBounds(points);
+}
+
+async function readApolloMapCoordinateBounds(mapDir) {
+  const baseMapTextPath = path.join(mapDir, 'base_map.txt');
+  if (!(await pathExists(baseMapTextPath))) {
+    return null;
+  }
+  return parseApolloMapCoordinateBounds(await fsp.readFile(baseMapTextPath, 'utf8'));
+}
+
+function isGlobalApolloCoordinateBounds(bounds) {
+  if (!bounds) {
+    return false;
+  }
+  if (![bounds.centerX, bounds.centerY, bounds.spanX, bounds.spanY].every(Number.isFinite)) {
+    return false;
+  }
+  return Math.max(Math.abs(bounds.centerX), Math.abs(bounds.centerY)) > 100000 && bounds.spanX < 100000 && bounds.spanY < 100000;
+}
+
+function coordinateDistance(left, right) {
+  const dx = Number(left.centerX) - Number(right.centerX);
+  const dy = Number(left.centerY) - Number(right.centerY);
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function formatCoordinateBounds(bounds) {
+  if (!bounds) {
+    return 'unavailable';
+  }
+  return `x=${bounds.minX.toFixed(3)}..${bounds.maxX.toFixed(3)}, y=${bounds.minY.toFixed(3)}..${bounds.maxY.toFixed(
+    3
+  )}, center=${bounds.centerX.toFixed(3)},${bounds.centerY.toFixed(3)}`;
+}
+
+async function fetchEdgeReferenceMapBounds(config, remoteRoot, currentMapName) {
+  const script = `
+import json, os, re
+root = os.environ.get('MAP_ROOT', '/apollo/modules/map/data')
+current = os.environ.get('CURRENT_MAP', '')
+pattern = re.compile(r'\\b([xy]):\\s*(-?\\d+(?:\\.\\d+)?)')
+items = []
+for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+    if not name or name == current or name.startswith('.'):
+        continue
+    path = os.path.join(root, name, 'base_map.txt')
+    if not os.path.exists(path):
+        continue
+    text = open(path, encoding='utf-8', errors='ignore').read()
+    xs, ys, pending_x = [], [], None
+    for axis, raw in pattern.findall(text):
+        value = float(raw)
+        if axis == 'x':
+            pending_x = value
+        elif pending_x is not None:
+            xs.append(pending_x)
+            ys.append(value)
+            pending_x = None
+    if xs and ys:
+        items.append({
+            'mapName': name,
+            'minX': min(xs), 'maxX': max(xs),
+            'minY': min(ys), 'maxY': max(ys),
+            'spanX': max(xs) - min(xs),
+            'spanY': max(ys) - min(ys),
+            'centerX': (min(xs) + max(xs)) / 2.0,
+            'centerY': (min(ys) + max(ys)) / 2.0,
+            'pointCount': len(xs),
+        })
+print(json.dumps(items))
+`;
+  const remoteCommand = [
+    `MAP_ROOT=${quoteShell(remoteRoot)}`,
+    `CURRENT_MAP=${quoteShell(currentMapName)}`,
+    'python3',
+    '-c',
+    quoteShell(script),
+  ].join(' ');
+  const container = String(config.edgeDeploy.dockerContainer || '').trim();
+  const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, remoteCommand) : remoteCommand, {
+    timeoutMs: 30000,
+  });
+  return JSON.parse(result.stdout || '[]');
+}
+
+async function validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir, remoteRoot) {
+  const localBounds = await readApolloMapCoordinateBounds(sourceDir);
+  if (!localBounds) {
+    throw new Error(`released map coordinate validation failed: base_map.txt has no x/y coordinates: ${sourceDir}`);
+  }
+  if (!isGlobalApolloCoordinateBounds(localBounds)) {
+    throw new Error(
+      `released map coordinate validation failed: ${mapName} appears to use local/editor coordinates (${formatCoordinateBounds(
+        localBounds
+      )}); configure apolloOrigin/utmOrigin before edge deployment`
+    );
+  }
+  const allReferences = await fetchEdgeReferenceMapBounds(config, remoteRoot, mapName);
+  const references = allReferences.filter(isGlobalApolloCoordinateBounds);
+  if (references.length === 0) {
+    throw new Error(
+      `released map coordinate validation failed: no global-coordinate reference maps were found on edge under ${remoteRoot}`
+    );
+  }
+  const nearestReference = references
+    .map((reference) => ({
+      ...reference,
+      distanceMeters: coordinateDistance(localBounds, reference),
+    }))
+    .sort((left, right) => left.distanceMeters - right.distanceMeters)[0];
+  const maxDistanceMeters = Number(config.edgeDeploy.coordinateValidationMaxDistanceMeters || 5000);
+  if (nearestReference.distanceMeters > maxDistanceMeters) {
+    throw new Error(
+      [
+        `released map coordinate validation failed: ${mapName} is ${nearestReference.distanceMeters.toFixed(
+          1
+        )}m from nearest edge reference map ${nearestReference.mapName}`,
+        `new=${formatCoordinateBounds(localBounds)}`,
+        `reference=${formatCoordinateBounds(nearestReference)}`,
+        `maxDistanceMeters=${maxDistanceMeters}`,
+      ].join('; ')
+    );
+  }
+  return {
+    localBounds,
+    referencesChecked: references.length,
+    nearestReference,
+    maxDistanceMeters,
+    passed: true,
+  };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function getDeploymentHistoryPath(config) {
@@ -696,13 +1084,23 @@ async function getApolloLiteStatus(config) {
   const defaultMapFlag = await readApolloLiteDefaultMapFlag(apolloLite.root);
   const stagingReady = apolloLite.enabled && Boolean(apolloLite.mapRoot) && mapRootWritable;
   const dreamviewRuntimeAvailable = Boolean(cyberLaunchPath && dreamviewPath && frontendAssetPath);
+  const dreamviewProbeUrl = getDreamviewHealthProbeUrl(apolloLite);
   const dreamviewHttp = dreamviewRuntimeAvailable
-    ? await probeHttpUrl(apolloLite.dreamviewUrl)
+    ? await probeHttpUrl(dreamviewProbeUrl)
     : {
-      url: apolloLite.dreamviewUrl,
+      url: dreamviewProbeUrl,
       ok: false,
       message: 'Dreamview runtime is not built or configured',
     };
+  const dreamviewPublicHttp =
+    dreamviewRuntimeAvailable && apolloLite.dreamviewUrl && apolloLite.dreamviewUrl !== dreamviewProbeUrl
+      ? await probeHttpUrl(apolloLite.dreamviewUrl).catch((error) => ({
+        url: apolloLite.dreamviewUrl,
+        ok: false,
+        error: error.message,
+        message: error.message,
+      }))
+      : dreamviewHttp;
   const dreamviewHttpReady = Boolean(dreamviewHttp.ok);
   const simulationReady =
     stagingReady && (Boolean(apolloLite.validationCommand) || (dreamviewRuntimeAvailable && dreamviewHttpReady));
@@ -720,9 +1118,9 @@ async function getApolloLiteStatus(config) {
     : apolloLite.validationCommand
       ? 'ApolloLite validation command is configured'
         : dreamviewRuntimeAvailable && dreamviewHttpReady
-          ? `ApolloLite Dreamview is reachable at ${apolloLite.dreamviewUrl}`
+          ? `ApolloLite Dreamview is reachable at ${dreamviewProbeUrl}`
           : dreamviewRuntimeAvailable
-            ? `ApolloLite Dreamview is built, but not reachable at ${apolloLite.dreamviewUrl}: ${dreamviewHttp.message || 'no response'}`
+            ? `ApolloLite Dreamview is built, but not reachable at ${dreamviewProbeUrl}: ${dreamviewHttp.message || 'no response'}`
             : 'ApolloLite map staging is ready, but Dreamview runtime is not built or configured';
   return {
     ...apolloLite,
@@ -735,7 +1133,9 @@ async function getApolloLiteStatus(config) {
     simulationReady,
     dreamviewRuntimeAvailable,
     dreamviewHttpReady,
+    dreamviewProbeUrl,
     dreamviewHttp,
+    dreamviewPublicHttp,
     cyberLaunchAvailable: Boolean(cyberLaunchPath),
     dreamviewBinaryAvailable: Boolean(dreamviewPath),
     monitorAvailable: Boolean(monitorPath),
@@ -824,6 +1224,7 @@ async function listReleasedMaps(config) {
     const sizeBytes = await getDirectorySize(mapDir);
     const missingExpectedFiles = expectedFiles.filter((fileName) => !files.includes(fileName));
     const ready = missingExpectedFiles.length === 0 && sizeBytes > 0;
+    const selectable = isSelectableReleasedMapName(mapName);
     maps.push({
       mapName,
       path: mapDir,
@@ -833,12 +1234,21 @@ async function listReleasedMaps(config) {
       expectedFiles,
       missingExpectedFiles,
       ready,
+      selectable,
       status: ready ? 'ready' : 'invalid',
       statusMessage: ready ? 'Ready for deployment and simulation' : `Missing ${missingExpectedFiles.join(', ') || 'valid map files'}`,
     });
   }
   maps.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
   return maps;
+}
+
+function isSelectableReleasedMapName(mapName) {
+  const normalized = String(mapName || '').trim();
+  if (!normalized || normalized.startsWith('.')) {
+    return false;
+  }
+  return !/\.bak(?:-|$)/u.test(normalized);
 }
 
 async function getReleasedMapSummary(config, mapName) {
@@ -859,9 +1269,9 @@ async function requireReleasedMapReady(config, mapName) {
 }
 
 async function selectLatestReadyReleasedMap(config) {
-  const maps = await listReleasedMaps(config);
+  const maps = (await listReleasedMaps(config)).filter((map) => map.selectable);
   if (maps.length === 0) {
-    throw new Error(`no released maps found at ${config.releaseRoot}`);
+    throw new Error(`no non-backup released maps found at ${config.releaseRoot}`);
   }
   const latestReady = maps.find((map) => map.ready);
   if (latestReady) {
@@ -1405,9 +1815,9 @@ async function selectReleasedMapName(config, mapName) {
   if (mapName) {
     return validateMapName(mapName);
   }
-  const maps = await listReleasedMaps(config);
+  const maps = (await listReleasedMaps(config)).filter((map) => map.selectable);
   if (maps.length === 0) {
-    throw new Error(`no released maps found at ${config.releaseRoot}`);
+    throw new Error(`no non-backup released maps found at ${config.releaseRoot}`);
   }
   const rejected = [];
   for (const map of maps) {
@@ -1476,6 +1886,144 @@ async function updateApolloLiteDefaultMapFlag(apolloLite, mapName) {
   };
 }
 
+function resolveApolloLitePlanningConfPath(apolloLite) {
+  if (!apolloLite.root) {
+    return '';
+  }
+  return path.join(apolloLite.root, ...APOLLOLITE_PLANNING_CONF.split('/'));
+}
+
+function normalizeRequiredPlanningFlagLines(content) {
+  const lines = String(content || '').split(/\r?\n/u);
+  const updates = [];
+  let nextLines = lines;
+
+  for (const item of APOLLOLITE_REQUIRED_SIMULATION_PLANNING_FLAGS) {
+    const desiredLine = `${item.flag}=${item.value}`;
+    const flagName = item.flag.replace(/^--/u, '');
+    const positivePattern = new RegExp(`^\\s*${escapeRegExp(item.flag)}(?:=.*)?\\s*$`, 'u');
+    const negativePattern = new RegExp(`^\\s*--no${escapeRegExp(flagName)}\\s*$`, 'u');
+    let found = false;
+    let changed = false;
+    const filtered = [];
+
+    for (const line of nextLines) {
+      if (positivePattern.test(line) || negativePattern.test(line)) {
+        if (!found) {
+          filtered.push(desiredLine);
+          found = true;
+          changed = line.trim() !== desiredLine;
+        } else {
+          changed = true;
+        }
+        continue;
+      }
+      filtered.push(line);
+    }
+
+    if (!found) {
+      if (filtered.length > 0 && filtered[filtered.length - 1].trim() !== '') {
+        filtered.push('');
+      }
+      filtered.push(desiredLine);
+      changed = true;
+    }
+
+    nextLines = filtered;
+    updates.push({
+      flag: item.flag,
+      value: item.value,
+      changed,
+    });
+  }
+
+  return {
+    content: `${nextLines.join('\n').replace(/\n+$/u, '')}\n`,
+    updates,
+    changed: updates.some((item) => item.changed),
+  };
+}
+
+async function inspectApolloLitePlanningSimulationConfig(apolloLite) {
+  const confPath = resolveApolloLitePlanningConfPath(apolloLite);
+  if (!confPath) {
+    return {
+      available: false,
+      ready: true,
+      confPath,
+      message: 'ApolloLite root is not configured',
+      flags: [],
+    };
+  }
+  if (!(await pathExists(confPath))) {
+    return {
+      available: false,
+      ready: false,
+      confPath,
+      message: `planning.conf was not found: ${confPath}`,
+      flags: [],
+    };
+  }
+  const content = await fsp.readFile(confPath, 'utf8');
+  const lines = content.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const flags = APOLLOLITE_REQUIRED_SIMULATION_PLANNING_FLAGS.map((item) => {
+    const flagName = item.flag.replace(/^--/u, '');
+    const matchingLines = lines.filter(
+      (line) => line.startsWith(`${item.flag}=`) || line === item.flag || line === `--no${flagName}`
+    );
+    const desiredLine = `${item.flag}=${item.value}`;
+    return {
+      flag: item.flag,
+      value: item.value,
+      matchingLines,
+      ready: matchingLines.length === 1 && matchingLines[0] === desiredLine,
+    };
+  });
+  const ready = flags.every((item) => item.ready);
+  return {
+    available: true,
+    ready,
+    confPath,
+    flags,
+    message: ready
+      ? 'ApolloLite planning simulation flags are stable'
+      : `ApolloLite planning simulation flags need repair: ${flags
+          .filter((item) => !item.ready)
+          .map((item) => item.flag)
+          .join(', ')}`,
+  };
+}
+
+async function ensureApolloLitePlanningSimulationConfig(apolloLite, progress = async () => {}) {
+  const confPath = resolveApolloLitePlanningConfPath(apolloLite);
+  if (!confPath || !(await pathExists(confPath))) {
+    return inspectApolloLitePlanningSimulationConfig(apolloLite);
+  }
+  const original = await fsp.readFile(confPath, 'utf8');
+  const normalized = normalizeRequiredPlanningFlagLines(original);
+  if (!normalized.changed) {
+    return {
+      ...(await inspectApolloLitePlanningSimulationConfig(apolloLite)),
+      changed: false,
+      backupPath: '',
+    };
+  }
+  const backupPath = `${confPath}.mapeditor-${createDeploymentId('planning-conf')}.bak`;
+  await fsp.copyFile(confPath, backupPath).catch(() => {});
+  await fsp.writeFile(confPath, normalized.content, 'utf8');
+  await progress(
+    `Updated ApolloLite planning simulation config: ${APOLLOLITE_REQUIRED_SIMULATION_PLANNING_FLAGS
+      .map((item) => `${item.flag}=${item.value}`)
+      .join(', ')}`
+  );
+  return {
+    ...(await inspectApolloLitePlanningSimulationConfig(apolloLite)),
+    changed: true,
+    backupPath,
+    updates: normalized.updates,
+  };
+}
+
 async function cleanupApolloLiteStaleRuntimeMapDirs(apolloLite, mapName, apolloLiteMapName, progress = async () => {}) {
   if (!apolloLite.mapRoot || !mapName || !apolloLiteMapName || !(await pathExists(apolloLite.mapRoot))) {
     return {
@@ -1531,6 +2079,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     throw new Error(`ApolloLite map root is not writable: ${apolloLite.mapRoot}`);
   }
 
+  const planningSimulationConfig = await ensureApolloLitePlanningSimulationConfig(apolloLite, progress);
   const mapName = await selectReleasedMapName(config, params.mapName);
   const apolloLiteMapName = createApolloLiteRuntimeMapName(mapName);
   await progress(`Checking released map for ApolloLite: ${mapName}`);
@@ -1564,6 +2113,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     warnings: stageWarnings,
     removedEmptyBinaries,
     apolloLiteRoot: apolloLite.root,
+    planningSimulationConfig,
   };
   await fsp.writeFile(path.join(stagingDir, 'mapeditor_apollolite_stage.json'), JSON.stringify(stageManifest, null, 2), 'utf8');
   await fsp.rm(targetDir, { recursive: true, force: true });
@@ -1629,11 +2179,13 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
       simulationReady: apolloLite.simulationReady,
       simulationMessage: apolloLite.simulationMessage,
       validationCommandConfigured: apolloLite.validationCommandConfigured,
+      planningSimulationConfig,
     },
     defaultMapFlag,
     staleSimulationCleanup,
     dreamviewChange,
     dreamviewRestart,
+    planningSimulationConfig,
     warnings: stageWarnings,
     removedEmptyBinaries,
   });
@@ -1662,6 +2214,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     staleSimulationCleanup,
     dreamviewChange,
     dreamviewRestart,
+    planningSimulationConfig,
     validation,
     currentMapState,
     apolloLite: {
@@ -1671,6 +2224,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
       simulationReady: apolloLite.simulationReady,
       simulationMessage: apolloLite.simulationMessage,
       validationCommandConfigured: apolloLite.validationCommandConfigured,
+      planningSimulationConfig,
     },
     record,
   };
@@ -1688,6 +2242,10 @@ function buildDreamviewWebSocketUrl(apolloLite) {
   parsed.pathname = !pathname || pathname === '/' ? '/websocket' : `${pathname}/websocket`;
   parsed.search = '';
   return parsed.toString();
+}
+
+function getDreamviewHealthProbeUrl(apolloLite) {
+  return apolloLite.dreamviewProxyTarget || apolloLite.dreamviewUrl || 'http://127.0.0.1:8888';
 }
 
 function buildDreamviewMapWebSocketUrl(apolloLite) {
@@ -2157,8 +2715,10 @@ async function ensureDreamviewSimulationMode(ws, progress = async () => {}) {
 async function waitForApolloLiteDreamviewHttp(apolloLite, timeoutMs = APOLLOLITE_DREAMVIEW_RESTART_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   let lastProbe = null;
+  const probeUrl = getDreamviewHealthProbeUrl(apolloLite);
   while (Date.now() < deadline) {
-    lastProbe = await probeHttpUrl(apolloLite.dreamviewUrl).catch((error) => ({
+    lastProbe = await probeHttpUrl(probeUrl).catch((error) => ({
+      url: probeUrl,
       ok: false,
       message: error.message,
     }));
@@ -2289,6 +2849,7 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
     'export HOME=/home/dell USER=dell LOGNAME=dell XDG_CONFIG_HOME=/home/dell/.config',
     'source /apollo/scripts/apollo_base.sh >/dev/null 2>&1 || true',
     "mkdir -p /home/dell/.apollo/dreamview/plugins /apollo/data/log/mapeditor_dreamview",
+    `find /apollo/data/log/mapeditor_dreamview -maxdepth 1 -type f \\( -name 'dreamview_*.log' -o -name 'direct_dreamview.log' \\) -size +${APOLLOLITE_DREAMVIEW_LOG_MAX_MB}M -exec sh -c ': > "$1"' _ {} \\; 2>/dev/null || true`,
     "grep -v '^--sim_control_spawn_mode=' /apollo/modules/dreamview/conf/dreamview.conf > /tmp/mapeditor_dreamview.conf || true",
     "printf '%s\\n' '--sim_control_spawn_mode=legacy' >> /tmp/mapeditor_dreamview.conf",
     'cp /tmp/mapeditor_dreamview.conf /apollo/modules/dreamview/conf/dreamview.conf',
@@ -2313,7 +2874,9 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
 }
 
 async function ensureApolloLiteDreamviewReachable(apolloLite, progress = async () => {}) {
-  const currentHttp = await probeHttpUrl(apolloLite.dreamviewUrl).catch((error) => ({
+  const probeUrl = getDreamviewHealthProbeUrl(apolloLite);
+  const currentHttp = await probeHttpUrl(probeUrl).catch((error) => ({
+    url: probeUrl,
     ok: false,
     message: error.message,
   }));
@@ -2332,6 +2895,14 @@ async function ensureApolloLiteDreamviewReachable(apolloLite, progress = async (
     restart,
     http: restart.http,
   };
+}
+
+async function ensureApolloLiteDreamviewRuntime(config, progress = async () => {}) {
+  const apolloLite = getApolloLiteConfig(config);
+  if (!apolloLite.enabled) {
+    throw new Error('ApolloLite is disabled');
+  }
+  return ensureApolloLiteDreamviewReachable(apolloLite, progress);
 }
 
 async function changeDreamviewMap(apolloLite, mapName) {
@@ -2695,6 +3266,13 @@ async function diagnoseApolloLiteRuntime(config) {
     failures: [],
     latestFailure: null,
   }));
+  const planningSimulationConfig = await inspectApolloLitePlanningSimulationConfig(apolloLite).catch((error) => ({
+    available: false,
+    ready: false,
+    error: error.message,
+    message: error.message,
+    flags: [],
+  }));
   let hmi = null;
   let mapData = null;
   if (apolloLite.dreamviewHttpReady) {
@@ -2751,6 +3329,11 @@ async function diagnoseApolloLiteRuntime(config) {
       message: pncProcessHealth.message,
     },
     {
+      name: 'planning-sim-config',
+      status: planningSimulationConfig.ready ? 'ok' : 'warning',
+      message: planningSimulationConfig.message || planningSimulationConfig.error || '',
+    },
+    {
       name: 'dreamview-map-data',
       status: mapData?.ok ? 'ok' : 'error',
       message: mapData?.ok ? `${mapData.mapData.bytes} bytes` : mapData?.error || 'Dreamview map data was not checked',
@@ -2764,6 +3347,7 @@ async function diagnoseApolloLiteRuntime(config) {
     flagfile,
     processes,
     pncProcessHealth,
+    planningSimulationConfig,
     currentMapState,
     routingDiagnostics,
     hmi,
@@ -2778,6 +3362,13 @@ async function repairApolloLiteRuntime(config, progress = async () => {}) {
   }));
   const apolloLite = await getApolloLiteStatus(config);
   const actions = [];
+
+  actions.push({
+    name: 'ensure-planning-sim-config',
+    result: await ensureApolloLitePlanningSimulationConfig(apolloLite, progress).catch((error) => ({
+      error: error.message,
+    })),
+  });
 
   const flagMapName = apolloLite.defaultMapName || '';
   if (flagMapName) {
@@ -2857,6 +3448,7 @@ async function resetApolloLiteSimulationSession(config, progress = async () => {
     await progress(`Normalizing ApolloLite map_dir before simulation reset: ${targetMapName}`);
     await updateApolloLiteDefaultMapFlag(apolloLite, targetMapName);
   }
+  const planningSimulationConfig = await ensureApolloLitePlanningSimulationConfig(apolloLite, progress);
   const dreamviewRuntime = await ensureApolloLiteDreamviewReachable(apolloLite, progress);
   await progress('Stopping stale ApolloLite PNC stack before reset');
   const pncCleanup = await stopApolloLiteStaleSimulationProcesses(apolloLite, progress).catch((error) => ({
@@ -2913,6 +3505,7 @@ async function resetApolloLiteSimulationSession(config, progress = async () => {
     pncStack,
     postWsPncCleanup,
     postWsPncStack,
+    planningSimulationConfig,
     wsUrl,
     mapSwitch,
     modeSwitch,
@@ -7360,13 +7953,19 @@ function getDeployConfig(config) {
     user: edge.user,
     port: edge.port || 22,
     target: buildEdgeTarget(config),
+    passwordConfigured: Boolean(edge.password),
+    authMethod: edge.password ? 'password' : 'key',
     targetMapRoot: edge.targetMapRoot,
     postDeployCommand: edge.postDeployCommand || '',
     postDeployCommandConfigured: Boolean(edge.postDeployCommand),
+    dockerContainer: edge.dockerContainer || '',
+    nativeMapTools: edge.nativeMapTools !== false,
+    autoSwitchDreamview: edge.autoSwitchDreamview !== false,
+    coordinateValidationMaxDistanceMeters: edge.coordinateValidationMaxDistanceMeters || 5000,
   };
 }
 
-async function preflightEdgeDeploy(config) {
+async function preflightEdgeDeploy(config, params = {}) {
   const deployConfig = getDeployConfig(config);
   const checks = [];
   const addCheck = (name, ok, severity, message, details = null) => {
@@ -7410,10 +8009,8 @@ async function preflightEdgeDeploy(config) {
     };
   }
 
-  const sshBaseArgs = buildSshBaseArgs(config);
-
   try {
-    const result = await runCommand('ssh', [...sshBaseArgs, 'echo mapeditor-ok'], {
+    const result = await runEdgeSshCommand(config, 'echo mapeditor-ok', {
       timeoutMs: 10000,
     });
     addCheck('ssh-connectivity', true, 'error', `SSH connectivity ok: ${result.stdout.trim()}`);
@@ -7422,26 +8019,124 @@ async function preflightEdgeDeploy(config) {
   }
 
   try {
+    const hostWritableDir = config.edgeDeploy.dockerContainer ? '/tmp/mapeditor_uploads' : deployConfig.targetMapRoot;
     const remoteCommand = [
       'mkdir',
       '-p',
-      quoteShell(deployConfig.targetMapRoot),
+      quoteShell(hostWritableDir),
       '&&',
       'test',
       '-w',
-      quoteShell(deployConfig.targetMapRoot),
+      quoteShell(hostWritableDir),
     ].join(' ');
-    await runCommand('ssh', [...sshBaseArgs, remoteCommand], {
+    await runEdgeSshCommand(config, remoteCommand, {
       timeoutMs: 10000,
     });
-    addCheck('target-map-root', true, 'error', `Target map root is writable: ${deployConfig.targetMapRoot}`);
+    addCheck(
+      config.edgeDeploy.dockerContainer ? 'host-upload-root' : 'target-map-root',
+      true,
+      'error',
+      config.edgeDeploy.dockerContainer
+        ? `Host upload root is writable: ${hostWritableDir}`
+        : `Target map root is writable: ${deployConfig.targetMapRoot}`
+    );
   } catch (error) {
     addCheck(
-      'target-map-root',
+      config.edgeDeploy.dockerContainer ? 'host-upload-root' : 'target-map-root',
       false,
       'error',
-      `Target map root is not writable: ${deployConfig.targetMapRoot}`,
+      config.edgeDeploy.dockerContainer
+        ? 'Host upload root is not writable: /tmp/mapeditor_uploads'
+        : `Target map root is not writable: ${deployConfig.targetMapRoot}`,
       error.message
+    );
+  }
+
+  if (config.edgeDeploy.dockerContainer) {
+    try {
+      const result = await runEdgeSshCommand(
+        config,
+        dockerExecCommand(
+          config.edgeDeploy.dockerContainer,
+          `mkdir -p ${quoteShell(deployConfig.targetMapRoot)} && test -w ${quoteShell(deployConfig.targetMapRoot)}`
+        ),
+        {
+          timeoutMs: 10000,
+        }
+      );
+      addCheck(
+        'edge-docker-container',
+        true,
+        'warning',
+        `Docker container is usable: ${config.edgeDeploy.dockerContainer}`,
+        result.stderr || null
+      );
+    } catch (error) {
+      addCheck(
+        'edge-docker-container',
+        false,
+        'warning',
+        `Docker container is not usable: ${config.edgeDeploy.dockerContainer}`,
+        error.message
+      );
+    }
+  }
+
+  if (deployConfig.autoSwitchDreamview) {
+    try {
+      const command = buildEdgeDreamviewPreflightCommand();
+      const result = await runEdgeSshCommand(
+        config,
+        config.edgeDeploy.dockerContainer ? dockerExecCommand(config.edgeDeploy.dockerContainer, command) : command,
+        {
+          timeoutMs: 10000,
+        }
+      );
+      addCheck(
+        'edge-dreamview-switch',
+        true,
+        'error',
+        'Dreamview switch target is writable and restartable',
+        result.stderr || null
+      );
+    } catch (error) {
+      addCheck(
+        'edge-dreamview-switch',
+        false,
+        'error',
+        'Dreamview cannot be switched automatically after deployment',
+        error.message
+      );
+    }
+  } else {
+    addCheck('edge-dreamview-switch', true, 'warning', 'Dreamview auto switch is disabled');
+  }
+
+  try {
+    const selectedMapName = String(params.mapName || '').trim();
+    const selected = selectedMapName ? await requireReleasedMapReady(config, selectedMapName) : await selectLatestReadyReleasedMap(config);
+    const mapName = selectedMapName || selected.mapName;
+    const sourceDir = path.join(config.releaseRoot, mapName);
+    const remoteRoot = deployConfig.targetMapRoot.replace(/\/+$/, '');
+    const validation = await validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir, remoteRoot);
+    addCheck(
+      'selected-map-coordinates',
+      true,
+      'error',
+      `Released map coordinates ok: ${mapName}; ${formatCoordinateBounds(validation.localBounds)}`,
+      validation
+    );
+  } catch (error) {
+    const message = error?.message || String(error);
+    const missingRelease = /no .*released map|released map not found/i.test(message);
+    addCheck(
+      'selected-map-coordinates',
+      false,
+      missingRelease ? 'warning' : 'error',
+      missingRelease
+        ? `No released map is available for coordinate validation: ${message}`
+        : `Released map coordinate validation failed: ${message}`,
+      message
     );
   }
 
@@ -7451,6 +8146,99 @@ async function preflightEdgeDeploy(config) {
     deployConfig,
     checks,
   };
+}
+
+function dockerExecCommand(container, command) {
+  return `docker exec ${quoteShell(container)} bash -lc ${quoteShell(command)}`;
+}
+
+function buildEdgeDreamviewPreflightCommand() {
+  return [
+    'set -e',
+    'test -f /apollo/cyber/setup.bash',
+    'test -d /apollo/modules/common/data',
+    'test -w /apollo/modules/common/data',
+    'test -x /apollo/bazel-bin/cyber/tools/cyber_launch/cyber_launch',
+    'test -f /apollo/modules/dreamview/launch/dreamview.launch',
+    'test -x /apollo/bazel-bin/modules/dreamview/dreamview',
+  ].join(' && ');
+}
+
+function buildEdgeDreamviewSwitchCommand(mapDir) {
+  return [
+    'set -e',
+    'SETUP=/apollo/cyber/setup.bash',
+    'LAUNCH=/apollo/bazel-bin/cyber/tools/cyber_launch/cyber_launch',
+    'LAUNCH_FILE=/apollo/modules/dreamview/launch/dreamview.launch',
+    `MAP_DIR=${quoteShell(mapDir)}`,
+    'FLAG=/apollo/modules/common/data/global_flagfile.txt',
+    'BIN=/apollo/bazel-bin/modules/dreamview/dreamview',
+    'LOG=/apollo/data/log/mapeditor_dreamview_restart.log',
+    '. "$SETUP"',
+    '[ -d "$MAP_DIR" ] || { echo "missing map dir: $MAP_DIR" >&2; exit 2; }',
+    'mkdir -p "$(dirname "$FLAG")" "$(dirname "$LOG")"',
+    'write_map_flag() {',
+    '  tmp=$(mktemp)',
+    '  if [ -f "$FLAG" ]; then awk \'$0 !~ /^--map_dir=/ {print}\' "$FLAG" > "$tmp" || true; fi',
+    '  printf "%s\\n" "--map_dir=$MAP_DIR" >> "$tmp"',
+    '  cat "$tmp" > "$FLAG"',
+    '  rm -f "$tmp"',
+    '}',
+    'write_map_flag',
+    '[ -x "$BIN" ] || { echo "dreamview binary not found: $BIN" >&2; exit 3; }',
+    '[ -x "$LAUNCH" ] || { echo "cyber_launch not found: $LAUNCH" >&2; exit 4; }',
+    '[ -f "$LAUNCH_FILE" ] || { echo "dreamview launch not found: $LAUNCH_FILE" >&2; exit 5; }',
+    'self=$$',
+    'pids=$(ps -eo pid=,comm=,args= | awk -v self="$self" \'$1 != self && (($2 == "dreamview" && $0 ~ /bazel-bin\\/modules\\/dreamview\\/dreamview/) || ($2 == "python3" && $0 ~ /cyber_launch[.]py start \\/apollo\\/modules\\/dreamview\\/launch\\/dreamview[.]launch/)) {print $1}\')',
+    'if [ -n "$pids" ]; then kill $pids || true; fi',
+    'for i in $(seq 1 20); do',
+    '  ps -eo comm=,args= | grep -E "^dreamview .*bazel-bin/modules/dreamview/dreamview|^python3 .*cyber_launch[.]py start /apollo/modules/dreamview/launch/dreamview[.]launch" >/dev/null || break',
+    '  sleep 0.5',
+    'done',
+    'nohup bash -lc ". \\"$SETUP\\"; \\"$LAUNCH\\" start \\"$LAUNCH_FILE\\"" > "$LOG" 2>&1 < /dev/null &',
+    'for i in $(seq 1 20); do',
+      '  curl -fsS http://127.0.0.1:8888/ >/dev/null 2>&1 && break',
+      '  sleep 0.5',
+    'done',
+    'curl -fsS http://127.0.0.1:8888/ >/dev/null',
+    'write_map_flag',
+    'echo "dreamview switched to $MAP_DIR"',
+    'ps -eo pid=,comm=,args= | awk \'$2 == "dreamview" {print}\'',
+  ].join('\n');
+}
+
+async function switchEdgeDreamviewMap(config, mapDir, progress = async () => {}) {
+  if (config.edgeDeploy.autoSwitchDreamview === false) {
+    return null;
+  }
+  const container = String(config.edgeDeploy.dockerContainer || '').trim();
+  await progress(`Switching Dreamview to deployed map: ${mapDir}`);
+  const command = buildEdgeDreamviewSwitchCommand(mapDir);
+  return runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
+    timeoutMs: 90 * 1000,
+  });
+}
+
+async function runEdgeNativeMapTools(config, mapDir, progress = async () => {}) {
+  const container = String(config.edgeDeploy.dockerContainer || '').trim();
+  if (!container || config.edgeDeploy.nativeMapTools === false) {
+    return null;
+  }
+  await progress('Regenerating Apollo native map binaries on edge');
+  const command = [
+    'set -e',
+    `d=${quoteShell(mapDir)}`,
+    'if [ -x /apollo/bazel-bin/modules/map/tools/bin_map_generator ]; then',
+    '  /apollo/bazel-bin/modules/map/tools/bin_map_generator --map_dir="$d" --output_dir="$d";',
+    'fi',
+    'if [ -x /apollo/bazel-bin/modules/map/tools/sim_map_generator ]; then',
+    '  /apollo/bazel-bin/modules/map/tools/sim_map_generator --map_dir="$d" --output_dir="$d";',
+    'fi',
+    'ls -lh "$d"/base_map.* "$d"/sim_map.* "$d"/routing_map.* 2>/dev/null || true',
+  ].join('\n');
+  return runEdgeSshCommand(config, dockerExecCommand(container, command), {
+    timeoutMs: 3 * 60 * 1000,
+  });
 }
 
 async function runLocalConverter(config, mapName, jsonPath, releaseDir, baseMapDir) {
@@ -7574,47 +8362,77 @@ async function deployReleasedMap(config, params = {}) {
         .join('; ');
       throw new Error(`edge deploy preflight failed: ${failedChecks}`);
     }
-    const edgeTarget = buildEdgeTarget(config);
-    const sshBaseArgs = buildSshBaseArgs(config);
+    const dockerContainer = String(config.edgeDeploy.dockerContainer || '').trim();
     const remoteRoot = config.edgeDeploy.targetMapRoot.replace(/\/+$/, '');
     const remoteMapDir = `${remoteRoot}/${mapName}`;
     const backupRoot = `${remoteRoot}/.mapeditor_backups`;
     const rollbackRoot = `${remoteRoot}/.mapeditor_replaced`;
-    const uploadParent = `${remoteRoot}/.mapeditor_uploads/${deploymentId}`;
+    const uploadParent = dockerContainer ? `/tmp/mapeditor_uploads/${deploymentId}` : `${remoteRoot}/.mapeditor_uploads/${deploymentId}`;
     const backupDir = `${backupRoot}/${mapName}-${deploymentId}`;
     const remoteUploadedDir = `${uploadParent}/${path.basename(sourceDir)}`;
+    await progress(`Validating map coordinates against edge references: ${mapName}`);
+    const coordinateValidation = await validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir, remoteRoot);
     await progress(`Checking existing map on edge: ${remoteMapDir}`);
-    const hadBackupResult = await runCommand('ssh', [
-      ...sshBaseArgs,
-      `[ -d ${quoteShell(remoteMapDir)} ] && echo yes || echo no`,
-    ]);
+    const hadBackupResult = await runEdgeSshCommand(
+      config,
+      dockerContainer
+        ? dockerExecCommand(dockerContainer, `[ -d ${quoteShell(remoteMapDir)} ] && echo yes || echo no`)
+        : `[ -d ${quoteShell(remoteMapDir)} ] && echo yes || echo no`
+    );
     const hadBackup = hadBackupResult.stdout.trim() === 'yes';
-    await progress(`Preparing remote deployment directories under ${remoteRoot}`);
-    await runCommand('ssh', [
-      ...sshBaseArgs,
-      `mkdir -p ${quoteShell(uploadParent)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`,
-    ]);
-    const copyTarget = `${edgeTarget}:${uploadParent}/`;
+    await progress(
+      dockerContainer
+        ? `Preparing edge upload directory and container map root: ${dockerContainer}:${remoteRoot}`
+        : `Preparing remote deployment directories under ${remoteRoot}`
+    );
+    await runEdgeSshCommand(
+      config,
+      dockerContainer
+        ? [
+            `rm -rf ${quoteShell(uploadParent)}`,
+            `mkdir -p ${quoteShell(uploadParent)}`,
+            dockerExecCommand(
+              dockerContainer,
+              `mkdir -p ${quoteShell(remoteRoot)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`
+            ),
+          ].join(' && ')
+        : `mkdir -p ${quoteShell(uploadParent)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`
+    );
     await progress(`Copying released map to edge: ${mapName}`);
-    const copyResult = await runCommand('scp', [...buildScpBaseArgs(config), '-r', sourceDir, copyTarget], {
-      timeoutMs: 10 * 60 * 1000,
-    });
-    await progress(`Activating map on edge: ${remoteMapDir}`);
-    const activateCommand = [
-      `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(backupDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
-        backupDir
-      )} || true`,
-      `rm -rf ${quoteShell(remoteMapDir)}`,
-      `mv ${quoteShell(remoteUploadedDir)} ${quoteShell(remoteMapDir)}`,
-      `rm -rf ${quoteShell(uploadParent)}`,
-    ].join(' && ');
-    const activateResult = await runCommand('ssh', [...sshBaseArgs, activateCommand], {
+    const copyResult = await uploadDirectoryWithSftp(config, sourceDir, uploadParent);
+    await progress(dockerContainer ? `Activating map in edge container: ${remoteMapDir}` : `Activating map on edge: ${remoteMapDir}`);
+    const activateCommand = dockerContainer
+      ? [
+          dockerExecCommand(
+            dockerContainer,
+            [
+              `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(backupDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
+                backupDir
+              )} || true`,
+              `rm -rf ${quoteShell(remoteMapDir)}`,
+              `mkdir -p ${quoteShell(path.posix.dirname(remoteMapDir))}`,
+            ].join(' && ')
+          ),
+          `docker cp ${quoteShell(remoteUploadedDir)} ${quoteShell(`${dockerContainer}:${remoteMapDir}`)}`,
+          `rm -rf ${quoteShell(uploadParent)}`,
+        ].join(' && ')
+      : [
+          `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(backupDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
+            backupDir
+          )} || true`,
+          `rm -rf ${quoteShell(remoteMapDir)}`,
+          `mv ${quoteShell(remoteUploadedDir)} ${quoteShell(remoteMapDir)}`,
+          `rm -rf ${quoteShell(uploadParent)}`,
+        ].join(' && ');
+    const activateResult = await runEdgeSshCommand(config, activateCommand, {
       timeoutMs: 2 * 60 * 1000,
     });
+    const nativeMapToolsResult = await runEdgeNativeMapTools(config, remoteMapDir, progress);
+    const dreamviewSwitchResult = await switchEdgeDreamviewMap(config, remoteMapDir, progress);
     let postDeployResult = null;
     if (config.edgeDeploy.postDeployCommand) {
       await progress('Running post-deploy command on edge');
-      postDeployResult = await runCommand('ssh', [...sshBaseArgs, config.edgeDeploy.postDeployCommand]);
+      postDeployResult = await runEdgeSshCommand(config, config.edgeDeploy.postDeployCommand);
     }
     await progress('Recording deployment result');
     const record = await appendDeploymentRecord(config, {
@@ -7625,6 +8443,7 @@ async function deployReleasedMap(config, params = {}) {
       remoteMapDir,
       backupDir: hadBackup ? backupDir : null,
       hadBackup,
+      coordinateValidation,
       copy: {
         code: copyResult.code,
         stderr: copyResult.stderr,
@@ -7633,6 +8452,20 @@ async function deployReleasedMap(config, params = {}) {
         code: activateResult.code,
         stderr: activateResult.stderr,
       },
+      nativeMapTools: nativeMapToolsResult
+        ? {
+            code: nativeMapToolsResult.code,
+            stdout: nativeMapToolsResult.stdout,
+            stderr: nativeMapToolsResult.stderr,
+          }
+        : null,
+      dreamviewSwitch: dreamviewSwitchResult
+        ? {
+            code: dreamviewSwitchResult.code,
+            stdout: dreamviewSwitchResult.stdout,
+            stderr: dreamviewSwitchResult.stderr,
+          }
+        : null,
       postDeploy: postDeployResult
         ? {
             code: postDeployResult.code,
@@ -7642,7 +8475,15 @@ async function deployReleasedMap(config, params = {}) {
         : null,
     });
     await progress(`Deployment succeeded: ${mapName}`);
-    return { deployment: record, preflight, copyResult, activateResult, postDeployResult };
+    return {
+      deployment: record,
+      preflight,
+      copyResult,
+      activateResult,
+      nativeMapToolsResult,
+      dreamviewSwitchResult,
+      postDeployResult,
+    };
   } catch (error) {
     await appendDeploymentRecord(config, {
       ...baseRecord,
@@ -7692,11 +8533,11 @@ async function rollbackDeployment(config, params = {}) {
       .join('; ');
     throw new Error(`edge deploy preflight failed: ${failedChecks}`);
   }
-  const sshBaseArgs = buildSshBaseArgs(config);
+  const dockerContainer = String(config.edgeDeploy.dockerContainer || '').trim();
   const remoteRoot = config.edgeDeploy.targetMapRoot.replace(/\/+$/, '');
   const remoteMapDir = targetRecord.remoteMapDir || `${remoteRoot}/${targetRecord.mapName}`;
   const replacedDir = `${remoteRoot}/.mapeditor_replaced/${targetRecord.mapName}-${rollbackId}`;
-  const rollbackCommand = [
+  const rollbackInnerCommand = [
     `[ -d ${quoteShell(targetRecord.backupDir)} ]`,
     `mkdir -p ${quoteShell(path.posix.dirname(replacedDir))}`,
     `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(replacedDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
@@ -7704,13 +8545,16 @@ async function rollbackDeployment(config, params = {}) {
     )} || true`,
     `mv ${quoteShell(targetRecord.backupDir)} ${quoteShell(remoteMapDir)}`,
   ].join(' && ');
+  const rollbackCommand = dockerContainer ? dockerExecCommand(dockerContainer, rollbackInnerCommand) : rollbackInnerCommand;
   try {
-    const rollbackResult = await runCommand('ssh', [...sshBaseArgs, rollbackCommand], {
+    const rollbackResult = await runEdgeSshCommand(config, rollbackCommand, {
       timeoutMs: 2 * 60 * 1000,
     });
+    const nativeMapToolsResult = await runEdgeNativeMapTools(config, remoteMapDir);
+    const dreamviewSwitchResult = await switchEdgeDreamviewMap(config, remoteMapDir);
     let postDeployResult = null;
     if (config.edgeDeploy.postDeployCommand) {
-      postDeployResult = await runCommand('ssh', [...sshBaseArgs, config.edgeDeploy.postDeployCommand]);
+      postDeployResult = await runEdgeSshCommand(config, config.edgeDeploy.postDeployCommand);
     }
     const record = await appendDeploymentRecord(config, {
       id: rollbackId,
@@ -7729,6 +8573,20 @@ async function rollbackDeployment(config, params = {}) {
         stdout: rollbackResult.stdout,
         stderr: rollbackResult.stderr,
       },
+      nativeMapTools: nativeMapToolsResult
+        ? {
+            code: nativeMapToolsResult.code,
+            stdout: nativeMapToolsResult.stdout,
+            stderr: nativeMapToolsResult.stderr,
+          }
+        : null,
+      dreamviewSwitch: dreamviewSwitchResult
+        ? {
+            code: dreamviewSwitchResult.code,
+            stdout: dreamviewSwitchResult.stdout,
+            stderr: dreamviewSwitchResult.stderr,
+          }
+        : null,
       postDeploy: postDeployResult
         ? {
             code: postDeployResult.code,
@@ -7737,7 +8595,7 @@ async function rollbackDeployment(config, params = {}) {
           }
         : null,
     });
-    return { deployment: record, preflight, rollbackResult, postDeployResult };
+    return { deployment: record, preflight, rollbackResult, nativeMapToolsResult, dreamviewSwitchResult, postDeployResult };
   } catch (error) {
     await appendDeploymentRecord(config, {
       id: rollbackId,
@@ -7759,6 +8617,7 @@ module.exports = {
   getRuntimeDoctor,
   getApolloLiteStatus,
   diagnoseApolloLiteRuntime,
+  ensureApolloLiteDreamviewRuntime,
   repairApolloLiteRuntime,
   resetApolloLiteSimulationSession,
   getApolloLiteWorkflow,

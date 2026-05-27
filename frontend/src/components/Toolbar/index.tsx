@@ -13,7 +13,6 @@ import DialogOperate from './operateDialog';
 import DialogMessage from './messageDialog';
 import AssetManagerDialog from './AssetManagerDialog';
 import EdgeDeployDialog from './EdgeDeployDialog';
-import MapQualityPanel from './MapQualityPanel';
 import arrowsDown from '../../assets/images/ic_arrows_down.svg';
 import RemindModal from '../RemindModal';
 
@@ -375,75 +374,6 @@ export default function Index(prop: ToolbarProps) {
                 content: error?.message || 'Unknown error',
             });
         }
-    };
-
-    const showPreflightResult = async () => {
-        try {
-            const response = await FileService.preflightDeploy();
-            const result = response?.data;
-            const checks = result?.checks || [];
-            const content = (
-                <div className="runtime-status-modal">
-                    <p>{`预检通过: ${result?.ready ? '是' : '否'}`}</p>
-                    <p>{`目标设备: ${result?.deployConfig?.target || '未配置'}`}</p>
-                    <p>{`地图目录: ${result?.deployConfig?.targetMapRoot || ''}`}</p>
-                    <ul>
-                        {checks.map((check: any) => (
-                            <li key={check.name}>{`[${check.status}] ${check.message}`}</li>
-                        ))}
-                    </ul>
-                </div>
-            );
-            if (response?.code === 0) {
-                Modal.success({
-                    title: '部署预检通过',
-                    width: 640,
-                    content,
-                });
-                return;
-            }
-            Modal.warning({
-                title: '部署预检失败',
-                width: 640,
-                content,
-            });
-        } catch (error: any) {
-            Modal.error({
-                title: '部署预检失败',
-                content: error?.message || 'Unknown error',
-            });
-        }
-    };
-
-    const deployLatestReleasedMap = () => {
-        Modal.confirm({
-            title: '部署最新地图',
-            content: '将最新发布的地图部署到已配置的边缘设备。',
-            okText: '部署',
-            cancelText: '取消',
-            onOk: async () => {
-                try {
-                    const response = await FileService.startDeployLatestReleasedMapJob();
-                    if (response?.code !== 0) {
-                        throw new Error(response?.message || '提交部署任务失败');
-                    }
-                    const jobId = response?.data?.job?.id;
-                    if (!jobId) {
-                        throw new Error('后台任务没有返回 jobId');
-                    }
-                    const job = await waitForRuntimeJob(jobId, '部署最新地图');
-                    Modal.success({
-                        title: '部署完成',
-                        content: `地图 ${job.result?.mapName || job.result?.deployment?.mapName || ''} 已部署完成。`,
-                    });
-                } catch (error: any) {
-                    Modal.error({
-                        title: '部署失败',
-                        content: error?.message || 'Unknown error',
-                    });
-                }
-            },
-        });
     };
 
     const stageLatestMapToApolloLite = () => {
@@ -916,12 +846,6 @@ export default function Index(prop: ToolbarProps) {
             case 'apollolite-diagnose':
                 showApolloLiteDiagnosis();
                 break;
-            case 'preflight-deploy':
-                showPreflightResult();
-                break;
-            case 'deploy-latest':
-                deployLatestReleasedMap();
-                break;
             case 'apollolite-stage-latest':
                 stageLatestMapToApolloLite();
                 break;
@@ -1133,33 +1057,13 @@ export default function Index(prop: ToolbarProps) {
                         {
                             label: (
                                 <FileMenuLabel
-                                    title="边缘设备"
+                                    title="边缘设备部署"
                                     description={
-                                        canDeploy ? '添加 IP、自动发现 Apollo 地图目录并部署' : '需要管理员权限'
+                                        canDeploy ? '选择发布包、保存预检并部署到 Apollo 边缘设备' : '需要管理员权限'
                                     }
                                 />
                             ),
                             key: 'edge-device',
-                            disabled: !canDeploy,
-                        },
-                        {
-                            label: (
-                                <FileMenuLabel
-                                    title="部署预检"
-                                    description={canDeploy ? '检查服务器到边缘设备的部署条件' : '需要管理员权限'}
-                                />
-                            ),
-                            key: 'preflight-deploy',
-                            disabled: !canDeploy,
-                        },
-                        {
-                            label: (
-                                <FileMenuLabel
-                                    title="部署最新地图"
-                                    description={canDeploy ? '把最新发布地图包推送到边缘设备' : '需要管理员权限'}
-                                />
-                            ),
-                            key: 'deploy-latest',
                             disabled: !canDeploy,
                         },
                         {
@@ -1328,7 +1232,6 @@ export default function Index(prop: ToolbarProps) {
                     )}
                 </div>
             )}
-            <MapQualityPanel />
             <Tooltip
                 title="还没有编辑内容!"
                 trigger="hover"

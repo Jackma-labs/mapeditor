@@ -117,7 +117,7 @@ export function updateElements() {
             if (boundaryMesh) {
                 PubSub.publishSync('addObject', boundaryMesh);
             }
-            if (lin2Meshs) {
+            if (line2Mesh) {
                 PubSub.publishSync('addObject', line2Mesh);
             }
         } else {
@@ -160,7 +160,9 @@ export function updateElements() {
             }
         } else {
             const deleteSceneGroud = sceneGrouds[id];
-            PubSub.publishSync('removeObject', deleteSceneGroud);
+            if (deleteSceneGroud) {
+                PubSub.publishSync('removeObject', deleteSceneGroud);
+            }
         }
     });
 
@@ -177,7 +179,9 @@ export function updateElements() {
             }
         } else {
             const deleteSceneArrow = sceneArrows[id];
-            PubSub.publishSync('removeObject', deleteSceneArrow);
+            if (deleteSceneArrow) {
+                PubSub.publishSync('removeObject', deleteSceneArrow);
+            }
         }
     });
 
@@ -199,7 +203,9 @@ export function updateElements() {
             }
         } else {
             const deleteSceneTrafficLight = sceneTrafficLights[id];
-            PubSub.publishSync('removeObject', deleteSceneTrafficLight);
+            if (deleteSceneTrafficLight) {
+                PubSub.publishSync('removeObject', deleteSceneTrafficLight);
+            }
         }
     });
 
@@ -228,7 +234,9 @@ export function updateElements() {
             }
         } else {
             const deleteSceneSign = sceneSigns[id];
-            PubSub.publishSync('removeObject', deleteSceneSign);
+            if (deleteSceneSign) {
+                PubSub.publishSync('removeObject', deleteSceneSign);
+            }
         }
     });
 

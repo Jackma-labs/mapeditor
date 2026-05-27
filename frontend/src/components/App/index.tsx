@@ -5,11 +5,47 @@ import { useManagerStore } from 'src/store';
 import { clearScene } from 'src/utils/threeObjectUtil';
 import PubSub from 'pubsub-js';
 import FileService from 'src/service/index';
-import { PermissionStatus } from 'src/interface/commonInterFace';
+import { MapElementType, OperationType, PermissionStatus } from 'src/interface/commonInterFace';
 import MapEditor from '../MapEditor/index';
-import Attr from '../Attr';
 import Toolbar from '../Toolbar';
+import WorkbenchPanel from '../WorkbenchPanel';
 import { message as messageFunc } from '../Message/index';
+
+const drawElementNames: Record<number, string> = {
+    [MapElementType.Lane]: '车道',
+    [MapElementType.Junction]: '路口',
+    [MapElementType.Crosswalk]: '人行横道',
+    [MapElementType.SpeedBump]: '减速带',
+    [MapElementType.StraightLine]: '直线',
+    [MapElementType.CurveLine]: '曲线',
+    [MapElementType.StopLine]: '停止线',
+    [MapElementType.TrafficSignal]: '信号灯',
+    [MapElementType.ParkingSpace]: '停车位',
+    [MapElementType.Sign]: '标志牌',
+    [MapElementType.RoadBoundary]: '路沿',
+    [MapElementType.Area]: '区域',
+    [MapElementType.BarrierGate]: '道闸',
+};
+
+function getCurrentToolLabel(operationType: OperationType, drawElementType: MapElementType | null, ranging: boolean) {
+    if (ranging) {
+        return '测距';
+    }
+    if (operationType === OperationType.Drawing) {
+        const drawElementName = drawElementType ? drawElementNames[drawElementType] || '' : '';
+        return `绘制${drawElementName}`;
+    }
+    if (operationType === OperationType.Rotating) {
+        return '旋转';
+    }
+    if (operationType === OperationType.Draging) {
+        return '拖动';
+    }
+    if (operationType === OperationType.InsertPointToBoundary) {
+        return '插入边界点';
+    }
+    return '选择';
+}
 
 export default function App() {
     const [messageApi, contextHolder] = message.useMessage();
@@ -175,8 +211,25 @@ export default function App() {
     return (
         <div id="app">
             <Toolbar messageApi={messageApi} account={accountInfo} onLogout={handleLogout} />
-            <MapEditor />
-            <Attr />
+            <div className="app-workspace">
+                <MapEditor />
+                <WorkbenchPanel />
+            </div>
+            <div className="app-statusbar">
+                <span>{`底图：${viewstate.baseMapDir || '未打开'}`}</span>
+                <span>{`标注图：${viewstate.hdMapFile || '未打开'}`}</span>
+                <span>
+                    {`当前工具：${getCurrentToolLabel(
+                        viewstate.operationType,
+                        viewstate.currentDrawData.drawElementType,
+                        viewstate.ranging,
+                    )}`}
+                </span>
+                <span>{`选中：${viewstate.currentPickElement?.length || 0}`}</span>
+                <span className={viewstate.onsave ? 'status-unsaved' : 'status-saved'}>
+                    {viewstate.onsave ? '有未保存修改' : '已保存'}
+                </span>
+            </div>
             {contextHolder}
         </div>
     );

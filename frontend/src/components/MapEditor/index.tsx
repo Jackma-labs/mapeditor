@@ -246,10 +246,14 @@ export default function MapEditor() {
                 dataImport(data);
             });
             PubSub.subscribe('addObject', (_name, mesh: THREE.Object3D) => {
-                scene.current?.add(mesh);
+                if (mesh) {
+                    scene.current?.add(mesh);
+                }
             });
             PubSub.subscribe('removeObject', (_name, object: THREE.Object3D) => {
-                disposeGroup(object, scene.current);
+                if (object) {
+                    disposeGroup(object, scene.current);
+                }
             });
             PubSub.subscribe('render', () => {
                 render();

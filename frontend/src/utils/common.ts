@@ -44,6 +44,45 @@ function getNextObjectId(collection: { [id: string]: any }) {
     return nextId;
 }
 
+function coordinateFromSource(value: any) {
+    if (!value) {
+        return null;
+    }
+    const source = Array.isArray(value) ? { x: value[0], y: value[1], z: value[2] } : value.position || value;
+    const x = Number(source.x ?? source.lng ?? source.lon ?? source.longitude);
+    const y = Number(source.y ?? source.lat ?? source.latitude);
+    const z = Number(source.z ?? source.height ?? 0);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y, z } : null;
+}
+
+function importedCoordinateMetadata(data: any) {
+    const coordinateFrame =
+        data.sourceCrs ||
+        data.source_crs ||
+        data.coordinateFrame ||
+        data.coordinate_frame ||
+        data.coordinateMetadata?.sourceCrs ||
+        'LOCAL_ENU_METERS';
+    const anchor =
+        data.anchor || data.coordinateAnchor || data.coordinate_anchor || data.coordinateMetadata?.anchor || null;
+    const apolloOrigin =
+        coordinateFromSource(data.apolloOrigin) ||
+        coordinateFromSource(data.apollo_origin) ||
+        coordinateFromSource(data.utmOrigin) ||
+        coordinateFromSource(data.utm_origin) ||
+        coordinateFromSource(data.mapOrigin) ||
+        coordinateFromSource(data.map_origin) ||
+        coordinateFromSource(anchor?.utm) ||
+        coordinateFromSource(anchor?.apolloUtm) ||
+        coordinateFromSource(anchor?.origin);
+    return {
+        coordinateFrame,
+        targetCrs: data.targetCrs || data.target_crs || data.coordinateMetadata?.targetCrs || null,
+        apolloOrigin,
+        coordinateAnchor: anchor || (apolloOrigin ? { source: 'imported_origin', utm: apolloOrigin } : null),
+    };
+}
+
 function isStopLineBoundary(boundary: Boundary) {
     return Number(boundary?.type) === ThreeElementType.StopLineBoundary;
 }
@@ -291,6 +330,7 @@ function loadCenterlineLaneMap(data: any) {
         speedBumps: {},
         points,
         hdBasemapCenter: new THREE.Vector2(basemapCenter.x, basemapCenter.y),
+        ...importedCoordinateMetadata(data),
         stopLines: {},
         parkingSpaces: {},
         trafficSignals: {},
@@ -315,6 +355,7 @@ export function loadHdmp(data: any): any {
     const crosswalk = data.crosswalk || [];
     const speedBump = data.speedBump || data.speed_bump || [];
     const basemapCenter = data.basemapCenter || data.basemap_center || new THREE.Vector2(0, 0);
+    const coordinateMetadata = importedCoordinateMetadata(data);
     const trafficSignal = data.trafficSignal || [];
     const stopLine = data.stopLine || data.stop_line || [];
     const parkingSpace = data.parkingSpace || data.parking_space || [];
@@ -504,6 +545,7 @@ export function loadHdmp(data: any): any {
         speedBumps,
         points,
         hdBasemapCenter: new THREE.Vector2(basemapCenter.x, basemapCenter.y),
+        ...coordinateMetadata,
         stopLines,
         parkingSpaces,
         trafficSignals,

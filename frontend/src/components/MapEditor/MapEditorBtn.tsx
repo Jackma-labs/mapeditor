@@ -16,7 +16,7 @@ import { splitLaneInCenterHandle } from 'src/handle/lane/splitLaneHandle';
 import { searchPointIdsFromBoundaryId, searchPointsFromBoundaryId } from 'src/utils/search/pointSearch';
 import { ChangeBoundaryTypeCommand } from 'src/command/BoundaryCommand';
 import { findElementIndexInCurrentPickElement } from 'src/handle/interactive/Interaction';
-import { Tooltip, Popconfirm } from 'antd';
+import { Tooltip, Popconfirm, message } from 'antd';
 import { isCurrentPickElementHaveAdjacentLane, searchLanesRelationObjectsByCurrentPick } from 'src/utils/search/common';
 import { mergeRoadBoundaryHandle } from 'src/handle/boundary/mergeRoadBoundaryHandle';
 import {
@@ -132,7 +132,13 @@ export default function Index() {
             return;
         }
         if (isCurveConnect) {
-            curveConnectLane(lane1, lane2);
+            const result = curveConnectLane(lane1, lane2);
+            if (!result.connected) {
+                message.warning(
+                    result.message || '无法生成稳定的弯道连接，请检查车道方向、端点距离，或先手动调整端点后重试',
+                );
+                return;
+            }
         } else {
             connectLane(lane1, lane2);
         }

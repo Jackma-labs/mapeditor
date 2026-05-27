@@ -58,7 +58,7 @@ export class AddLaneCommand {
             leftBoundaryReverse: this.leftBoundaryReverse,
             rightBoundaryReverse: this.rightBoundaryReverse,
             width: 4,
-            prossibleDrivingDirectionArrowId: this.id,
+            prossibleDrivingDirectionArrowId: this.arrowId,
             type: this.laneTrend,
         };
         state.lanes[this.id] = lane;
@@ -153,7 +153,7 @@ export class DeleteLaneCommand {
             leftBoundaryReverse: this.originLeftBoundaryReverse,
             rightBoundaryReverse: this.originRightBoundaryReverse,
             width: this.originWidth,
-            prossibleDrivingDirectionArrowId: this.id,
+            prossibleDrivingDirectionArrowId: this.originArrowId,
             type: this.originLaneTrend,
         };
         state.lanes[this.id] = lane;

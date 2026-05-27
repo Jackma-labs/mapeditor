@@ -4,6 +4,7 @@ import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader';
 import { InterActiveType, ThreeElementType } from 'src/interface/commonInterFace';
 import { mapElementZ } from 'src/constant/mapElementZ';
 import { laneGroudColor } from 'src/constant/color';
+import { configureTextureForWebGL1 } from 'src/utils/textureUtil';
 import { Line2 } from 'three/examples/jsm/lines/Line2';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial';
@@ -115,6 +116,7 @@ export function loadImage(imgUrl: string) {
     const loader = new THREE.TextureLoader();
     return new Promise((resolve) => {
         loader.load(imgUrl, (texture) => {
+            configureTextureForWebGL1(texture);
             resolve(texture as THREE.Texture);
         });
     });

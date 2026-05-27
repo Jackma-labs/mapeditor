@@ -68,9 +68,14 @@ const defaults = {
     mode: process.env.MAP_EDGE_DEPLOY_MODE || 'disabled',
     host: process.env.MAP_EDGE_HOST || '',
     user: process.env.MAP_EDGE_USER || '',
+    password: process.env.MAP_EDGE_PASSWORD || '',
     port: Number(process.env.MAP_EDGE_PORT || 22),
     targetMapRoot: process.env.MAP_EDGE_TARGET_MAP_ROOT || '/apollo/modules/map/data',
     postDeployCommand: process.env.MAP_EDGE_POST_DEPLOY_COMMAND || '',
+    dockerContainer: process.env.MAP_EDGE_DOCKER_CONTAINER || '',
+    nativeMapTools: process.env.MAP_EDGE_NATIVE_MAP_TOOLS !== 'false',
+    autoSwitchDreamview: process.env.MAP_EDGE_AUTO_SWITCH_DREAMVIEW !== 'false',
+    coordinateValidationMaxDistanceMeters: Number(process.env.MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS || 5000),
   },
   apolloLite: {
     enabled: process.env.MAP_APOLLOLITE_ENABLED === 'true',
@@ -244,6 +249,9 @@ if (process.env.MAP_EDGE_HOST) {
 if (process.env.MAP_EDGE_USER) {
   merged.edgeDeploy.user = process.env.MAP_EDGE_USER;
 }
+if (process.env.MAP_EDGE_PASSWORD) {
+  merged.edgeDeploy.password = process.env.MAP_EDGE_PASSWORD;
+}
 if (process.env.MAP_EDGE_PORT) {
   merged.edgeDeploy.port = Number(process.env.MAP_EDGE_PORT);
 }
@@ -252,6 +260,18 @@ if (process.env.MAP_EDGE_TARGET_MAP_ROOT) {
 }
 if (process.env.MAP_EDGE_POST_DEPLOY_COMMAND) {
   merged.edgeDeploy.postDeployCommand = process.env.MAP_EDGE_POST_DEPLOY_COMMAND;
+}
+if (process.env.MAP_EDGE_DOCKER_CONTAINER) {
+  merged.edgeDeploy.dockerContainer = process.env.MAP_EDGE_DOCKER_CONTAINER;
+}
+if (process.env.MAP_EDGE_NATIVE_MAP_TOOLS) {
+  merged.edgeDeploy.nativeMapTools = process.env.MAP_EDGE_NATIVE_MAP_TOOLS !== 'false';
+}
+if (process.env.MAP_EDGE_AUTO_SWITCH_DREAMVIEW) {
+  merged.edgeDeploy.autoSwitchDreamview = process.env.MAP_EDGE_AUTO_SWITCH_DREAMVIEW !== 'false';
+}
+if (process.env.MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS) {
+  merged.edgeDeploy.coordinateValidationMaxDistanceMeters = Number(process.env.MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS);
 }
 if (process.env.MAP_APOLLOLITE_ENABLED) {
   merged.apolloLite.enabled = process.env.MAP_APOLLOLITE_ENABLED === 'true';

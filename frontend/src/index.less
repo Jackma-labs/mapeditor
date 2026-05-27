@@ -1,112 +1,118 @@
 body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-        'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',sans-serif;
+    font-family:
+        -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans',
+        'Droid Sans', 'Helvetica Neue', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     width: 100%;
     height: 100%;
+    overflow: hidden;
 }
-html{
+html {
     width: 100%;
     height: 100%;
+    overflow: hidden;
 }
 
 code {
     font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
 }
-#root{
+#root {
     width: 100%;
     height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     user-select: none;
 }
-.ant-select-selector{
-    background: #343C4D !important;
+.ant-select-selector {
+    background: #343c4d !important;
     // background-color: #282d38 !important;
     border: none !important;
     border-radius: 4px !important;
     color: #a6b5cc !important;
     height: 40px !important;
     border: none !important;
-    .ant-select-selection-search-input{
+    .ant-select-selection-search-input {
         height: 40px !important;
         line-height: 40px !important;
     }
-    .ant-select-selection-item{
+    .ant-select-selection-item {
         height: 40px !important;
         line-height: 40px !important;
     }
 }
-.ant-select-disabled{
-    .ant-select-selector{
-        background: #383D47 !important;
+.ant-select-disabled {
+    .ant-select-selector {
+        background: #383d47 !important;
         color: rgb(109, 111, 113) !important;
     }
 }
-.ant-select-open{
-    .ant-select-selection-item{
+.ant-select-open {
+    .ant-select-selection-item {
         color: #a6b5cc !important;
     }
 }
-.ant-select-arrow{
-    color: rgb(146,162,189) !important;
+.ant-select-arrow {
+    color: rgb(146, 162, 189) !important;
 }
-.my-select-popup{
+.my-select-popup {
     border: none !important;
-    background: #343C4D !important;
+    background: #343c4d !important;
     border-radius: 8px !important;
-    color: #A6B5CC !important;
-    .ant-select-item{
-        color: #A6B5CC !important;
+    color: #a6b5cc !important;
+    .ant-select-item {
+        color: #a6b5cc !important;
     }
-    .ant-select-item-option-selected{
-        background: rgba(115,193,250,0.08) !important;
+    .ant-select-item-option-selected {
+        background: rgba(115, 193, 250, 0.08) !important;
         width: 100% !important;
-        color: #A6B5CC !important;
+        color: #a6b5cc !important;
     }
 }
-.ant-input{
+.ant-input {
     width: 180px !important;
-    background: #343C4D !important;
+    background: #343c4d !important;
     border-radius: 6px !important;
-    color: #A6B5CC !important;
+    color: #a6b5cc !important;
     border: none;
 }
-.ant-input-affix-wrapper{
-    background: #343C4D !important;
+.ant-input-affix-wrapper {
+    background: #343c4d !important;
     border: none !important;
     border-radius: 8px !important;
     height: 40px !important;
 }
-.ant-input-suffix{
+.ant-input-suffix {
     background: none !important;
 }
-.ant-input-affix-wrapper{
-    color: #A6B5CC !important;
+.ant-input-affix-wrapper {
+    color: #a6b5cc !important;
 }
 
-.split-cursor{
+.split-cursor {
     cursor: url(./assets/images/ic_vertical_splitting.svg), pointer !important;
 }
-.add-cursor canvas{
+.add-cursor canvas {
     cursor: url(./assets/images/ic_pen_tool.svg), pointer !important;
 }
-.ranging-cursor canvas{
+.ranging-cursor canvas {
     cursor: url(./assets/images/ic_ranging_white.svg), pointer !important;
 }
-.ant-popover-content{
+.ant-popover-content {
     background: #282b36;
-    .ant-popover-inner{
+    .ant-popover-inner {
         background: #282b36;
     }
-    .ant-popconfirm-title{
+    .ant-popconfirm-title {
         color: #a6b5cc !important;
     }
 }
-.ant-popover-arrow::before{
+.ant-popover-arrow::before {
     background: #282b36 !important;
 }
-.ant-btn-default{
+.ant-btn-default {
     background: #282b36 !important;
     border: 1px solid #7c8899;
     border-radius: 8px;

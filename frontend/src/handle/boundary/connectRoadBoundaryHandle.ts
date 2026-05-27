@@ -106,7 +106,11 @@ export function connectRoadBoundaryByCurveHandle() {
             connectInfoIndex = index;
         }
     });
-    const [firstControlPointPosition, secondControlPointPosition] = getCurveControlPointPositions(curvePoints);
+    const controlPointPositions = getCurveControlPointPositions(curvePoints);
+    if (!controlPointPositions) {
+        return;
+    }
+    const [firstControlPointPosition, secondControlPointPosition] = controlPointPositions;
     const newRoadBoundaryId = `${getElementMaxIndex(boundarys) + 1}`;
     const cm1 = new AddBoundaryCommand(
         newRoadBoundaryId,

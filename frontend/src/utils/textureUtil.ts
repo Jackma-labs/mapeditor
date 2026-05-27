@@ -30,6 +30,21 @@ export function updateTexture(obj: THREE.Mesh | THREE.Line, texture: THREE.Textu
     PubSub.publish('render');
 }
 
+export function configureTextureForWebGL1<T extends THREE.Texture>(texture: T): T {
+    const configuredTexture = texture;
+    configuredTexture.generateMipmaps = false;
+    configuredTexture.minFilter = THREE.LinearFilter;
+    configuredTexture.magFilter = THREE.LinearFilter;
+    configuredTexture.wrapS = THREE.ClampToEdgeWrapping;
+    configuredTexture.wrapT = THREE.ClampToEdgeWrapping;
+    configuredTexture.needsUpdate = true;
+    return configuredTexture;
+}
+
+function createCanvasTexture(canvas: HTMLCanvasElement) {
+    return configureTextureForWebGL1(new THREE.CanvasTexture(canvas));
+}
+
 export function generatePointCanvasTexture(pointInfo: {
     strokeColor: THREE.Color;
     fillColor: THREE.Color;
@@ -51,7 +66,7 @@ export function generatePointCanvasTexture(pointInfo: {
     ctx.strokeStyle = strokeColor.getStyle(); // 填充边框颜色
     ctx.stroke();
 
-    return new THREE.CanvasTexture(canvas);
+    return createCanvasTexture(canvas);
 }
 
 export function generateControlPointCanvasTexture(type: InterActiveType) {
@@ -69,7 +84,7 @@ export function generateControlPointCanvasTexture(type: InterActiveType) {
     ctx.strokeStyle = pointColor[type].getStyle(); // 填充边框颜色
     ctx.stroke();
 
-    return new THREE.CanvasTexture(canvas);
+    return createCanvasTexture(canvas);
 }
 
 export function generateParkingSpaceCanvasTexture(type: InterActiveType, width: number, height: number) {
@@ -86,7 +101,7 @@ export function generateParkingSpaceCanvasTexture(type: InterActiveType, width: 
     ctx.strokeStyle = colorTraslateRgba(parkingSpaceGroudColor[type], 1);
     ctx.strokeRect(0, 0, canvas.width, canvas.height);
 
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = createCanvasTexture(canvas);
     return texture;
 }
 export function updateParkingSpaceCanvasTexture(obj: THREE.Mesh, interActiveType: InterActiveType) {
@@ -226,7 +241,7 @@ export function generateTrafficLight3CanvasTexture(type: InterActiveType = Inter
         110,
         colorTraslateRgba(trafficLightSvgColor[type], trafficLightSvgOpacity[type]),
     );
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = createCanvasTexture(canvas);
     texture.center.set(0.5, 0.5);
     return texture;
 }
@@ -250,7 +265,7 @@ export function generateTrafficLight2CanvasTexture(type: InterActiveType = Inter
         colorTraslateRgba(trafficLightSvgColor[type], trafficLightSvgOpacity[type]),
     );
 
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = createCanvasTexture(canvas);
     texture.center.set(0.5, 0.5);
     return texture;
 }
@@ -273,7 +288,7 @@ export function generateTrafficLight1CanvasTexture(type: InterActiveType = Inter
         colorTraslateRgba(trafficLightSvgColor[type], trafficLightSvgOpacity[type]),
     );
 
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = createCanvasTexture(canvas);
     texture.center.set(0.5, 0.5);
     return texture;
 }
@@ -287,7 +302,7 @@ export function generateAddIconCanvasTexture(type: InterActiveType) {
     strokeCircle(ctx, 150, 150, 120, color, 20);
     fillRoundRect(ctx, 70, 142, 160, 16, 8, color);
     fillRoundRect(ctx, 142, 70, 16, 160, 8, color);
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = createCanvasTexture(canvas);
     return texture;
 }
 
@@ -300,7 +315,7 @@ export function generateRangeRemoveTexture() {
     fillCircle(ctx, 150, 150, 150, fillColor);
     fillRoundRect(ctx, 70, 142, 160, 16, 8, '#ffffff');
     fillRoundRect(ctx, 142, 70, 16, 160, 8, '#ffffff');
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = createCanvasTexture(canvas);
     texture.center.set(0.5, 0.5);
     texture.rotation = Math.PI / 4;
     return texture;
@@ -344,7 +359,7 @@ export function generateRotateHandleCanvasTexture(start: boolean, type: InterAct
     ctx.quadraticCurveTo(92, 164, 172, 260);
     ctx.stroke();
     fillTriangle(ctx, 150, 280, 206, 290, 192, 240, colorTraslateRgba(rotateHandleSvgColor[type]));
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = createCanvasTexture(canvas);
     return texture;
 }
 
@@ -363,7 +378,7 @@ export function generateRotateBasePointCanvasTexture() {
     fillRoundRect(ctx, 39, 75, 82, 12, 6, '#000000');
     fillRoundRect(ctx, 74, 39, 12, 82, 6, '#000000');
 
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = createCanvasTexture(canvas);
     return texture;
 }
 export function generateArrowCanvasTexture(type: ProssibleDrivingDirection) {
@@ -384,7 +399,7 @@ export function generateArrowCanvasTexture(type: ProssibleDrivingDirection) {
         fillTriangle(ctx, 160, 55, 250, 125, 160, 195, colorTraslateRgba(new THREE.Color(0xffffff), 0.65));
     }
 
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = createCanvasTexture(canvas);
     return texture;
 }
 
@@ -408,6 +423,6 @@ export function generateYieldSignIconCanvasTexture() {
     ctx.arc(220, 40, 8, Math.PI / 2 + Math.PI / 6, Math.PI / 2 - Math.PI / 6);
     ctx.lineTo(40, 40);
 
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = createCanvasTexture(canvas);
     return texture;
 }

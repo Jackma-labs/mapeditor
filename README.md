@@ -151,8 +151,10 @@ Environment overrides:
 - `MAP_EDGE_DEPLOY_MODE=disabled|ssh`
 - `MAP_EDGE_HOST`
 - `MAP_EDGE_USER`
+- `MAP_EDGE_PASSWORD`
 - `MAP_EDGE_TARGET_MAP_ROOT`
 - `MAP_EDGE_POST_DEPLOY_COMMAND`
+- `MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS` (default `5000`)
 
 Diagnostics:
 
@@ -236,6 +238,17 @@ The zip must contain `editor_map.json`; optional Apollo release outputs such as
 `data/released_map/<name>/`. The editor JSON is copied into
 `data/editor_map/<name>.json` and is available in the "打开标注地图" dialog.
 
+## Apollo coordinates
+
+Editor geometry is stored in local map coordinates. During release, the JS
+fallback converter writes Apollo `PointENU` values by applying the first
+available origin field from `apolloOrigin`, `utmOrigin`, `mapOrigin`,
+`coordinateOrigin`, or `basemapCenter`. This treats the selected origin as the
+Apollo coordinate of editor local `(0, 0)`. If a map must be aligned by its
+geometry center instead, provide `apolloCenter`, `utmCenter`, `mapCenter`, or
+`coordinateCenter`; the converter records the applied transform in
+`manifest.json`.
+
 ## Edge deployment
 
 Configure `backend/server.config.json`:
@@ -246,11 +259,26 @@ Configure `backend/server.config.json`:
     "mode": "ssh",
     "host": "192.168.1.100",
     "user": "nvidia",
+    "password": "nvidia",
     "targetMapRoot": "/apollo/modules/map/data",
+    "dockerContainer": "apollo_dev_nvidia",
+    "nativeMapTools": true,
     "postDeployCommand": "bash /apollo/scripts/bootstrap.sh restart"
   }
 }
 ```
+
+When `dockerContainer` is set, the deployer uploads the released map through
+SSH and activates it inside that Apollo container. With `nativeMapTools`
+enabled, it then runs Apollo's `bin_map_generator` and `sim_map_generator` in
+the container so Dreamview reads native `base_map.bin` and `sim_map.bin`
+outputs.
+When `password` is set, discovery, preflight, upload, deploy, and rollback use
+password SSH/SFTP. Leave it empty to keep using the local SSH key setup.
+Before uploading, edge deployment validates `base_map.txt` coordinates. Local
+editor-scale coordinates are rejected, and global coordinates must be within
+`MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS` of an existing global-coordinate map
+on the edge device.
 
 Deploy endpoint:
 

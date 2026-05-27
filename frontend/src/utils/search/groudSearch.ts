@@ -178,25 +178,29 @@ export function searchGroudShapePositions(groudId: string) {
         if (leftControlsPosition.length !== 2 || rightControlsPosition.length !== 2) {
             return [];
         }
-        const leftPoint1Mesh = objectSearch(ThreeObject.Point, leftPoints[0]?.id);
-        const leftPoint2Mesh = objectSearch(ThreeObject.Point, leftPoints[1]?.id);
-        const rightPoint1Mesh = objectSearch(ThreeObject.Point, rightPoints[0]?.id);
-        const rightPoint2Mesh = objectSearch(ThreeObject.Point, rightPoints[1]?.id);
+        const leftPoint1Position =
+            objectSearch(ThreeObject.Point, leftPoints[0]?.id)?.position || leftPoints[0]?.position;
+        const leftPoint2Position =
+            objectSearch(ThreeObject.Point, leftPoints[1]?.id)?.position || leftPoints[1]?.position;
+        const rightPoint1Position =
+            objectSearch(ThreeObject.Point, rightPoints[0]?.id)?.position || rightPoints[0]?.position;
+        const rightPoint2Position =
+            objectSearch(ThreeObject.Point, rightPoints[1]?.id)?.position || rightPoints[1]?.position;
         const leftFirstControlMesh = contrlPointSearch(ThreeObject.ControlPoint, lane.leftBoundaryId, true);
         const leftSecondControlMesh = contrlPointSearch(ThreeObject.ControlPoint, lane.leftBoundaryId, false);
         const rightFirstControlMesh = contrlPointSearch(ThreeObject.ControlPoint, lane.rightBoundaryId, true);
         const rightSecondControlMesh = contrlPointSearch(ThreeObject.ControlPoint, lane.rightBoundaryId, false);
-        if (!leftPoint1Mesh || !leftPoint2Mesh || !rightPoint1Mesh || !rightPoint2Mesh) {
+        if (!leftPoint1Position || !leftPoint2Position || !rightPoint1Position || !rightPoint2Position) {
             return [];
         }
-        positions.push(vector3TransTpVector2(leftPoint1Mesh.position.clone()));
+        positions.push(vector3TransTpVector2(leftPoint1Position.clone()));
         positions.push(vector3TransTpVector2(leftFirstControlMesh?.position?.clone() || leftControlsPosition[0]));
         positions.push(vector3TransTpVector2(leftSecondControlMesh?.position?.clone() || leftControlsPosition[1]));
-        positions.push(vector3TransTpVector2(leftPoint2Mesh.position.clone()));
-        positions.push(vector3TransTpVector2(rightPoint2Mesh.position.clone()));
+        positions.push(vector3TransTpVector2(leftPoint2Position.clone()));
+        positions.push(vector3TransTpVector2(rightPoint2Position.clone()));
         positions.push(vector3TransTpVector2(rightSecondControlMesh?.position?.clone() || rightControlsPosition[1]));
         positions.push(vector3TransTpVector2(rightFirstControlMesh?.position?.clone() || rightControlsPosition[0]));
-        positions.push(vector3TransTpVector2(rightPoint1Mesh.position.clone()));
+        positions.push(vector3TransTpVector2(rightPoint1Position.clone()));
     } else if (type === ThreeElementType.SpeedBumpGroud) {
         const shapePoints = points.map((point) => {
             const pointMesh = objectSearch(ThreeObject.Point, point.id);

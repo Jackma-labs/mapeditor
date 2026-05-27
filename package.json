@@ -12,6 +12,7 @@
     "start": "npm --prefix backend start",
     "runtime:status": "node -e \"fetch('http://127.0.0.1:58000/runtime/status').then(r=>r.json()).then(j=>console.log(JSON.stringify(j,null,2)))\"",
     "runtime:verify": "node scripts/verify-mapeditor-runtime.js",
+    "regression:maps": "node scripts/regression-map-fixtures.js",
     "runtime:start:win": "powershell -ExecutionPolicy Bypass -File runtime/scripts/start-apollo-runtime.ps1",
     "runtime:stop:win": "powershell -ExecutionPolicy Bypass -File runtime/scripts/stop-apollo-runtime.ps1"
   }

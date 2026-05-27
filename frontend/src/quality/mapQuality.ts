@@ -1,5 +1,5 @@
 import { MapState } from 'src/interface/mapStateInterface';
-import { Lane, LaneDireaciotn, ProssibleDrivingDirection } from 'src/interface/laneInterFace';
+import { Lane, LaneDireaciotn, LaneTrend, ProssibleDrivingDirection } from 'src/interface/laneInterFace';
 import { ThreeElementType, ThreeObject } from 'src/interface/commonInterFace';
 
 export type MapQualitySeverity = 'error' | 'warning';
@@ -79,11 +79,236 @@ const validPossibleDirections = new Set<number>([
     ProssibleDrivingDirection.RELATIVEDIRECTION,
 ]);
 
+const LANE_MIN_USABLE_WIDTH_METERS = 1.8;
+const LANE_NARROW_WIDTH_WARNING_METERS = 2.6;
+const LANE_HARD_TURN_RADIUS_ERROR_METERS = 2.0;
+const LANE_STRICT_TURN_RADIUS_ERROR_METERS = 3.0;
+const LANE_MIN_TURN_RADIUS_WARNING_METERS = 4.5;
+const LANE_LOW_SPEED_TURN_VALUE = 10;
+const LANE_RECOVERABLE_TURN_WIDTH_METERS = 2.6;
+const LANE_SUCCESSOR_SHARP_ANGLE_ERROR_DEGREES = 100;
+const LANE_SUCCESSOR_SHARP_ANGLE_WARNING_DEGREES = 65;
+const CURVE_SAMPLE_COUNT = 17;
+
+interface Point2D {
+    x: number;
+    y: number;
+    z?: number;
+}
+
+interface LaneGeometryAudit {
+    leftPoints: Point2D[];
+    rightPoints: Point2D[];
+    centerPoints: Point2D[];
+    minWidth: number;
+    minTurnRadius: number;
+    boundaryIntersects: boolean;
+}
+
 function buildIssue(issues: MapQualityIssue[], issue: Omit<MapQualityIssue, 'id'> & { id?: string }) {
     issues.push({
         ...issue,
         id: issue.id || `${issue.target.type}-${issue.target.id || 'map'}-${issues.length}`,
     });
+}
+
+function distance(left: Point2D, right: Point2D) {
+    return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function cubicBezier(p0: Point2D, p1: Point2D, p2: Point2D, p3: Point2D, t: number): Point2D {
+    const u = 1 - t;
+    return {
+        x: u ** 3 * p0.x + 3 * u ** 2 * t * p1.x + 3 * u * t ** 2 * p2.x + t ** 3 * p3.x,
+        y: u ** 3 * p0.y + 3 * u ** 2 * t * p1.y + 3 * u * t ** 2 * p2.y + t ** 3 * p3.y,
+        z: (p0.z || 0) * u ** 3 + 3 * (p1.z || 0) * u ** 2 * t + 3 * (p2.z || 0) * u * t ** 2 + (p3.z || 0) * t ** 3,
+    };
+}
+
+function polylineLength(points: Point2D[]) {
+    let total = 0;
+    for (let index = 1; index < points.length; index += 1) {
+        total += distance(points[index - 1], points[index]);
+    }
+    return total;
+}
+
+function interpolatePolyline(points: Point2D[], ratio: number): Point2D {
+    if (points.length === 0) {
+        return { x: 0, y: 0, z: 0 };
+    }
+    if (points.length === 1) {
+        return points[0];
+    }
+    const total = polylineLength(points);
+    if (total <= 0) {
+        return points[0];
+    }
+    const target = Math.max(0, Math.min(1, ratio)) * total;
+    let walked = 0;
+    for (let index = 1; index < points.length; index += 1) {
+        const start = points[index - 1];
+        const end = points[index];
+        const segmentLength = distance(start, end);
+        if (walked + segmentLength >= target) {
+            const localRatio = segmentLength > 0 ? (target - walked) / segmentLength : 0;
+            return {
+                x: start.x + (end.x - start.x) * localRatio,
+                y: start.y + (end.y - start.y) * localRatio,
+                z: (start.z || 0) + ((end.z || 0) - (start.z || 0)) * localRatio,
+            };
+        }
+        walked += segmentLength;
+    }
+    return points[points.length - 1];
+}
+
+function resamplePolyline(points: Point2D[], count: number) {
+    return Array.from({ length: count }, (_unused, index) =>
+        interpolatePolyline(points, count === 1 ? 0 : index / (count - 1)),
+    );
+}
+
+function orientation(a: Point2D, b: Point2D, c: Point2D) {
+    return (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y);
+}
+
+function pointOnSegment(a: Point2D, b: Point2D, c: Point2D) {
+    return (
+        Math.min(a.x, c.x) - 0.001 <= b.x &&
+        b.x <= Math.max(a.x, c.x) + 0.001 &&
+        Math.min(a.y, c.y) - 0.001 <= b.y &&
+        b.y <= Math.max(a.y, c.y) + 0.001
+    );
+}
+
+function segmentsIntersect(a1: Point2D, a2: Point2D, b1: Point2D, b2: Point2D) {
+    const o1 = orientation(a1, a2, b1);
+    const o2 = orientation(a1, a2, b2);
+    const o3 = orientation(b1, b2, a1);
+    const o4 = orientation(b1, b2, a2);
+    if (o1 * o2 < 0 && o3 * o4 < 0) {
+        return true;
+    }
+    if (Math.abs(o1) <= 0.001 && pointOnSegment(a1, b1, a2)) return true;
+    if (Math.abs(o2) <= 0.001 && pointOnSegment(a1, b2, a2)) return true;
+    if (Math.abs(o3) <= 0.001 && pointOnSegment(b1, a1, b2)) return true;
+    if (Math.abs(o4) <= 0.001 && pointOnSegment(b1, a2, b2)) return true;
+    return false;
+}
+
+function polylinesIntersect(left: Point2D[], right: Point2D[]) {
+    for (let leftIndex = 1; leftIndex < left.length; leftIndex += 1) {
+        for (let rightIndex = 1; rightIndex < right.length; rightIndex += 1) {
+            if (segmentsIntersect(left[leftIndex - 1], left[leftIndex], right[rightIndex - 1], right[rightIndex])) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+function getBoundaryGeometryPoints(mapState: MapState, boundaryId: string, reverse: boolean): Point2D[] {
+    const boundary = mapState.boundarys[boundaryId];
+    if (!boundary) {
+        return [];
+    }
+    const orderedPointIds = reverse ? [...boundary.pointIds].reverse() : [...boundary.pointIds];
+    const points = orderedPointIds.map((pointId) => mapState.points[pointId]?.position).filter(Boolean);
+    if (points.length >= 2 && boundary.controlsPosition?.length >= 2) {
+        return Array.from({ length: CURVE_SAMPLE_COUNT }, (_unused, index) =>
+            cubicBezier(
+                points[0],
+                boundary.controlsPosition[0],
+                boundary.controlsPosition[1],
+                points[points.length - 1],
+                index / (CURVE_SAMPLE_COUNT - 1),
+            ),
+        );
+    }
+    return points;
+}
+
+function getPolylineMinRadius(points: Point2D[]) {
+    let minRadius = Infinity;
+    for (let index = 1; index < points.length - 1; index += 1) {
+        const a = points[index - 1];
+        const b = points[index];
+        const c = points[index + 1];
+        const ab = distance(a, b);
+        const bc = distance(b, c);
+        const ac = distance(a, c);
+        const area = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) / 2;
+        if (area >= 0.000001 && ab * bc * ac !== 0) {
+            minRadius = Math.min(minRadius, (ab * bc * ac) / (4 * area));
+        }
+    }
+    return minRadius;
+}
+
+function auditLaneGeometry(mapState: MapState, lane: Lane): LaneGeometryAudit | null {
+    const leftPoints = getBoundaryGeometryPoints(mapState, lane.leftBoundaryId, lane.leftBoundaryReverse);
+    const rightPoints = getBoundaryGeometryPoints(mapState, lane.rightBoundaryId, lane.rightBoundaryReverse);
+    if (leftPoints.length < 2 || rightPoints.length < 2) {
+        return null;
+    }
+    const sampleCount = Math.max(leftPoints.length, rightPoints.length, 3);
+    const leftSamples = resamplePolyline(leftPoints, sampleCount);
+    const rightSamples = resamplePolyline(rightPoints, sampleCount);
+    const widths = leftSamples.map((leftPoint, index) => distance(leftPoint, rightSamples[index]));
+    const centerPoints = leftSamples.map((leftPoint, index) => ({
+        x: (leftPoint.x + rightSamples[index].x) / 2,
+        y: (leftPoint.y + rightSamples[index].y) / 2,
+        z: ((leftPoint.z || 0) + (rightSamples[index].z || 0)) / 2,
+    }));
+    return {
+        leftPoints,
+        rightPoints,
+        centerPoints,
+        minWidth: Math.min(...widths),
+        minTurnRadius: getPolylineMinRadius(centerPoints),
+        boundaryIntersects: polylinesIntersect(leftPoints, rightPoints),
+    };
+}
+
+function isRecoverableLowSpeedTurn(lane: Lane, laneGeometryAudit: LaneGeometryAudit) {
+    const laneDirection = Number(lane.attr?.direction);
+    const laneSpeed = Number(lane.attr?.speed);
+    const isLowSpeedSetting = Number.isFinite(laneSpeed) && laneSpeed <= LANE_LOW_SPEED_TURN_VALUE;
+    const isTurnGeometry =
+        lane.type === LaneTrend.Curve ||
+        laneDirection === LaneDireaciotn.TURN_LEFT ||
+        laneDirection === LaneDireaciotn.TURN_RIGHT ||
+        laneDirection === LaneDireaciotn.TURN_AROUND;
+    return (
+        isLowSpeedSetting &&
+        isTurnGeometry &&
+        laneGeometryAudit.minWidth >= LANE_RECOVERABLE_TURN_WIDTH_METERS &&
+        laneGeometryAudit.minTurnRadius >= LANE_HARD_TURN_RADIUS_ERROR_METERS
+    );
+}
+
+function getLaneEndpointDirection(mapState: MapState, lane: Lane, endpoint: 'start' | 'end') {
+    const audit = auditLaneGeometry(mapState, lane);
+    const points = audit?.centerPoints || [];
+    if (points.length < 2) {
+        return null;
+    }
+    const start = endpoint === 'start' ? points[0] : points[points.length - 2];
+    const end = endpoint === 'start' ? points[1] : points[points.length - 1];
+    const length = distance(start, end);
+    if (length <= 0.001) {
+        return null;
+    }
+    return {
+        x: (end.x - start.x) / length,
+        y: (end.y - start.y) / length,
+    };
+}
+
+function angleBetweenDirections(left: Point2D, right: Point2D) {
+    const dot = Math.max(-1, Math.min(1, left.x * right.x + left.y * right.y));
+    return (Math.acos(dot) * 180) / Math.PI;
 }
 
 function resolveStopLineBoundaryId(mapState: MapState, stopLineId: string) {
@@ -302,14 +527,14 @@ function findNearestComponentGaps(
             let bestGap: ComponentGap = null;
             fromEndpoints.forEach((from) => {
                 toEndpoints.forEach((to) => {
-                    const distance = distanceBetweenEndpoints(from, to);
-                    if (!bestGap || distance < bestGap.distance) {
+                    const endpointDistance = distanceBetweenEndpoints(from, to);
+                    if (!bestGap || endpointDistance < bestGap.distance) {
                         bestGap = {
                             fromComponentId: fromComponent.id,
                             toComponentId: toComponent.id,
                             from,
                             to,
-                            distance,
+                            distance: endpointDistance,
                         };
                     }
                 });
@@ -433,6 +658,80 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 target,
             });
         }
+        const laneGeometryAudit = auditLaneGeometry(mapState, lane);
+        if (laneGeometryAudit) {
+            if (laneGeometryAudit.boundaryIntersects) {
+                buildIssue(issues, {
+                    severity: 'error',
+                    title: `车道 ${lane.id} 左右边界相交`,
+                    description: '车道左右边界发生交叉，Apollo 可能生成无效可行驶区域，车辆可能无法通过。',
+                    suggestion: '调整车道端点或弯道控制点，确保左右边界全程不交叉。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                        `左边界：${lane.leftBoundaryId}`,
+                        `右边界：${lane.rightBoundaryId}`,
+                    ]),
+                    target,
+                });
+            }
+            if (laneGeometryAudit.minWidth < LANE_MIN_USABLE_WIDTH_METERS) {
+                buildIssue(issues, {
+                    severity: 'error',
+                    title: `车道 ${lane.id} 宽度塌缩`,
+                    description: `车道最窄处只有 ${laneGeometryAudit.minWidth.toFixed(
+                        2,
+                    )}m，低于车辆稳定通过所需的最小宽度。`,
+                    suggestion: '加宽车道，或重新生成连接段，让最小宽度保持在 1.8m 以上。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                        `最小宽度：${laneGeometryAudit.minWidth.toFixed(2)}m`,
+                    ]),
+                    target,
+                });
+            } else if (laneGeometryAudit.minWidth < LANE_NARROW_WIDTH_WARNING_METERS) {
+                buildIssue(issues, {
+                    severity: 'warning',
+                    title: `车道 ${lane.id} 偏窄`,
+                    description: `车道最窄处为 ${laneGeometryAudit.minWidth.toFixed(
+                        2,
+                    )}m，特殊场景可能有效，但会降低仿真容错。`,
+                    suggestion: '检查车道宽度，尤其是自动生成的弯道和合流段。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                        `最小宽度：${laneGeometryAudit.minWidth.toFixed(2)}m`,
+                    ]),
+                    target,
+                });
+            }
+            const recoverableLowSpeedTurn = isRecoverableLowSpeedTurn(lane, laneGeometryAudit);
+            if (
+                laneGeometryAudit.minTurnRadius < LANE_HARD_TURN_RADIUS_ERROR_METERS ||
+                (laneGeometryAudit.minTurnRadius < LANE_STRICT_TURN_RADIUS_ERROR_METERS && !recoverableLowSpeedTurn)
+            ) {
+                buildIssue(issues, {
+                    severity: 'error',
+                    title: `车道 ${lane.id} 转弯半径过小`,
+                    description: `中心线最小半径为 ${laneGeometryAudit.minTurnRadius.toFixed(
+                        2,
+                    )}m，对 Apollo 仿真和车辆通过来说过急。`,
+                    suggestion: '使用更平顺的弯道连接，或先把端点拉开后再发布。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                        `最小半径：${laneGeometryAudit.minTurnRadius.toFixed(2)}m`,
+                    ]),
+                    target,
+                });
+            } else if (laneGeometryAudit.minTurnRadius < LANE_MIN_TURN_RADIUS_WARNING_METERS) {
+                buildIssue(issues, {
+                    severity: 'warning',
+                    title: `车道 ${lane.id} 转弯半径偏小`,
+                    description: `中心线最小半径为 ${laneGeometryAudit.minTurnRadius.toFixed(
+                        2,
+                    )}m，车辆可能需要更低速度或更平顺的连接段。`,
+                    suggestion: '在 Dreamview 中检查该转弯；如果车辆犹豫或压线，需要拉开端点并重建连接。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                        `最小半径：${laneGeometryAudit.minTurnRadius.toFixed(2)}m`,
+                    ]),
+                    target,
+                });
+            }
+        }
         if (
             !relation.startPointIds[0] ||
             !relation.startPointIds[1] ||
@@ -484,6 +783,45 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 });
             }
         }
+        relation.successors.forEach((successorLaneId) => {
+            const successorLane = mapState.lanes[successorLaneId];
+            if (!successorLane) {
+                return;
+            }
+            const currentDirection = getLaneEndpointDirection(mapState, lane, 'end');
+            const successorDirection = getLaneEndpointDirection(mapState, successorLane, 'start');
+            if (!currentDirection || !successorDirection) {
+                return;
+            }
+            const angle = angleBetweenDirections(currentDirection, successorDirection);
+            if (angle >= LANE_SUCCESSOR_SHARP_ANGLE_ERROR_DEGREES) {
+                buildIssue(issues, {
+                    severity: 'error',
+                    title: `车道 ${lane.id} 到 ${successorLaneId} 方向断裂`,
+                    description: `两条车道共享端点，但航向突变 ${angle.toFixed(1)} 度，拓扑已连接但几何过渡不稳定。`,
+                    suggestion: '插入弯道连接段，或调整端点方向让连接更平顺。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                        `后继：${successorLaneId}`,
+                        `航向变化：${angle.toFixed(1)} 度`,
+                    ]),
+                    target,
+                });
+            } else if (angle >= LANE_SUCCESSOR_SHARP_ANGLE_WARNING_DEGREES) {
+                buildIssue(issues, {
+                    severity: 'warning',
+                    title: `车道 ${lane.id} 到 ${successorLaneId} 转向突变`,
+                    description: `两条车道连接处航向变化 ${angle.toFixed(
+                        1,
+                    )} 度，路口场景可能合理，但通常应使用弯道连接段表达。`,
+                    suggestion: '检查这里是否需要单独的转弯连接段。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                        `后继：${successorLaneId}`,
+                        `航向变化：${angle.toFixed(1)} 度`,
+                    ]),
+                    target,
+                });
+            }
+        });
     });
 
     if (lanes.length > 2 && laneEdges < lanes.length - 1) {
@@ -503,6 +841,40 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
         const nearestGaps = findNearestComponentGaps(mapState, laneComponents, relations);
         const actionableGaps = nearestGaps.filter((gap) => gap.distance <= 6);
         const isolatedComponents = laneComponents.filter((component) => component.laneIds.length === 1);
+        actionableGaps.slice(0, 12).forEach((gap) => {
+            buildIssue(issues, {
+                id: `topology-gap-${gap.from.laneId}-${gap.to.laneId}-${gap.from.endpoint}-${gap.to.endpoint}`,
+                severity: 'warning',
+                title: `车道 ${gap.from.laneId} 到 ${gap.to.laneId} 疑似断点`,
+                description: `两个拓扑区域的端点距离 ${gap.distance.toFixed(2)}m，可能需要直道连接或弯道连接。`,
+                suggestion: '点击后检查两个端点；如果它们属于同一条可通行路线，请用直道连接或弯道连接补齐。',
+                details: [
+                    `来源：${formatEndpoint(gap.from)}`,
+                    `目标：${formatEndpoint(gap.to)}`,
+                    `中心距离：${gap.distance.toFixed(2)}m`,
+                ],
+                target: {
+                    type: 'point',
+                    pointIds: [...gap.from.pointIds, ...gap.to.pointIds].filter(Boolean) as string[],
+                },
+            });
+        });
+        isolatedComponents.slice(0, 12).forEach((component) => {
+            const laneId = component.laneIds[0];
+            const lane = mapState.lanes[laneId];
+            if (!lane) {
+                return;
+            }
+            buildIssue(issues, {
+                id: `topology-isolated-${laneId}`,
+                severity: 'warning',
+                title: `车道 ${laneId} 位于孤立拓扑区域`,
+                description: '该车道所在连通块只有一条车道，可能是合法入口/出口，也可能是漏连断点。',
+                suggestion: '点击定位后检查前后端点；如果不是地图入口或出口，请补齐前驱或后继连接。',
+                details: buildLaneRelationDetails(relations[laneId], laneComponentIndex),
+                target: getLaneTarget(mapState, lane),
+            });
+        });
         if (actionableGaps.length > 0 || isolatedComponents.length > 0) {
             buildIssue(issues, {
                 severity: 'warning',
@@ -621,6 +993,13 @@ export function pickElementFromIssue(mapState: MapState, issue: MapQualityIssue)
         return {
             id: target.id,
             type: mapState.points[target.id].type,
+            threeObject: ThreeObject.Point,
+        };
+    }
+    if (target.type === 'point' && target.pointIds?.[0] && mapState.points[target.pointIds[0]]) {
+        return {
+            id: target.pointIds[0],
+            type: mapState.points[target.pointIds[0]].type,
             threeObject: ThreeObject.Point,
         };
     }

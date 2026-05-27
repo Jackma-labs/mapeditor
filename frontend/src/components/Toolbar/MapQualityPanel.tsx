@@ -10,14 +10,21 @@ import { inspectMapQuality, MapQualityIssue, MapQualityReport, pickElementFromIs
 import { ApplyMapQualityRepairsCommand, buildMapQualityRepairActions } from 'src/quality/mapQualityRepair';
 
 const OVERLAY_GROUP_NAME = '__map_quality_overlay__';
+const QUALITY_FOCUS_MIN_EXTENT = 45;
 
 type WorkflowStepStatus = 'pass' | 'warning' | 'error';
-type IssueFilter = 'all' | 'error' | 'warning';
+type IssueFilter = 'all' | 'error' | 'warning' | 'topology';
 
 interface WorkflowStep {
     label: string;
     status: WorkflowStepStatus;
     text: string;
+}
+
+interface IssueGuide {
+    title: string;
+    steps: string[];
+    note?: string;
 }
 
 function getPointPosition(mapState: MapState, pointId: string) {
@@ -38,6 +45,12 @@ function getBoundaryPositions(mapState: MapState, boundaryId: string) {
 function getIssuePositions(mapState: MapState, issue: MapQualityIssue) {
     const positions: THREE.Vector3[] = [];
     const { target } = issue;
+    (target.pointIds || []).forEach((pointId) => {
+        const point = getPointPosition(mapState, pointId);
+        if (point) {
+            positions.push(new THREE.Vector3(point.x, point.y, point.z + 0.2));
+        }
+    });
     if (target.type === 'lane') {
         (target.boundaryIds || []).forEach((boundaryId) => {
             positions.push(...getBoundaryPositions(mapState, boundaryId));
@@ -62,6 +75,19 @@ function getIssuePositions(mapState: MapState, issue: MapQualityIssue) {
     return positions;
 }
 
+function isTopologyIssue(issue: MapQualityIssue) {
+    return (
+        issue.id.startsWith('topology-') ||
+        issue.title.includes('断点') ||
+        issue.title.includes('孤立') ||
+        issue.title.includes('拓扑') ||
+        issue.title.includes('前驱') ||
+        issue.title.includes('后继') ||
+        issue.title.includes('方向断裂') ||
+        issue.title.includes('转向突变')
+    );
+}
+
 function getFocusCoordinates(mapState: MapState, issue: MapQualityIssue) {
     const positions = getIssuePositions(mapState, issue);
     if (positions.length === 0) {
@@ -69,13 +95,87 @@ function getFocusCoordinates(mapState: MapState, issue: MapQualityIssue) {
         return allPoints.map((point) => [point.x, point.y]);
     }
     const box = new THREE.Box2().setFromPoints(positions.map((position) => new THREE.Vector2(position.x, position.y)));
-    const padding = Math.max(8, Math.max(box.max.x - box.min.x, box.max.y - box.min.y) * 0.35);
+    const center = box.getCenter(new THREE.Vector2());
+    const extent = Math.max(box.max.x - box.min.x, box.max.y - box.min.y);
+    const targetExtent = Math.max(QUALITY_FOCUS_MIN_EXTENT, extent * 1.7);
+    const halfExtent = targetExtent / 2;
     return [
-        [box.min.x - padding, box.min.y - padding],
-        [box.max.x + padding, box.min.y - padding],
-        [box.max.x + padding, box.max.y + padding],
-        [box.min.x - padding, box.max.y + padding],
+        [center.x - halfExtent, center.y - halfExtent],
+        [center.x + halfExtent, center.y - halfExtent],
+        [center.x + halfExtent, center.y + halfExtent],
+        [center.x - halfExtent, center.y + halfExtent],
     ];
+}
+
+function getIssueGuide(issue: MapQualityIssue): IssueGuide {
+    const text = `${issue.id} ${issue.title} ${issue.description} ${issue.suggestion}`;
+    if (text.includes('没有前驱')) {
+        return {
+            title: '没有前驱怎么处理',
+            steps: [
+                '如果它是地图入口或采图起点，可以保留为警告，发布后在仿真里确认车辆能从这里进入。',
+                '如果它不是入口，选中这条车道和上一段车道，按几何关系使用“直道连接”或“弯道连接”。',
+                '连接后重新质检；如果仍无前驱，检查两段车道行驶方向是否相反。',
+            ],
+        };
+    }
+    if (text.includes('没有后继')) {
+        return {
+            title: '没有后继怎么处理',
+            steps: [
+                '如果它是地图出口或道路终点，可以保留为警告。',
+                '如果车辆应该继续行驶，选中这条车道和下一段车道，用“直道连接”或“弯道连接”补齐后继。',
+                '连接后看箭头方向；后继接反时会继续出现断点或方向突变。',
+            ],
+        };
+    }
+    if (text.includes('转弯半径')) {
+        return {
+            title: '转弯半径小怎么处理',
+            steps: [
+                '半径低于 2m 按硬错误处理，需要拉开端点或重建弯道。',
+                '2m 到 4.5m 属于低速风险段，先降低限速，再在 Dreamview 里确认车辆不压线、不抖动。',
+                '优先用弯道连接重建，少用手动拖控制点硬拐；重建后检查最小宽度和左右边界是否交叉。',
+            ],
+        };
+    }
+    if (text.includes('偏窄') || text.includes('宽度')) {
+        return {
+            title: '车道偏窄怎么处理',
+            steps: [
+                '先点选定位，确认是不是自动连接段或合流段被挤窄。',
+                '如果不是特殊窄道，把左右边界或弯道端点拉开，目标最小宽度建议不低于 2.6m。',
+                '如果是确实很窄的园区入口，保留前需要在仿真里低速通过验证。',
+            ],
+        };
+    }
+    if (text.includes('疑似断点') || text.includes('拓扑') || text.includes('孤立')) {
+        return {
+            title: '拓扑断点怎么处理',
+            steps: [
+                '点击问题后看高亮的两个端点，确认它们是否属于同一条可通行路线。',
+                '直线延续用“直道连接”；存在明显转向、进出环岛或合流时用“弯道连接”。',
+                '如果是地图边界入口/出口，可以保留警告，但要确认它不会阻断主路线。',
+            ],
+        };
+    }
+    if (text.includes('方向突变') || text.includes('方向断裂')) {
+        return {
+            title: '方向突变怎么处理',
+            steps: [
+                '两条车道虽然已经接上，但航向变化过大，车辆会急打方向。',
+                '删除硬连接段，改用单独的弯道连接段过渡。',
+                '如果这是路口内急转，降低限速并在仿真里确认轨迹稳定。',
+            ],
+        };
+    }
+    return {
+        title: '处理顺序',
+        steps: [
+            '先处理红色错误；黄色警告可以发布，但需要人工确认是否是合法入口、出口或低速场景。',
+            '点击问题会定位到地图对象；修完后重新打开质检确认数量变化。',
+        ],
+    };
 }
 
 function addLine(group: THREE.Group, positions: THREE.Vector3[], color: number) {
@@ -167,6 +267,22 @@ function renderQualityOverlay(mapState: MapState, issues: MapQualityIssue[], sel
     PubSub.publish('render');
 }
 
+function clearQualityOverlay(mapState: MapState) {
+    const { scene } = mapState;
+    if (!scene) {
+        return;
+    }
+    const oldGroup = scene.getObjectByName(OVERLAY_GROUP_NAME);
+    if (oldGroup) {
+        scene.remove(oldGroup);
+        oldGroup.traverse((object: any) => {
+            object.geometry?.dispose?.();
+            object.material?.dispose?.();
+        });
+        PubSub.publish('render');
+    }
+}
+
 function getStatusClass(errors: number, warnings: number) {
     if (errors > 0) {
         return 'is-error';
@@ -251,7 +367,11 @@ function formatIssueReport(report: MapQualityReport, issues: MapQualityIssue[]) 
     return lines.join('\n');
 }
 
-export default function MapQualityPanel() {
+interface MapQualityPanelProps {
+    embedded?: boolean;
+}
+
+export default function MapQualityPanel({ embedded = false }: MapQualityPanelProps) {
     const [collapsed, setCollapsed] = useState(false);
     const [selectedIssueId, setSelectedIssueId] = useState('');
     const [issueFilter, setIssueFilter] = useState<IssueFilter>('all');
@@ -265,24 +385,31 @@ export default function MapQualityPanel() {
     const hasMapData = Object.keys(mapState.lanes).length > 0 || Object.keys(mapState.boundarys).length > 0;
     const issues = report.issues;
 
-    useEffect(() => {
-        renderQualityOverlay(mapState, issues, selectedIssueId);
-        return () => {
-            if (!mapState.scene) {
-                return;
-            }
-            const oldGroup = mapState.scene.getObjectByName(OVERLAY_GROUP_NAME);
-            if (oldGroup) {
-                mapState.scene.remove(oldGroup);
-            }
-        };
-    }, [mapState, issues, selectedIssueId]);
+    useEffect(() => () => clearQualityOverlay(useManagerStore.getState().mapState), []);
 
-    if (!hasMapData) {
+    if (!hasMapData && !embedded) {
         return null;
+    }
+    if (!hasMapData) {
+        return (
+            <div className="quality-panel quality-panel-docked is-pass">
+                <div className="quality-panel-header">
+                    <div>
+                        <div className="quality-panel-title">地图质量检查</div>
+                        <div className="quality-panel-summary">等待地图数据</div>
+                    </div>
+                </div>
+                <div className="quality-panel-empty">打开底图或标注地图后，这里会显示绘制、拓扑、预检和发布问题。</div>
+            </div>
+        );
     }
 
     const handleIssueClick = (issue: MapQualityIssue) => {
+        setSelectedIssueId(issue.id);
+    };
+
+    const handleLocateIssue = (issue: MapQualityIssue, event?: React.MouseEvent) => {
+        event?.stopPropagation();
         setSelectedIssueId(issue.id);
         const pickElement = pickElementFromIssue(mapState, issue);
         if (pickElement) {
@@ -293,7 +420,17 @@ export default function MapQualityPanel() {
         }
         const coordinates = getFocusCoordinates(mapState, issue);
         if (coordinates.length >= 3) {
-            PubSub.publishSync('cameraMove', coordinates);
+            PubSub.publishSync('cameraMove', {
+                coordinates,
+                minExtent: QUALITY_FOCUS_MIN_EXTENT,
+                padding: {
+                    top: 112,
+                    right: 32,
+                    bottom: 36,
+                    left: 138,
+                },
+            });
+            renderQualityOverlay(useManagerStore.getState().mapState, [issue], issue.id);
             PubSub.publish('render');
         }
     };
@@ -367,7 +504,15 @@ export default function MapQualityPanel() {
         });
     };
 
-    const filteredIssues = issues.filter((issue) => issueFilter === 'all' || issue.severity === issueFilter);
+    const filteredIssues = issues.filter((issue) => {
+        if (issueFilter === 'all') {
+            return true;
+        }
+        if (issueFilter === 'topology') {
+            return isTopologyIssue(issue);
+        }
+        return issue.severity === issueFilter;
+    });
     const topIssues = filteredIssues.slice(0, 18);
     const remainingIssueCount = filteredIssues.length - topIssues.length;
     const statusClass = getStatusClass(report.summary.errors, report.summary.warnings);
@@ -388,10 +533,17 @@ export default function MapQualityPanel() {
             value: 'warning',
             count: report.summary.warnings,
         },
+        {
+            label: '拓扑',
+            value: 'topology',
+            count: issues.filter(isTopologyIssue).length,
+        },
     ];
 
     return (
-        <div className={`quality-panel ${statusClass} ${collapsed ? 'is-collapsed' : ''}`}>
+        <div
+            className={`quality-panel ${embedded ? 'quality-panel-docked' : ''} ${statusClass} ${collapsed ? 'is-collapsed' : ''}`}
+        >
             <div className="quality-panel-header">
                 <div>
                     <div className="quality-panel-title">地图质量检查</div>
@@ -408,12 +560,14 @@ export default function MapQualityPanel() {
                             复制
                         </Button>
                     )}
-                    <Button size="small" onClick={() => setCollapsed(!collapsed)}>
-                        {collapsed ? '展开' : '收起'}
-                    </Button>
+                    {!embedded && (
+                        <Button size="small" onClick={() => setCollapsed(!collapsed)}>
+                            {collapsed ? '展开' : '收起'}
+                        </Button>
+                    )}
                 </div>
             </div>
-            {!collapsed && (
+            {(!collapsed || embedded) && (
                 <>
                     <div className="quality-workflow">
                         {workflowSteps.map((step) => (
@@ -441,31 +595,60 @@ export default function MapQualityPanel() {
                                 {issues.length === 0 ? '当前未发现阻塞发布的问题。' : '当前筛选下没有问题。'}
                             </div>
                         )}
-                        {topIssues.map((issue) => (
-                            <button
-                                type="button"
-                                key={issue.id}
-                                className={`quality-issue ${issue.severity} ${
-                                    selectedIssueId === issue.id ? 'active' : ''
-                                }`}
-                                onClick={() => handleIssueClick(issue)}
-                            >
-                                <span className="quality-issue-level">
-                                    {issue.severity === 'error' ? '错误' : '警告'}
-                                </span>
-                                <span className="quality-issue-main">
-                                    <strong>{issue.title}</strong>
-                                    <span>{issue.suggestion}</span>
-                                    {selectedIssueId === issue.id && issue.details && issue.details.length > 0 && (
-                                        <span className="quality-issue-details">
-                                            {issue.details.map((detail) => (
-                                                <em key={detail}>{detail}</em>
-                                            ))}
-                                        </span>
-                                    )}
-                                </span>
-                            </button>
-                        ))}
+                        {topIssues.map((issue) => {
+                            const issueGuide = getIssueGuide(issue);
+                            return (
+                                <div
+                                    role="button"
+                                    tabIndex={0}
+                                    key={issue.id}
+                                    className={`quality-issue ${issue.severity} ${
+                                        selectedIssueId === issue.id ? 'active' : ''
+                                    }`}
+                                    onClick={() => handleIssueClick(issue)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                            event.preventDefault();
+                                            handleIssueClick(issue);
+                                        }
+                                    }}
+                                >
+                                    <span className="quality-issue-level">
+                                        {issue.severity === 'error' ? '错误' : '警告'}
+                                    </span>
+                                    <span className="quality-issue-main">
+                                        <strong>{issue.title}</strong>
+                                        <span>{issue.suggestion}</span>
+                                        {selectedIssueId === issue.id && (
+                                            <>
+                                                {issue.details && issue.details.length > 0 && (
+                                                    <span className="quality-issue-details">
+                                                        {issue.details.map((detail) => (
+                                                            <em key={detail}>{detail}</em>
+                                                        ))}
+                                                    </span>
+                                                )}
+                                                <span className="quality-issue-guide">
+                                                    <b>{issueGuide.title}</b>
+                                                    {issueGuide.steps.map((step, index) => (
+                                                        <em key={step}>{`${index + 1}. ${step}`}</em>
+                                                    ))}
+                                                    {issueGuide.note && <em>{issueGuide.note}</em>}
+                                                </span>
+                                                <span className="quality-issue-tools">
+                                                    <button
+                                                        type="button"
+                                                        onClick={(event) => handleLocateIssue(issue, event)}
+                                                    >
+                                                        定位到地图
+                                                    </button>
+                                                </span>
+                                            </>
+                                        )}
+                                    </span>
+                                </div>
+                            );
+                        })}
                         {remainingIssueCount > 0 && (
                             <div className="quality-panel-more">{`还有 ${remainingIssueCount} 个问题，优先处理红色错误。`}</div>
                         )}

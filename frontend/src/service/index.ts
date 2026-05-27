@@ -214,6 +214,17 @@ class FileService {
         return this.requestJson('/runtime/released-maps');
     }
 
+    async getAIAssistantStatus() {
+        return this.requestJson('/runtime/ai-assistant/status');
+    }
+
+    async askMapAssistant(payload: { question: string; context: any }) {
+        return this.requestJson('/runtime/ai-assistant', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+    }
+
     async importBaseMapZip(file: File, mapName: string, overwrite: boolean = false) {
         const formData = new FormData();
         formData.append('file', file);
@@ -423,10 +434,10 @@ class FileService {
         return this.requestJson('/runtime/deploy-config');
     }
 
-    async preflightDeploy() {
+    async preflightDeploy(mapName: string = '') {
         return this.requestJson('/runtime/preflight-deploy', {
             method: 'POST',
-            body: JSON.stringify({}),
+            body: JSON.stringify({ mapName }),
         });
     }
 
@@ -472,6 +483,13 @@ class FileService {
         return this.requestJson('/runtime/deploy-latest-job', {
             method: 'POST',
             body: JSON.stringify({}),
+        });
+    }
+
+    async startDeployReleasedMapJob(mapName: string) {
+        return this.requestJson('/runtime/deploy-map-job', {
+            method: 'POST',
+            body: JSON.stringify({ mapName }),
         });
     }
 
