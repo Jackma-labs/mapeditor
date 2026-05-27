@@ -1260,16 +1260,67 @@
         width: 100%;
     }
 
+    .edge-deploy-overview {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 16px;
+    }
+
+    .edge-deploy-metric {
+        min-width: 0;
+        padding: 10px 12px;
+        border: 1px solid #3c4353;
+        border-radius: 6px;
+        background: #222837;
+
+        span,
+        strong {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        span {
+            margin-bottom: 4px;
+            color: #8f9db3;
+            font-size: 12px;
+            line-height: 16px;
+        }
+
+        strong {
+            color: #f3f7ff;
+            font-size: 13px;
+            font-weight: 600;
+            line-height: 18px;
+        }
+
+        &.ok {
+            border-color: rgba(70, 190, 130, 0.58);
+        }
+
+        &.warning {
+            border-color: rgba(255, 176, 32, 0.7);
+        }
+
+        &.error {
+            border-color: rgba(255, 77, 88, 0.68);
+        }
+    }
+
     .edge-deploy-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        gap: 18px 24px;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
+        gap: 16px 22px;
     }
 
     .edge-deploy-section {
         min-width: 0;
-        padding-top: 12px;
-        border-top: 1px solid #3c4353;
+        padding: 14px 14px 2px;
+        border: 1px solid #3c4353;
+        border-radius: 6px;
+        background: rgba(31, 38, 51, 0.68);
     }
 
     .edge-deploy-section-title {
@@ -1292,7 +1343,7 @@
 
     .edge-deploy-map-summary {
         display: grid;
-        grid-template-columns: 92px minmax(0, 1fr) 90px;
+        grid-template-columns: minmax(0, 1.3fr) 88px minmax(0, 1fr) 80px;
         gap: 10px;
         padding: 10px 0 2px;
         border-top: 1px solid #353b49;
@@ -1322,8 +1373,30 @@
         }
     }
 
+    .edge-deploy-option {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        line-height: 18px;
+
+        span {
+            overflow: hidden;
+            color: #dce8f8;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        small {
+            overflow: hidden;
+            color: #8f9db3;
+            font-size: 12px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+    }
+
     .edge-deploy-checks {
-        max-height: 210px;
+        max-height: 300px;
         overflow-y: auto;
     }
 
@@ -1351,14 +1424,31 @@
         display: flex;
         align-items: flex-start;
         gap: 8px;
-        min-height: 28px;
-        padding: 3px 0;
+        min-height: 34px;
+        padding: 6px 0;
+        border-bottom: 1px solid rgba(60, 67, 83, 0.56);
         color: #a6b5cc;
 
-        span:last-child {
+        > div {
             min-width: 0;
-            line-height: 22px;
+            line-height: 20px;
             word-break: break-word;
+        }
+
+        strong,
+        span {
+            display: block;
+        }
+
+        strong {
+            color: #dce8f8;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        span {
+            color: #a6b5cc;
+            font-size: 12px;
         }
     }
 
@@ -1375,6 +1465,7 @@
     }
 
     @media (max-width: 900px) {
+        .edge-deploy-overview,
         .edge-deploy-grid,
         .edge-deploy-field-grid,
         .edge-deploy-field-grid.compact {

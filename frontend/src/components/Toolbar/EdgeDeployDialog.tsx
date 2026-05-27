@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { CloudUploadOutlined, ReloadOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons';
 import { Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Tag, message } from 'antd';
 import FileService from 'src/service/index';
 
@@ -75,6 +76,38 @@ const mapStatusColor = (map: any) => {
     return 'gold';
 };
 
+const getChecks = (preflight: any) => (Array.isArray(preflight?.checks) ? preflight.checks : []);
+
+const getCheck = (preflight: any, name: string) => getChecks(preflight).find((item: any) => item.name === name);
+
+const formatMeters = (value: any) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+        return '待预检';
+    }
+    return `${number.toFixed(number >= 10 ? 1 : 2)} m`;
+};
+
+const formatBoundsCenter = (bounds: any) => {
+    if (!bounds || !Number.isFinite(Number(bounds.centerX)) || !Number.isFinite(Number(bounds.centerY))) {
+        return '待预检';
+    }
+    return `${Number(bounds.centerX).toFixed(3)}, ${Number(bounds.centerY).toFixed(3)}`;
+};
+
+const checkTitleMap: Record<string, string> = {
+    'edge-mode': '部署模式',
+    'edge-target': '目标设备',
+    'ssh-connectivity': 'SSH 连接',
+    'host-upload-root': '上传目录',
+    'target-map-root': '地图目录',
+    'edge-docker-container': 'Docker 容器',
+    'edge-dreamview-switch': 'Dreamview 切换',
+    'edge-dreamview-hmi': 'Dreamview 当前地图',
+    'selected-map-coordinates': '发布包坐标',
+    'selected-map-vehicle-pose': '车辆位置',
+};
+
 export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogProps) {
     const [form] = Form.useForm();
     const [loading, setLoading] = useState(false);
@@ -87,6 +120,23 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         [releasedMaps, selectedMapName],
     );
     const selectableMaps = useMemo(() => releasedMaps.filter((item: any) => item.selectable), [releasedMaps]);
+    const preflightChecks = useMemo(() => getChecks(preflight), [preflight]);
+    const dreamviewCheck = useMemo(() => getCheck(preflight, 'edge-dreamview-hmi'), [preflight]);
+    const coordinateCheck = useMemo(() => getCheck(preflight, 'selected-map-coordinates'), [preflight]);
+    const vehiclePoseCheck = useMemo(() => getCheck(preflight, 'selected-map-vehicle-pose'), [preflight]);
+    const vehiclePoseDetails = vehiclePoseCheck?.details || coordinateCheck?.details?.vehiclePoseValidation || null;
+    const coordinateBounds = coordinateCheck?.details?.localBounds || null;
+    const readyCheckCount = preflightChecks.filter((item: any) => item.status === 'ok').length;
+    const warningCheckCount = preflightChecks.filter((item: any) => item.status === 'warning').length;
+    const errorCheckCount = preflightChecks.filter((item: any) => item.status === 'error').length;
+    let overviewStatus = 'idle';
+    if (errorCheckCount > 0) {
+        overviewStatus = 'error';
+    } else if (warningCheckCount > 0) {
+        overviewStatus = 'warning';
+    } else if (preflight) {
+        overviewStatus = 'ok';
+    }
 
     const loadConfig = useCallback(async () => {
         setLoading(true);
@@ -186,6 +236,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const saveAndPreflight = async () => {
         const values = await form.validateFields();
         setLoading(true);
+        setJobText(`正在预检：${values.mapName || '所选发布包'}`);
         try {
             const response = await FileService.configureEdgeDeploy({
                 ...values,
@@ -216,14 +267,26 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             });
         } finally {
             setLoading(false);
+            setJobText('');
         }
     };
 
     const deploySelected = async () => {
-        const { mapName } = await form.validateFields(['mapName']);
+        const values = await form.validateFields();
+        const { mapName } = values;
         setLoading(true);
-        setJobText(`正在提交部署任务：${mapName}`);
+        setJobText(`正在保存配置并预检：${mapName}`);
         try {
+            const configResponse = await FileService.configureEdgeDeploy({
+                ...values,
+                mode: 'ssh',
+                autoDiscover: false,
+            });
+            setPreflight(configResponse?.data?.preflight || null);
+            if (configResponse?.code !== 0) {
+                throw new Error(configResponse?.message || '预检未通过，已停止部署');
+            }
+            setJobText(`正在提交部署任务：${mapName}`);
             const response = await FileService.startDeployReleasedMapJob(mapName);
             if (response?.code !== 0) {
                 throw new Error(response?.message || '提交部署任务失败');
@@ -268,10 +331,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const footer = (
         <Space className="edge-deploy-footer">
             <Button onClick={onCancel}>关闭</Button>
-            <Button onClick={saveAndPreflight} loading={loading}>
+            <Button icon={<SaveOutlined />} onClick={saveAndPreflight} loading={loading}>
                 保存并预检
             </Button>
-            <Button type="primary" onClick={deploySelected} loading={loading}>
+            <Button type="primary" icon={<CloudUploadOutlined />} onClick={deploySelected} loading={loading}>
                 部署所选地图
             </Button>
         </Space>
@@ -287,9 +350,31 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             className="edge-deploy-dialog"
         >
             <Form form={form} layout="vertical" className="edge-deploy-form">
+                <div className="edge-deploy-overview">
+                    <div className={`edge-deploy-metric ${dreamviewCheck?.status || 'idle'}`}>
+                        <span>Dreamview 当前地图</span>
+                        <strong>{dreamviewCheck?.details?.currentMap || '待预检'}</strong>
+                    </div>
+                    <div className={`edge-deploy-metric ${vehiclePoseCheck?.status || 'idle'}`}>
+                        <span>车辆到中心线</span>
+                        <strong>{formatMeters(vehiclePoseDetails?.nearest?.distanceMeters)}</strong>
+                    </div>
+                    <div className={`edge-deploy-metric ${coordinateCheck?.status || 'idle'}`}>
+                        <span>发布包中心</span>
+                        <strong>{formatBoundsCenter(coordinateBounds)}</strong>
+                    </div>
+                    <div className={`edge-deploy-metric ${overviewStatus}`}>
+                        <span>预检概况</span>
+                        <strong>
+                            {preflight
+                                ? `${readyCheckCount} 通过 / ${warningCheckCount} 警告 / ${errorCheckCount} 错误`
+                                : '待预检'}
+                        </strong>
+                    </div>
+                </div>
                 <div className="edge-deploy-grid">
                     <section className="edge-deploy-section">
-                        <div className="edge-deploy-section-title">连接</div>
+                        <div className="edge-deploy-section-title">目标设备</div>
                         <div className="edge-deploy-field-grid compact">
                             <Form.Item
                                 label="边缘设备 IP"
@@ -325,7 +410,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                 <Form.Item name="targetMapRoot" noStyle>
                                     <Input placeholder="/apollo/modules/map/data" />
                                 </Form.Item>
-                                <Button onClick={discoverMapRoot} loading={loading}>
+                                <Button icon={<SearchOutlined />} onClick={discoverMapRoot} loading={loading}>
                                     自动发现
                                 </Button>
                             </Space.Compact>
@@ -360,21 +445,40 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                         placeholder="选择发布包"
                                         optionFilterProp="title"
                                         onChange={() => setPreflight(null)}
-                                        options={selectableMaps.map((item: any, index: number) => ({
-                                            value: item.mapName,
-                                            title: `${item.mapName} ${item.statusMessage || ''}`,
-                                            disabled: !item.ready,
-                                            label: `${item.mapName}${index === 0 ? '（最新修改）' : ''}`,
-                                        }))}
+                                        options={selectableMaps.map((item: any, index: number) => {
+                                            const optionStatus = item.ready ? 'ready' : item.status || 'invalid';
+                                            const optionTime = item.modifiedAt
+                                                ? ` · ${formatModifiedTime(item.modifiedAt)}`
+                                                : '';
+                                            return {
+                                                value: item.mapName,
+                                                title: `${item.mapName} ${item.statusMessage || ''}`,
+                                                disabled: !item.ready,
+                                                label: (
+                                                    <div className="edge-deploy-option">
+                                                        <span>{item.mapName}</span>
+                                                        <small>
+                                                            {optionStatus}
+                                                            {index === 0 ? ' · 最新修改' : ''}
+                                                            {optionTime}
+                                                        </small>
+                                                    </div>
+                                                ),
+                                            };
+                                        })}
                                     />
                                 </Form.Item>
-                                <Button onClick={refreshReleasedMaps} loading={loading}>
+                                <Button icon={<ReloadOutlined />} onClick={refreshReleasedMaps} loading={loading}>
                                     刷新
                                 </Button>
                             </Space.Compact>
                         </Form.Item>
                         {selectedMap && (
                             <div className="edge-deploy-map-summary">
+                                <div className="wide">
+                                    <span>发布包</span>
+                                    <strong>{selectedMap.mapName}</strong>
+                                </div>
                                 <div>
                                     <span>状态</span>
                                     <Tag color={mapStatusColor(selectedMap)}>
@@ -402,10 +506,13 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                     <span>预检结果</span>
                                     {preflight.ready ? <Tag color="green">通过</Tag> : <Tag color="red">未通过</Tag>}
                                 </div>
-                                {(preflight.checks || []).map((item: any) => (
+                                {preflightChecks.map((item: any) => (
                                     <div className="edge-deploy-check-row" key={item.name}>
                                         <Tag color={checkColor(item.status)}>{item.status}</Tag>
-                                        <span>{item.message}</span>
+                                        <div>
+                                            <strong>{checkTitleMap[item.name] || item.name}</strong>
+                                            <span>{item.message}</span>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
