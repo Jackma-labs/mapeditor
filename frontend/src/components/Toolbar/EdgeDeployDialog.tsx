@@ -236,11 +236,23 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             const dreamviewSwitched = Boolean(
                 job.result?.dreamviewSwitchResult || job.result?.deployment?.dreamviewSwitch,
             );
+            const dreamviewVerification =
+                job.result?.dreamviewSwitchResult?.verification ||
+                job.result?.deployment?.dreamviewSwitch?.verification ||
+                null;
+            let dreamviewText = '';
+            if (dreamviewVerification) {
+                dreamviewText = `，Dreamview 已确认加载 ${
+                    dreamviewVerification.hmiCurrentMap || dreamviewVerification.expectedMapName
+                }`;
+            } else if (dreamviewSwitched) {
+                dreamviewText = '，Dreamview 已执行切换';
+            }
             Modal.success({
                 title: '部署完成',
                 content: `地图 ${
                     job.result?.mapName || job.result?.deployment?.mapName || ''
-                } 已部署到边缘设备${dreamviewSwitched ? '，Dreamview 已切换并重启' : ''}。`,
+                } 已部署到边缘设备${dreamviewText}。`,
             });
         } catch (error: any) {
             Modal.error({

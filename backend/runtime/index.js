@@ -594,6 +594,14 @@ function summarizeCoordinateBounds(points) {
   };
 }
 
+function coordinatePointDistance(left, right) {
+  return Math.hypot(Number(left.x) - Number(right.x), Number(left.y) - Number(right.y));
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function parseApolloMapCoordinateBounds(text) {
   const points = [];
   let pendingX = null;
@@ -648,6 +656,183 @@ function formatCoordinateBounds(bounds) {
   return `x=${bounds.minX.toFixed(3)}..${bounds.maxX.toFixed(3)}, y=${bounds.minY.toFixed(3)}..${bounds.maxY.toFixed(
     3
   )}, center=${bounds.centerX.toFixed(3)},${bounds.centerY.toFixed(3)}`;
+}
+
+function parseApolloLaneCenterlines(text) {
+  const lines = String(text || '').split(/\r?\n/u);
+  const polylines = [];
+  const stack = [];
+  let inLane = false;
+  let centralDepth = null;
+  let currentPolyline = null;
+  let currentPoint = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const blockStart = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\{/u);
+    if (blockStart) {
+      const name = blockStart[1];
+      stack.push(name);
+      if (name === 'lane') {
+        inLane = true;
+      } else if (name === 'central_curve' && inLane) {
+        centralDepth = stack.length;
+        currentPolyline = [];
+      } else if (name === 'point') {
+        currentPoint = {};
+      }
+    }
+
+    if (currentPoint) {
+      const xMatch = line.match(/\bx:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/iu);
+      const yMatch = line.match(/\by:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/iu);
+      const zMatch = line.match(/\bz:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/iu);
+      if (xMatch) {
+        currentPoint.x = Number(xMatch[1]);
+      }
+      if (yMatch) {
+        currentPoint.y = Number(yMatch[1]);
+      }
+      if (zMatch) {
+        currentPoint.z = Number(zMatch[1]);
+      }
+    }
+
+    const closeCount = (line.match(/\}/gu) || []).length;
+    for (let index = 0; index < closeCount; index += 1) {
+      const top = stack[stack.length - 1];
+      if (top === 'point' && currentPoint && Number.isFinite(currentPoint.x) && Number.isFinite(currentPoint.y)) {
+        if (centralDepth !== null && currentPolyline) {
+          currentPolyline.push({
+            x: currentPoint.x,
+            y: currentPoint.y,
+            z: Number(currentPoint.z) || 0,
+          });
+        }
+        currentPoint = null;
+      }
+      if (top === 'central_curve' && centralDepth === stack.length) {
+        if (currentPolyline && currentPolyline.length > 0) {
+          polylines.push(currentPolyline);
+        }
+        currentPolyline = null;
+        centralDepth = null;
+      }
+      if (top === 'lane') {
+        inLane = false;
+      }
+      stack.pop();
+    }
+  }
+  return polylines;
+}
+
+async function readApolloMapLaneCenterlines(mapDir) {
+  const baseMapTextPath = path.join(mapDir, 'base_map.txt');
+  if (!(await pathExists(baseMapTextPath))) {
+    return [];
+  }
+  return parseApolloLaneCenterlines(await fsp.readFile(baseMapTextPath, 'utf8'));
+}
+
+function nearestPointOnLaneCenterlines(point, polylines) {
+  if (!point || !Array.isArray(polylines) || polylines.length === 0) {
+    return null;
+  }
+  let nearest = null;
+  for (const [polylineIndex, polyline] of polylines.entries()) {
+    for (let pointIndex = 1; pointIndex < polyline.length; pointIndex += 1) {
+      const start = polyline[pointIndex - 1];
+      const end = polyline[pointIndex];
+      const vx = end.x - start.x;
+      const vy = end.y - start.y;
+      const wx = point.x - start.x;
+      const wy = point.y - start.y;
+      const lengthSquared = vx * vx + vy * vy;
+      const t = lengthSquared > 0 ? clampNumber((wx * vx + wy * vy) / lengthSquared, 0, 1) : 0;
+      const projected = {
+        x: start.x + vx * t,
+        y: start.y + vy * t,
+        z: (start.z || 0) + ((end.z || 0) - (start.z || 0)) * t,
+      };
+      const distanceMeters = coordinatePointDistance(point, projected);
+      if (!nearest || distanceMeters < nearest.distanceMeters) {
+        nearest = {
+          distanceMeters,
+          projected,
+          deltaX: point.x - projected.x,
+          deltaY: point.y - projected.y,
+          polylineIndex,
+          segmentIndex: pointIndex - 1,
+          heading: Math.atan2(vy, vx),
+          start,
+          end,
+        };
+      }
+    }
+  }
+  return nearest;
+}
+
+async function readEdgeLocalizationPose(config) {
+  const command = [
+    'set +e',
+    'cd /apollo 2>/dev/null || true',
+    'source /apollo/cyber/setup.bash >/dev/null 2>&1 || true',
+    "timeout 3 cyber_channel echo /apollo/localization/pose 2>/dev/null | sed -n '1,180p'",
+    "timeout 3 cyber_echo /apollo/localization/pose 2>/dev/null | sed -n '1,180p'",
+  ].join('\n');
+  const container = String(config.edgeDeploy.dockerContainer || '').trim();
+  const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
+    timeoutMs: 10000,
+  });
+  return parseLocalizationPose(result.stdout || '');
+}
+
+async function validateReleasedMapAgainstEdgePose(config, sourceDir) {
+  const laneCenterlines = await readApolloMapLaneCenterlines(sourceDir);
+  if (laneCenterlines.length === 0) {
+    return {
+      available: false,
+      status: 'warning',
+      message: 'base_map.txt has no lane central_curve points',
+    };
+  }
+  const pose = await readEdgeLocalizationPose(config);
+  if (!pose) {
+    return {
+      available: false,
+      status: 'warning',
+      message: 'edge localization pose is unavailable',
+    };
+  }
+  const nearest = nearestPointOnLaneCenterlines(pose, laneCenterlines);
+  if (!nearest) {
+    return {
+      available: false,
+      status: 'warning',
+      pose,
+      message: 'nearest lane centerline could not be computed',
+    };
+  }
+  const warningDistanceMeters = Number(config.edgeDeploy.vehicleLaneWarningDistanceMeters || 2);
+  const errorDistanceMeters = Number(config.edgeDeploy.vehicleLaneErrorDistanceMeters || 8);
+  const status =
+    nearest.distanceMeters > errorDistanceMeters
+      ? 'error'
+      : nearest.distanceMeters > warningDistanceMeters
+        ? 'warning'
+        : 'ok';
+  return {
+    available: true,
+    status,
+    pose,
+    nearest,
+    laneCenterlineCount: laneCenterlines.length,
+    warningDistanceMeters,
+    errorDistanceMeters,
+    message: `vehicle to nearest lane centerline is ${nearest.distanceMeters.toFixed(2)}m`,
+  };
 }
 
 async function fetchEdgeReferenceMapBounds(config, remoteRoot, currentMapName) {
@@ -743,6 +928,11 @@ async function validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir,
     referencesChecked: references.length,
     nearestReference,
     maxDistanceMeters,
+    vehiclePoseValidation: await validateReleasedMapAgainstEdgePose(config, sourceDir).catch((error) => ({
+      available: false,
+      status: 'warning',
+      message: error.message,
+    })),
     passed: true,
   };
 }
@@ -8108,6 +8298,28 @@ async function preflightEdgeDeploy(config, params = {}) {
         error.message
       );
     }
+    try {
+      const hmi = await readEdgeDreamviewHmiStatus(config);
+      addCheck(
+        'edge-dreamview-hmi',
+        true,
+        'warning',
+        `Dreamview HMI reachable: current map ${getDreamviewCurrentMap(hmi.status) || 'unknown'}`,
+        {
+          wsUrl: hmi.wsUrl,
+          currentMap: getDreamviewCurrentMap(hmi.status),
+          maps: getDreamviewStatusMaps(hmi.status).slice(0, 20),
+        }
+      );
+    } catch (error) {
+      addCheck(
+        'edge-dreamview-hmi',
+        false,
+        'warning',
+        'Dreamview HMI websocket is not reachable before deployment',
+        error.message
+      );
+    }
   } else {
     addCheck('edge-dreamview-switch', true, 'warning', 'Dreamview auto switch is disabled');
   }
@@ -8126,6 +8338,24 @@ async function preflightEdgeDeploy(config, params = {}) {
       `Released map coordinates ok: ${mapName}; ${formatCoordinateBounds(validation.localBounds)}`,
       validation
     );
+    const vehiclePoseValidation = validation.vehiclePoseValidation;
+    if (vehiclePoseValidation?.available) {
+      addCheck(
+        'selected-map-vehicle-pose',
+        vehiclePoseValidation.status === 'ok',
+        vehiclePoseValidation.status === 'error' ? 'warning' : vehiclePoseValidation.status,
+        `${mapName}: ${vehiclePoseValidation.message}`,
+        vehiclePoseValidation
+      );
+    } else if (vehiclePoseValidation) {
+      addCheck(
+        'selected-map-vehicle-pose',
+        false,
+        'warning',
+        `${mapName}: vehicle-to-lane check skipped: ${vehiclePoseValidation.message}`,
+        vehiclePoseValidation
+      );
+    }
   } catch (error) {
     const message = error?.message || String(error);
     const missingRelease = /no .*released map|released map not found/i.test(message);
@@ -8207,6 +8437,87 @@ function buildEdgeDreamviewSwitchCommand(mapDir) {
   ].join('\n');
 }
 
+function buildEdgeDreamviewWebSocketUrl(config) {
+  const host = String(config.edgeDeploy.dreamviewHost || config.edgeDeploy.host || '').trim();
+  const port = Number(config.edgeDeploy.dreamviewPort || 8888);
+  if (!host) {
+    return '';
+  }
+  return `ws://${host}:${port || 8888}/websocket`;
+}
+
+async function readEdgeDreamviewFlagMapDir(config) {
+  const command = [
+    'set +e',
+    'FLAG=/apollo/modules/common/data/global_flagfile.txt',
+    '[ -f "$FLAG" ] || exit 0',
+    "grep '^--map_dir=' \"$FLAG\" | tail -1 | sed 's/^--map_dir=//'",
+  ].join('\n');
+  const container = String(config.edgeDeploy.dockerContainer || '').trim();
+  const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
+    timeoutMs: 10000,
+  });
+  return String(result.stdout || '').trim().split(/\r?\n/u).filter(Boolean).pop() || '';
+}
+
+async function readEdgeDreamviewHmiStatus(config) {
+  const wsUrl = buildEdgeDreamviewWebSocketUrl(config);
+  if (!wsUrl) {
+    throw new Error('Dreamview websocket URL cannot be built without edge host');
+  }
+  const ws = await connectDreamviewWebSocket(wsUrl);
+  try {
+    return {
+      wsUrl,
+      status: await readDreamviewHmiStatus(ws, APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS),
+    };
+  } finally {
+    ws.close();
+  }
+}
+
+async function verifyEdgeDreamviewMap(config, mapName, mapDir, progress = async () => {}) {
+  const expectedMapName = path.posix.basename(String(mapDir || '').replace(/\/+$/u, '')) || mapName;
+  const expectedNormalized = normalizeDreamviewName(expectedMapName || mapName);
+  await progress(`Verifying Dreamview loaded map: ${expectedMapName}`);
+  const flagMapDir = await readEdgeDreamviewFlagMapDir(config);
+  const normalizedExpectedDir = String(mapDir || '').replace(/\/+$/u, '');
+  const normalizedFlagDir = String(flagMapDir || '').replace(/\/+$/u, '');
+  if (!normalizedFlagDir) {
+    throw new Error('Dreamview map verification failed: global_flagfile.txt has no --map_dir entry');
+  }
+  if (normalizedFlagDir !== normalizedExpectedDir) {
+    throw new Error(
+      `Dreamview map verification failed: flag map_dir is ${flagMapDir}, expected ${normalizedExpectedDir}`
+    );
+  }
+
+  let hmi = null;
+  let hmiError = '';
+  try {
+    hmi = await readEdgeDreamviewHmiStatus(config);
+  } catch (error) {
+    hmiError = error.message;
+    await progress(`Dreamview HMI status was not reachable for verification: ${hmiError}`);
+  }
+  const hmiCurrentMap = getDreamviewCurrentMap(hmi?.status);
+  if (hmiCurrentMap && normalizeDreamviewName(hmiCurrentMap) !== expectedNormalized) {
+    throw new Error(
+      `Dreamview map verification failed: HMI current map is ${hmiCurrentMap}, expected ${expectedMapName}`
+    );
+  }
+  return {
+    expectedMapName,
+    expectedMapDir: normalizedExpectedDir,
+    flagMapDir,
+    hmiCurrentMap: hmiCurrentMap || '',
+    hmiMapCount: getDreamviewStatusMaps(hmi?.status).length,
+    hmiUrl: hmi?.wsUrl || buildEdgeDreamviewWebSocketUrl(config),
+    hmiError,
+    passed: true,
+  };
+}
+
 async function switchEdgeDreamviewMap(config, mapDir, progress = async () => {}) {
   if (config.edgeDeploy.autoSwitchDreamview === false) {
     return null;
@@ -8214,9 +8525,13 @@ async function switchEdgeDreamviewMap(config, mapDir, progress = async () => {})
   const container = String(config.edgeDeploy.dockerContainer || '').trim();
   await progress(`Switching Dreamview to deployed map: ${mapDir}`);
   const command = buildEdgeDreamviewSwitchCommand(mapDir);
-  return runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
+  const switchResult = await runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
     timeoutMs: 90 * 1000,
   });
+  return {
+    ...switchResult,
+    verification: await verifyEdgeDreamviewMap(config, path.posix.basename(mapDir), mapDir, progress),
+  };
 }
 
 async function runEdgeNativeMapTools(config, mapDir, progress = async () => {}) {
@@ -8464,6 +8779,7 @@ async function deployReleasedMap(config, params = {}) {
             code: dreamviewSwitchResult.code,
             stdout: dreamviewSwitchResult.stdout,
             stderr: dreamviewSwitchResult.stderr,
+            verification: dreamviewSwitchResult.verification || null,
           }
         : null,
       postDeploy: postDeployResult
@@ -8585,6 +8901,7 @@ async function rollbackDeployment(config, params = {}) {
             code: dreamviewSwitchResult.code,
             stdout: dreamviewSwitchResult.stdout,
             stderr: dreamviewSwitchResult.stderr,
+            verification: dreamviewSwitchResult.verification || null,
           }
         : null,
       postDeploy: postDeployResult
