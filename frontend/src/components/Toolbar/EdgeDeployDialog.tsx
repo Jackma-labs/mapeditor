@@ -1,5 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { CloudUploadOutlined, ReloadOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons';
+import {
+    CloudUploadOutlined,
+    HistoryOutlined,
+    ReloadOutlined,
+    RollbackOutlined,
+    SaveOutlined,
+    SearchOutlined,
+} from '@ant-design/icons';
 import { Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Tag, message } from 'antd';
 import FileService from 'src/service/index';
 
@@ -115,6 +122,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const [preflight, setPreflight] = useState<any>(null);
     const [jobText, setJobText] = useState('');
     const [releasedMaps, setReleasedMaps] = useState<any[]>([]);
+    const [deploymentRecords, setDeploymentRecords] = useState<any[]>([]);
     const selectedMapName = Form.useWatch('mapName', form);
     const selectedMap = useMemo(
         () => releasedMaps.find((item: any) => item.mapName === selectedMapName) || null,
@@ -132,6 +140,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const readyCheckCount = preflightChecks.filter((item: any) => item.status === 'ok').length;
     const warningCheckCount = preflightChecks.filter((item: any) => item.status === 'warning').length;
     const errorCheckCount = preflightChecks.filter((item: any) => item.status === 'error').length;
+    const recentDeploymentRecords = useMemo(() => deploymentRecords.slice(0, 6), [deploymentRecords]);
     let overviewStatus = 'idle';
     if (errorCheckCount > 0) {
         overviewStatus = 'error';
@@ -140,6 +149,14 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     } else if (preflight) {
         overviewStatus = 'ok';
     }
+
+    const loadDeployments = useCallback(async () => {
+        const response = await FileService.getDeployments();
+        if (response?.code !== 0) {
+            throw new Error(response?.message || '读取部署历史失败');
+        }
+        setDeploymentRecords(Array.isArray(response?.data?.deployments) ? response.data.deployments : []);
+    }, []);
 
     const loadConfig = useCallback(async () => {
         setLoading(true);
@@ -208,10 +225,13 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     useEffect(() => {
         if (open) {
             loadConfig();
+            loadDeployments().catch(() => {
+                setDeploymentRecords([]);
+            });
         } else {
             setJobText('');
         }
-    }, [loadConfig, open]);
+    }, [loadConfig, loadDeployments, open]);
 
     const discoverMapRoot = async () => {
         const values = await form.validateFields(['host', 'user', 'port']);
@@ -320,6 +340,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                     job.result?.mapName || job.result?.deployment?.mapName || ''
                 } 已部署到边缘设备${dreamviewText}。`,
             });
+            await loadDeployments();
         } catch (error: any) {
             Modal.error({
                 title: '部署失败',
@@ -331,11 +352,67 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         }
     };
 
+    const rollbackDeployment = async (record: any) => {
+        setLoading(true);
+        setJobText(`正在回滚部署：${record.mapName || record.id}`);
+        try {
+            const response = await FileService.startRollbackDeploymentJob(record.id);
+            if (response?.code !== 0) {
+                throw new Error(response?.message || '提交回滚任务失败');
+            }
+            const jobId = response?.data?.job?.id;
+            if (!jobId) {
+                throw new Error('后台任务没有返回 jobId');
+            }
+            const job = await waitForRuntimeJob(jobId, `回滚地图 ${record.mapName || ''}`, setJobText);
+            Modal.success({
+                title: '回滚完成',
+                content: `地图 ${job.result?.deployment?.mapName || record.mapName || ''} 已恢复到上一份备份。`,
+            });
+            setPreflight(null);
+            await loadDeployments();
+        } catch (error: any) {
+            Modal.error({
+                title: '回滚失败',
+                content: error?.message || 'Unknown error',
+            });
+        } finally {
+            setLoading(false);
+            setJobText('');
+        }
+    };
+
+    const confirmRollbackDeployment = (record: any) => {
+        Modal.confirm({
+            title: '确认回滚边缘设备地图？',
+            width: 620,
+            okText: '确认回滚',
+            okButtonProps: { danger: true },
+            cancelText: '取消',
+            content: (
+                <div className="edge-deploy-confirm">
+                    <p>{`将把 ${record.mapName || '-'} 回滚到部署前备份。`}</p>
+                    <p>{`备份目录：${record.backupDir || '-'}`}</p>
+                </div>
+            ),
+            onOk: () => rollbackDeployment(record),
+        });
+    };
+
+    const refreshDeployments = () => {
+        loadDeployments().catch((error: any) =>
+            Modal.error({ title: '读取部署历史失败', content: error?.message || 'Unknown error' }),
+        );
+    };
+
     const footer = (
         <Space className="edge-deploy-footer">
             <Button onClick={onCancel}>关闭</Button>
             <Button icon={<SaveOutlined />} onClick={saveAndPreflight} loading={loading}>
                 保存并预检
+            </Button>
+            <Button icon={<HistoryOutlined />} onClick={refreshDeployments} loading={loading}>
+                刷新历史
             </Button>
             <Button type="primary" icon={<CloudUploadOutlined />} onClick={deploySelected} loading={loading}>
                 部署所选地图
@@ -501,6 +578,54 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                     <strong>{`${Math.round((Number(selectedMap.sizeBytes) || 0) / 1024)} KB`}</strong>
                                 </div>
                             </div>
+                        )}
+                    </section>
+
+                    <section className="edge-deploy-section">
+                        <div className="edge-deploy-section-heading">
+                            <div className="edge-deploy-section-title">最近部署</div>
+                            <Button
+                                size="small"
+                                icon={<ReloadOutlined />}
+                                onClick={refreshDeployments}
+                                loading={loading}
+                            >
+                                刷新
+                            </Button>
+                        </div>
+                        {recentDeploymentRecords.length > 0 ? (
+                            <div className="edge-deploy-history-list">
+                                {recentDeploymentRecords.map((item: any) => {
+                                    const rollbackable =
+                                        item.type === 'deploy' &&
+                                        item.status === 'succeeded' &&
+                                        Boolean(item.backupDir);
+                                    return (
+                                        <div className="edge-deploy-history-row" key={item.id}>
+                                            <div className="edge-deploy-history-main">
+                                                <strong>{item.mapName || '-'}</strong>
+                                                <span>
+                                                    {`${item.type || 'deploy'} / ${item.status || '-'} / ${formatModifiedTime(
+                                                        item.finishedAt || item.startedAt,
+                                                    )}`}
+                                                </span>
+                                                <span>{item.remoteMapDir || item.target?.target || '-'}</span>
+                                            </div>
+                                            <Button
+                                                size="small"
+                                                danger
+                                                disabled={!rollbackable || loading}
+                                                icon={<RollbackOutlined />}
+                                                onClick={() => confirmRollbackDeployment(item)}
+                                            >
+                                                回滚
+                                            </Button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : (
+                            <div className="edge-deploy-empty">暂无部署记录。</div>
                         )}
                     </section>
 

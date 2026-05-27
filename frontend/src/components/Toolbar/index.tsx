@@ -635,68 +635,6 @@ export default function Index(prop: ToolbarProps) {
         }
     };
 
-    const rollbackDeployment = async (deploymentId: string) => {
-        try {
-            const response = await FileService.startRollbackDeploymentJob(deploymentId);
-            if (response?.code !== 0) {
-                throw new Error(response?.message || '提交回滚任务失败');
-            }
-            const jobId = response?.data?.job?.id;
-            if (!jobId) {
-                throw new Error('后台任务没有返回 jobId');
-            }
-            const job = await waitForRuntimeJob(jobId, '回滚部署');
-            Modal.success({
-                title: '回滚完成',
-                content: `地图 ${job.result?.deployment?.mapName || ''} 已恢复到上一个备份。`,
-            });
-        } catch (error: any) {
-            Modal.error({
-                title: '回滚失败',
-                content: error?.message || 'Unknown error',
-            });
-        }
-    };
-
-    const showDeploymentHistory = async () => {
-        try {
-            const response = await FileService.getDeployments();
-            if (response?.code !== 0) {
-                throw new Error(response?.message || '读取部署历史失败');
-            }
-            const deployments = response?.data?.deployments || [];
-            Modal.info({
-                title: '部署历史',
-                width: 760,
-                content: (
-                    <div className="runtime-status-modal deployment-history-modal">
-                        {deployments.length === 0 && <p>还没有部署记录。</p>}
-                        {deployments.slice(0, 12).map((item: any) => (
-                            <div className="deployment-history-row" key={item.id}>
-                                <div>
-                                    <p>{`${item.type || 'deploy'} / ${item.status} / ${item.mapName || ''}`}</p>
-                                    <p>{`${item.finishedAt || item.startedAt || ''}`}</p>
-                                </div>
-                                <Button
-                                    size="small"
-                                    disabled={item.type !== 'deploy' || item.status !== 'succeeded' || !item.backupDir}
-                                    onClick={() => rollbackDeployment(item.id)}
-                                >
-                                    回滚
-                                </Button>
-                            </div>
-                        ))}
-                    </div>
-                ),
-            });
-        } catch (error: any) {
-            Modal.error({
-                title: '读取部署历史失败',
-                content: error?.message || 'Unknown error',
-            });
-        }
-    };
-
     const showHelpDocs = () => {
         Modal.info({
             title: '地图生产工作流',
@@ -863,9 +801,6 @@ export default function Index(prop: ToolbarProps) {
                 break;
             case 'apollolite-workflow':
                 showApolloLiteWorkflow();
-                break;
-            case 'deploy-history':
-                showDeploymentHistory();
                 break;
             case 'help-doc':
                 showHelpDocs();
@@ -1064,16 +999,6 @@ export default function Index(prop: ToolbarProps) {
                                 />
                             ),
                             key: 'edge-device',
-                            disabled: !canDeploy,
-                        },
-                        {
-                            label: (
-                                <FileMenuLabel
-                                    title="部署历史 / 回滚"
-                                    description={canDeploy ? '查看部署记录，必要时回滚' : '需要管理员权限'}
-                                />
-                            ),
-                            key: 'deploy-history',
                             disabled: !canDeploy,
                         },
                     ],

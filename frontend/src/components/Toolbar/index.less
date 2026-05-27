@@ -1186,24 +1186,6 @@
     word-break: break-word;
 }
 
-.deployment-history-modal {
-    max-height: 520px;
-    overflow-y: auto;
-
-    .deployment-history-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 10px 0;
-        border-bottom: 1px solid #e6e8ef;
-
-        p {
-            margin: 0 0 4px;
-        }
-    }
-}
-
 .edge-deploy-dialog {
     .ant-modal-content,
     .ant-modal-header {
@@ -1331,6 +1313,18 @@
         line-height: 20px;
     }
 
+    .edge-deploy-section-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+
+        .edge-deploy-section-title {
+            margin-bottom: 0;
+        }
+    }
+
     .edge-deploy-field-grid {
         display: grid;
         grid-template-columns: minmax(0, 1fr) 160px;
@@ -1447,6 +1441,55 @@
         }
     }
 
+    .edge-deploy-history-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 228px;
+        overflow-y: auto;
+        padding-bottom: 8px;
+    }
+
+    .edge-deploy-history-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 74px;
+        gap: 10px;
+        align-items: center;
+        padding: 9px 10px;
+        border: 1px solid rgba(60, 67, 83, 0.72);
+        border-radius: 6px;
+        background: rgba(28, 34, 46, 0.74);
+
+        .ant-btn {
+            justify-self: end;
+        }
+    }
+
+    .edge-deploy-history-main {
+        min-width: 0;
+
+        strong,
+        span {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        strong {
+            color: #f3f7ff;
+            font-size: 13px;
+            font-weight: 600;
+            line-height: 18px;
+        }
+
+        span {
+            color: #8f9db3;
+            font-size: 12px;
+            line-height: 17px;
+        }
+    }
+
     .edge-deploy-checks-title {
         display: flex;
         align-items: center;
@@ -1523,6 +1566,15 @@
     max-height: 280px;
     overflow: auto;
     white-space: pre-wrap;
+}
+
+.edge-deploy-confirm {
+    color: #3c4658;
+
+    p {
+        margin: 0 0 8px;
+        word-break: break-word;
+    }
 }
 
 .quality-panel {
