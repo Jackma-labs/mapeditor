@@ -28,6 +28,9 @@ async function main() {
 
   const editorMap = {
     header: { version: 'contract-test' },
+    sourceCrs: 'LOCAL_ENU_METERS',
+    coordinateCenter: { x: 500018, y: 4300000, z: 0 },
+    trajectoryCenter: { x: 18, y: 0, z: 0 },
     point: [
       point('lane-left-a', 0, 2, 1),
       point('lane-left-b', 30, 2, 1),
@@ -122,6 +125,11 @@ async function main() {
   await convertEditorMapToApolloPackage({ mapName: 'contract-test', jsonPath, releaseDir });
 
   const manifest = JSON.parse(await fs.readFile(path.join(releaseDir, 'manifest.json'), 'utf8'));
+  const coordinateMetadata = JSON.parse(await fs.readFile(path.join(releaseDir, 'coordinate_metadata.json'), 'utf8'));
+  const qualityGate = JSON.parse(await fs.readFile(path.join(releaseDir, 'quality_gate.json'), 'utf8'));
+  const defaultRoutingRequest = JSON.parse(await fs.readFile(path.join(releaseDir, 'default_routing_request.json'), 'utf8'));
+  const routingLoopPlan = JSON.parse(await fs.readFile(path.join(releaseDir, 'routing_loop_plan.json'), 'utf8'));
+  const poi = JSON.parse(await fs.readFile(path.join(releaseDir, 'poi.json'), 'utf8'));
   const baseMapText = await fs.readFile(path.join(releaseDir, 'base_map.txt'), 'utf8');
 
   assert.strictEqual(manifest.summary.lanes, 1);
@@ -135,7 +143,32 @@ async function main() {
   assert.strictEqual(manifest.summary.parkingSpaces, 1);
   assert.strictEqual(manifest.summary.clearAreas, 1);
   assert.strictEqual(manifest.summary.overlaps, 5);
+  assert.strictEqual(manifest.summary.qualityGateReady, true);
+  assert.strictEqual(manifest.summary.qualityGateErrors, 0);
+  assert.strictEqual(manifest.summary.defaultRouteGenerated, true);
   assert.ok(manifest.contract);
+  assert.strictEqual(manifest.coordinateMetadata.targetCrs.epsg, 'EPSG:32650');
+  assert.strictEqual(coordinateMetadata.targetCrs.epsg, 'EPSG:32650');
+  assert.strictEqual(coordinateMetadata.targetCrs.zone, 50);
+  assert.strictEqual(coordinateMetadata.captureTrajectoryCenter.enforcement, 'strict');
+  assert.strictEqual(qualityGate.ready, true);
+  assert.ok(qualityGate.checks.find((item) => item.id === 'coordinate-metadata' && item.status === 'ok'));
+  assert.ok(qualityGate.checks.find((item) => item.id === 'coordinate-bounds' && item.status === 'ok'));
+  assert.ok(qualityGate.checks.find((item) => item.id === 'capture-center-distance' && item.status === 'ok'));
+  assert.strictEqual(manifest.routeArtifacts.defaultRoutingRequest, 'default_routing_request.json');
+  assert.strictEqual(manifest.routeArtifacts.loopPlan, 'routing_loop_plan.json');
+  assert.strictEqual(manifest.routeArtifacts.poi, 'poi.json');
+  assert.deepStrictEqual(manifest.routeArtifacts.laneIds, ['lane-1']);
+  assert.ok(manifest.files.includes('coordinate_metadata.json'));
+  assert.ok(manifest.files.includes('quality_gate.json'));
+  assert.ok(manifest.files.includes('default_routing_request.json'));
+  assert.ok(manifest.files.includes('routing_loop_plan.json'));
+  assert.ok(manifest.files.includes('poi.json'));
+  assert.strictEqual(defaultRoutingRequest.type, 'SendRoutingRequest');
+  assert.strictEqual(routingLoopPlan.nextRoutePolicy.enabled, true);
+  assert.strictEqual(routingLoopPlan.nextRoutePolicy.stopReasonDestinationHandling, 'send_next_route_before_destination');
+  assert.deepStrictEqual(routingLoopPlan.laneIds, ['lane-1']);
+  assert.strictEqual(poi.points.length, 2);
   assert.strictEqual(manifest.contract.editorCounts.barrierGates, 1);
   assert.strictEqual(manifest.contract.apolloCounts.roadBoundaryEdges, 1);
   assert.strictEqual(manifest.contract.apolloCounts.stopLineCurves, 3);

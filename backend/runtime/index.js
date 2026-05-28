@@ -45,6 +45,14 @@ const APOLLOLITE_RUNTIME_FILE_GROUPS = [
   },
 ];
 const APOLLOLITE_TRACE_FILES = ['editor_map.json'];
+const MAPEDITOR_RELEASE_TRACE_FILES = [
+  'manifest.json',
+  'coordinate_metadata.json',
+  'quality_gate.json',
+  'default_routing_request.json',
+  'routing_loop_plan.json',
+  'poi.json',
+];
 const APOLLOLITE_GLOBAL_FLAGFILE = 'modules/common/data/global_flagfile.txt';
 const APOLLOLITE_PLANNING_CONF = 'modules/planning/conf/planning.conf';
 const APOLLOLITE_REQUIRED_SIMULATION_PLANNING_FLAGS = [
@@ -598,6 +606,13 @@ function coordinatePointDistance(left, right) {
   return Math.hypot(Number(left.x) - Number(right.x), Number(left.y) - Number(right.y));
 }
 
+function angularDistanceRadians(left, right) {
+  if (!Number.isFinite(left) || !Number.isFinite(right)) {
+    return null;
+  }
+  return Math.abs(Math.atan2(Math.sin(left - right), Math.cos(left - right)));
+}
+
 function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -656,6 +671,21 @@ function formatCoordinateBounds(bounds) {
   return `x=${bounds.minX.toFixed(3)}..${bounds.maxX.toFixed(3)}, y=${bounds.minY.toFixed(3)}..${bounds.maxY.toFixed(
     3
   )}, center=${bounds.centerX.toFixed(3)},${bounds.centerY.toFixed(3)}`;
+}
+
+function pointInsideCoordinateBounds(point, bounds, marginMeters = 0) {
+  if (!point || !bounds) {
+    return null;
+  }
+  if (![point.x, point.y, bounds.minX, bounds.maxX, bounds.minY, bounds.maxY].every(Number.isFinite)) {
+    return null;
+  }
+  return (
+    point.x >= bounds.minX - marginMeters &&
+    point.x <= bounds.maxX + marginMeters &&
+    point.y >= bounds.minY - marginMeters &&
+    point.y <= bounds.maxY + marginMeters
+  );
 }
 
 function parseApolloLaneCenterlines(text) {
@@ -779,17 +809,102 @@ async function readEdgeLocalizationPose(config) {
     'set +e',
     'cd /apollo 2>/dev/null || true',
     'source /apollo/cyber/setup.bash >/dev/null 2>&1 || true',
-    "timeout 3 cyber_channel echo /apollo/localization/pose 2>/dev/null | sed -n '1,180p'",
-    "timeout 3 cyber_echo /apollo/localization/pose 2>/dev/null | sed -n '1,180p'",
+    "echo '__MAPEDITOR_POSE__'",
+    "timeout 4 cyber_channel echo /apollo/localization/pose 2>/dev/null | sed -n '1,260p' || true",
+    "timeout 4 cyber_echo /apollo/localization/pose 2>/dev/null | sed -n '1,260p' || true",
+    "echo '__MAPEDITOR_GNSS_STATUS__'",
+    "timeout 2 cyber_channel echo /apollo/sensor/gnss/ins_stat 2>/dev/null | sed -n '1,120p' || true",
+    "timeout 2 cyber_channel echo /apollo/gnss/ins_stat 2>/dev/null | sed -n '1,120p' || true",
+    "timeout 2 cyber_echo /apollo/sensor/gnss/ins_stat 2>/dev/null | sed -n '1,120p' || true",
+    "timeout 2 cyber_echo /apollo/gnss/ins_stat 2>/dev/null | sed -n '1,120p' || true",
+    'true',
   ].join('\n');
   const container = String(config.edgeDeploy.dockerContainer || '').trim();
   const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
-    timeoutMs: 10000,
+    timeoutMs: 15000,
   });
   return parseLocalizationPose(result.stdout || '');
 }
 
-async function validateReleasedMapAgainstEdgePose(config, sourceDir) {
+function buildLocalizationQualityGate({ pose, nearest, mapBounds, warningDistanceMeters, errorDistanceMeters }) {
+  const checks = [];
+  const addCheck = (id, status, message, details = null) => {
+    checks.push({
+      id,
+      status,
+      message,
+      ...(details ? { details } : {}),
+    });
+  };
+  const rtkFix = pose?.rtkFix || null;
+  addCheck(
+    'rtk-fix',
+    !rtkFix || !rtkFix.available ? 'warning' : rtkFix.fixed === true ? 'ok' : rtkFix.fixed === false ? 'warning' : 'warning',
+    !rtkFix || !rtkFix.available
+      ? 'RTK / INS fix status is not available from edge topics'
+      : rtkFix.fixed === true
+        ? `RTK / INS fix looks fixed: ${rtkFix.raw}`
+        : `RTK / INS fix needs review: ${rtkFix.raw}`,
+    rtkFix
+  );
+  const headingStability = pose?.headingStability || null;
+  if (headingStability?.available) {
+    const maxDelta = headingStability.maxDeltaRadians;
+    addCheck(
+      'heading-stability',
+      maxDelta <= 0.1 ? 'ok' : maxDelta <= 0.35 ? 'warning' : 'warning',
+      `Heading drift over recent localization samples is ${(maxDelta * 180 / Math.PI).toFixed(2)}deg`,
+      headingStability
+    );
+  } else {
+    addCheck('heading-stability', 'warning', 'Not enough localization heading samples to assess stability', headingStability);
+  }
+  if (Number.isFinite(pose?.delaySeconds)) {
+    addCheck(
+      'pose-delay',
+      pose.delaySeconds <= 0.5 ? 'ok' : pose.delaySeconds <= 2 ? 'warning' : 'warning',
+      `Localization pose delay is ${pose.delaySeconds.toFixed(3)}s`,
+      {
+        timestampSec: pose.timestampSec,
+        measurementTimeSec: pose.measurementTimeSec,
+        sampleTimeSec: pose.sampleTimeSec,
+      }
+    );
+  } else {
+    addCheck('pose-delay', 'warning', 'Localization pose timestamp is not available');
+  }
+  const insideBounds = pointInsideCoordinateBounds(pose, mapBounds, 10);
+  if (insideBounds === null) {
+    addCheck('map-boundary', 'warning', 'Map boundary containment could not be evaluated', { mapBounds });
+  } else {
+    addCheck(
+      'map-boundary',
+      insideBounds ? 'ok' : 'error',
+      insideBounds ? 'Vehicle pose is inside the map boundary' : 'Vehicle pose is outside the map boundary',
+      { mapBounds, marginMeters: 10 }
+    );
+  }
+  addCheck(
+    'nearest-lane-distance',
+    nearest.distanceMeters > errorDistanceMeters ? 'error' : nearest.distanceMeters > warningDistanceMeters ? 'warning' : 'ok',
+    `Vehicle to nearest lane centerline is ${nearest.distanceMeters.toFixed(2)}m`,
+    {
+      nearest,
+      warningDistanceMeters,
+      errorDistanceMeters,
+    }
+  );
+  const rank = { ok: 0, warning: 1, error: 2 };
+  const status = checks.reduce((current, check) => (rank[check.status] > rank[current] ? check.status : current), 'ok');
+  return {
+    version: 1,
+    ready: status !== 'error',
+    status,
+    checks,
+  };
+}
+
+async function validateReleasedMapAgainstEdgePose(config, sourceDir, mapBounds = null) {
   const laneCenterlines = await readApolloMapLaneCenterlines(sourceDir);
   if (laneCenterlines.length === 0) {
     return {
@@ -817,21 +932,23 @@ async function validateReleasedMapAgainstEdgePose(config, sourceDir) {
   }
   const warningDistanceMeters = Number(config.edgeDeploy.vehicleLaneWarningDistanceMeters || 1);
   const errorDistanceMeters = Number(config.edgeDeploy.vehicleLaneErrorDistanceMeters || 5);
-  const status =
-    nearest.distanceMeters > errorDistanceMeters
-      ? 'error'
-      : nearest.distanceMeters > warningDistanceMeters
-        ? 'warning'
-        : 'ok';
-  return {
-    available: true,
-    status,
+  const localizationGate = buildLocalizationQualityGate({
     pose,
     nearest,
+    mapBounds,
+    warningDistanceMeters,
+    errorDistanceMeters,
+  });
+  return {
+    available: true,
+    status: localizationGate.status,
+    pose,
+    nearest,
+    localizationGate,
     laneCenterlineCount: laneCenterlines.length,
     warningDistanceMeters,
     errorDistanceMeters,
-    message: `vehicle to nearest lane centerline is ${nearest.distanceMeters.toFixed(2)}m`,
+    message: `vehicle to nearest lane centerline is ${nearest.distanceMeters.toFixed(2)}m; localization gate ${localizationGate.status}`,
   };
 }
 
@@ -928,7 +1045,7 @@ async function validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir,
     referencesChecked: references.length,
     nearestReference,
     maxDistanceMeters,
-    vehiclePoseValidation: await validateReleasedMapAgainstEdgePose(config, sourceDir).catch((error) => ({
+    vehiclePoseValidation: await validateReleasedMapAgainstEdgePose(config, sourceDir, localBounds).catch((error) => ({
       available: false,
       status: 'warning',
       message: error.message,
@@ -1442,6 +1559,8 @@ async function listReleasedMaps(config) {
       conversionErrors,
       sourceCrs: manifest?.sourceCrs || null,
       coordinateTransform: manifest?.coordinateTransform || null,
+      qualityGate: manifest?.qualityGate || null,
+      routeArtifacts: manifest?.routeArtifacts || null,
       bounds: manifest?.bounds || null,
     });
   }
@@ -1508,6 +1627,17 @@ function getReleasedMapManifestErrors(manifest) {
   if (contractErrors > 0 && errors.length === 0) {
     errors.push(`${contractErrors} conversion error(s) in release manifest`);
   }
+  const gateErrors = Array.isArray(manifest.qualityGate?.checks)
+    ? manifest.qualityGate.checks
+        .filter((check) => String(check?.status || '').toLowerCase() === 'error')
+        .map((check) => check?.message || check?.title || check?.id || 'quality gate error')
+        .filter(Boolean)
+    : [];
+  if (gateErrors.length > 0) {
+    errors.push(...gateErrors);
+  } else if (manifest.qualityGate && manifest.qualityGate.ready === false) {
+    errors.push('release quality gate is not ready');
+  }
   return errors;
 }
 
@@ -1530,7 +1660,7 @@ async function inspectReleasedMapForApolloLite(config, mapName) {
   const candidateFiles = Array.from(
     new Set([
       ...APOLLOLITE_TRACE_FILES,
-      'manifest.json',
+      ...MAPEDITOR_RELEASE_TRACE_FILES,
       ...APOLLOLITE_RUNTIME_FILE_GROUPS.flatMap((group) => group.candidates),
     ])
   );
@@ -1556,6 +1686,11 @@ async function inspectReleasedMapForApolloLite(config, mapName) {
   }
   if (!files['manifest.json'].usable) {
     warnings.push('manifest.json is missing; traceability metadata will be limited');
+  }
+  for (const fileName of ['coordinate_metadata.json', 'quality_gate.json']) {
+    if (!files[fileName].usable) {
+      warnings.push(`${fileName} is missing; productization checks will be limited`);
+    }
   }
   for (const group of APOLLOLITE_RUNTIME_FILE_GROUPS) {
     const selected = group.candidates.find((fileName) => files[fileName].usable) || null;
@@ -3914,6 +4049,41 @@ function parseChassisSample(stdout) {
   };
 }
 
+function extractRtkFixStatus(stdout) {
+  const values = [];
+  const patterns = [
+    /\b(?:rtk_status|rtk_status_name|fix_status|solution_status|position_type|pos_type|ins_status|gnss_status)\s*:\s*"?([A-Za-z0-9_. -]+)"?/giu,
+    /\b(?:rtk|fix|solution|pos_type|ins)\s*=\s*"?([A-Za-z0-9_. -]+)"?/giu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of stdout.matchAll(pattern)) {
+      const value = String(match[1] || '').trim();
+      if (value) {
+        values.push(value);
+      }
+    }
+  }
+  const raw = values.find((value) => /fix|float|single|narrow|invalid|none|good|integer|rtk|converged/iu.test(value)) || values[values.length - 1] || '';
+  if (!raw) {
+    return {
+      available: false,
+      raw: '',
+      fixed: null,
+    };
+  }
+  const normalized = raw.toLowerCase();
+  const fixed = /narrow[_ -]?int|rtk[_ -]?fixed|fixed|integer|converged|good/u.test(normalized)
+    ? true
+    : /float|single|invalid|none|bad|unavailable|no fix|coarse|spp/u.test(normalized)
+      ? false
+      : null;
+  return {
+    available: true,
+    raw,
+    fixed,
+  };
+}
+
 function parseLocalizationPose(stdout) {
   const positionMatches = Array.from(
     stdout.matchAll(
@@ -3925,11 +4095,38 @@ function parseLocalizationPose(stdout) {
   }
   const position = positionMatches[positionMatches.length - 1];
   const headingMatches = Array.from(stdout.matchAll(/heading:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu));
-  const heading = headingMatches.length > 0 ? Number(headingMatches[headingMatches.length - 1][1]) : null;
+  const headings = headingMatches.map((match) => Number(match[1])).filter(Number.isFinite);
+  const heading = headings.length > 0 ? headings[headings.length - 1] : null;
+  const timestampMatches = Array.from(stdout.matchAll(/\btimestamp_sec:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu))
+    .map((match) => Number(match[1]))
+    .filter(Number.isFinite);
+  const measurementMatches = Array.from(stdout.matchAll(/\bmeasurement_time:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu))
+    .map((match) => Number(match[1]))
+    .filter(Number.isFinite);
+  const timestampSec = timestampMatches.length ? timestampMatches[timestampMatches.length - 1] : null;
+  const measurementTimeSec = measurementMatches.length ? measurementMatches[measurementMatches.length - 1] : null;
+  const sampleTimeSec = measurementTimeSec || timestampSec || null;
+  const delaySeconds = Number.isFinite(sampleTimeSec) ? Math.max(0, Date.now() / 1000 - sampleTimeSec) : null;
+  const recentHeadings = headings.slice(-5);
+  const lastHeading = recentHeadings.length ? recentHeadings[recentHeadings.length - 1] : null;
+  const headingDeltas = Number.isFinite(lastHeading)
+    ? recentHeadings.map((item) => angularDistanceRadians(item, lastHeading)).filter(Number.isFinite)
+    : [];
   const pose = {
     x: Number(position[1]),
     y: Number(position[2]),
     heading,
+    timestampSec,
+    measurementTimeSec,
+    sampleTimeSec,
+    delaySeconds,
+    sampleCount: positionMatches.length,
+    rtkFix: extractRtkFixStatus(stdout),
+    headingStability: {
+      available: headingDeltas.length >= 2,
+      sampleCount: recentHeadings.length,
+      maxDeltaRadians: headingDeltas.length ? Math.max(...headingDeltas) : null,
+    },
   };
   if (!Number.isFinite(pose.x) || !Number.isFinite(pose.y)) {
     return null;

@@ -43,11 +43,19 @@ const APOLLO_SIM_CENTER_SMOOTH_SAMPLE_COUNT = 17;
 const APOLLO_SIM_CENTER_HEADING_RELAX_DEGREES = [-12, -8, -4, 0, 4, 8, 12];
 const APOLLO_TARGET_CRS = {
   datum: 'WGS84',
+  ellipsoid: 'WGS84',
   projection: 'UTM',
   zone: 50,
   hemisphere: 'north',
   epsg: 'EPSG:32650',
   proj4: '+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs',
+  centralMeridianDeg: 117,
+  latitudeOfOriginDeg: 0,
+  scaleFactor: 0.9996,
+  falseEastingMeters: 500000,
+  falseNorthingMeters: 0,
+  falseNorthingSouthMeters: 10000000,
+  axisOrder: ['easting', 'northing', 'up'],
   unit: 'meter',
 };
 
@@ -2015,6 +2023,472 @@ function createRoutingGraph(mapMessage) {
   };
 }
 
+function curveToPoints(curve) {
+  return arr(curve?.segment)
+    .flatMap((segment) => arr(segment?.lineSegment?.point))
+    .filter((point) => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+    .map((point) => ({
+      x: point.x,
+      y: point.y,
+      z: number(point.z, 0),
+    }));
+}
+
+function pointAtPolylineFraction(points, fraction) {
+  if (points.length === 0) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  if (points.length === 1) {
+    return points[0];
+  }
+  const target = clamp(fraction, 0, 1) * polylineLength(points);
+  let travelled = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const next = points[index];
+    const segmentLength = distance(previous, next);
+    if (travelled + segmentLength >= target) {
+      const ratio = segmentLength > 0 ? (target - travelled) / segmentLength : 0;
+      return {
+        x: previous.x + (next.x - previous.x) * ratio,
+        y: previous.y + (next.y - previous.y) * ratio,
+        z: (previous.z || 0) + ((next.z || 0) - (previous.z || 0)) * ratio,
+      };
+    }
+    travelled += segmentLength;
+  }
+  return points[points.length - 1];
+}
+
+function headingAtPolylineFraction(points, fraction) {
+  if (points.length < 2) {
+    return 0;
+  }
+  const target = clamp(fraction, 0, 1) * polylineLength(points);
+  let travelled = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const next = points[index];
+    const segmentLength = distance(previous, next);
+    if (travelled + segmentLength >= target || index === points.length - 1) {
+      return Math.atan2(next.y - previous.y, next.x - previous.x);
+    }
+    travelled += segmentLength;
+  }
+  const previous = points[points.length - 2];
+  const next = points[points.length - 1];
+  return Math.atan2(next.y - previous.y, next.x - previous.x);
+}
+
+function buildRouteLaneRecords(mapMessage) {
+  return arr(mapMessage._laneInfos)
+    .map((item) => {
+      const points = curveToPoints(item.proto?.centralCurve);
+      return {
+        id: String(item.source?.id || item.proto?.id?.id || ''),
+        successorIds: arr(item.proto?.successorId).map((successor) => successor.id).filter(Boolean),
+        laneType: Number(item.proto?.type || 0),
+        speedLimitMps: number(item.proto?.speedLimit, 0),
+        length: number(item.proto?.length, polylineLength(points)),
+        points,
+      };
+    })
+    .filter((lane) => lane.id && lane.points.length >= 2 && lane.length > 0.5);
+}
+
+function followRouteSuccessors(startLane, laneById, limit = 64) {
+  const result = [];
+  const visited = new Set();
+  let current = startLane;
+  while (current && !visited.has(current.id) && result.length < limit) {
+    result.push(current);
+    visited.add(current.id);
+    const nextId = current.successorIds.find((successorId) => laneById.has(successorId) && !visited.has(successorId));
+    current = nextId ? laneById.get(nextId) : null;
+  }
+  return result;
+}
+
+function chooseDefaultRouteLanePath(lanes) {
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+  const cityDrivingLanes = lanes.filter((lane) => lane.laneType === LANE_TYPE.CITY_DRIVING);
+  const candidates = cityDrivingLanes.length ? cityDrivingLanes : lanes;
+  let bestPath = [];
+  let bestLength = 0;
+  for (const lane of candidates) {
+    const lanePath = followRouteSuccessors(lane, laneById);
+    const length = lanePath.reduce((sum, item) => sum + item.length, 0);
+    if (length > bestLength) {
+      bestPath = lanePath;
+      bestLength = length;
+    }
+  }
+  if (bestPath.length > 0) {
+    return bestPath;
+  }
+  return lanes.length ? [lanes.reduce((best, lane) => (lane.length > best.length ? lane : best), lanes[0])] : [];
+}
+
+function buildDefaultRouteArtifacts(mapName, mapMessage) {
+  const lanes = buildRouteLaneRecords(mapMessage);
+  if (lanes.length === 0) {
+    return null;
+  }
+  const lanePath = chooseDefaultRouteLanePath(lanes);
+  if (lanePath.length === 0) {
+    return null;
+  }
+  const startLane = lanePath[0];
+  const endLane = lanePath[lanePath.length - 1];
+  const singleLane = startLane.id === endLane.id;
+  const startFraction = singleLane ? 0.12 : 0.08;
+  const endFraction = singleLane ? 0.88 : 0.82;
+  const start = pointAtPolylineFraction(startLane.points, startFraction);
+  const end = pointAtPolylineFraction(endLane.points, endFraction);
+  const heading = headingAtPolylineFraction(startLane.points, startFraction);
+  const estimatedLengthMeters = lanePath.reduce((sum, lane) => sum + lane.length, 0);
+  const request = {
+    type: 'SendRoutingRequest',
+    start: {
+      x: start.x,
+      y: start.y,
+      heading,
+    },
+    end: {
+      x: end.x,
+      y: end.y,
+      id: endLane.id,
+    },
+  };
+  const loopPlan = {
+    version: 1,
+    mapName,
+    mode: 'closed_loop_candidate',
+    generatedAt: new Date().toISOString(),
+    laneIds: lanePath.map((lane) => lane.id),
+    estimatedLengthMeters: Number(estimatedLengthMeters.toFixed(3)),
+    startLaneId: startLane.id,
+    endLaneId: endLane.id,
+    nextRoutePolicy: {
+      enabled: true,
+      triggerDistanceToDestinationMeters: 3,
+      stopReasonDestinationHandling: 'send_next_route_before_destination',
+      chassisChurnGuard: 'do_not_toggle_control_on_destination_only',
+    },
+    request,
+  };
+  const poi = {
+    version: 1,
+    mapName,
+    points: [
+      {
+        id: 'default_start',
+        type: 'route_start',
+        x: start.x,
+        y: start.y,
+        heading,
+        laneId: startLane.id,
+      },
+      {
+        id: 'default_end',
+        type: 'route_end',
+        x: end.x,
+        y: end.y,
+        laneId: endLane.id,
+      },
+    ],
+  };
+  return {
+    request,
+    loopPlan,
+    poi,
+  };
+}
+
+function buildGraphConnectivity(routingGraph) {
+  const nodeIds = arr(routingGraph.node).map((node) => String(node.laneId || '')).filter(Boolean);
+  const adjacency = new Map(nodeIds.map((nodeId) => [nodeId, new Set()]));
+  arr(routingGraph.edge).forEach((edge) => {
+    const from = String(edge.fromLaneId || '');
+    const to = String(edge.toLaneId || '');
+    if (!adjacency.has(from) || !adjacency.has(to)) {
+      return;
+    }
+    adjacency.get(from).add(to);
+    adjacency.get(to).add(from);
+  });
+  const visited = new Set();
+  const components = [];
+  nodeIds.forEach((nodeId) => {
+    if (visited.has(nodeId)) {
+      return;
+    }
+    const queue = [nodeId];
+    const component = [];
+    visited.add(nodeId);
+    while (queue.length) {
+      const current = queue.shift();
+      component.push(current);
+      adjacency.get(current).forEach((next) => {
+        if (!visited.has(next)) {
+          visited.add(next);
+          queue.push(next);
+        }
+      });
+    }
+    components.push(component);
+  });
+  return {
+    components,
+    componentCount: components.length,
+  };
+}
+
+function headerBounds(cleanMap) {
+  const header = cleanMap?.header || {};
+  return {
+    minX: number(header.left, NaN),
+    maxX: number(header.right, NaN),
+    minY: number(header.bottom, NaN),
+    maxY: number(header.top, NaN),
+  };
+}
+
+function boundsCenter(bounds) {
+  if (![bounds.minX, bounds.maxX, bounds.minY, bounds.maxY].every(Number.isFinite)) {
+    return null;
+  }
+  return {
+    x: (bounds.minX + bounds.maxX) / 2,
+    y: (bounds.minY + bounds.maxY) / 2,
+    z: 0,
+  };
+}
+
+function boundsLookGlobalApollo(bounds) {
+  const center = boundsCenter(bounds);
+  if (!center) {
+    return false;
+  }
+  return Math.max(Math.abs(center.x), Math.abs(center.y)) > 100000 && bounds.maxX - bounds.minX < 100000 && bounds.maxY - bounds.minY < 100000;
+}
+
+function pointLooksGlobalApollo(point) {
+  return finiteCoordinate(point) && Math.max(Math.abs(point.x), Math.abs(point.y)) > 100000;
+}
+
+function captureCenterCandidate(value, source, enforce) {
+  const coordinate = finiteCoordinate(coordinateFromArray(value));
+  return coordinate ? { coordinate, source, enforce } : null;
+}
+
+function extractCaptureCenter(editorMap) {
+  const candidates = [
+    captureCenterCandidate(editorMap.trajectoryCenter, 'editorMap.trajectoryCenter', true),
+    captureCenterCandidate(editorMap.trajectory_center, 'editorMap.trajectory_center', true),
+    captureCenterCandidate(editorMap.captureTrajectoryCenter, 'editorMap.captureTrajectoryCenter', true),
+    captureCenterCandidate(editorMap.capture_trajectory_center, 'editorMap.capture_trajectory_center', true),
+    captureCenterCandidate(editorMap.trajectory?.center, 'editorMap.trajectory.center', true),
+    captureCenterCandidate(editorMap.trajectory?.centerUtm, 'editorMap.trajectory.centerUtm', true),
+    captureCenterCandidate(editorMap.trajectory?.center_utm, 'editorMap.trajectory.center_utm', true),
+    captureCenterCandidate(editorMap.basemapCenter, 'editorMap.basemapCenter', false),
+    captureCenterCandidate(editorMap.baseMapCenter, 'editorMap.baseMapCenter', false),
+    captureCenterCandidate(editorMap.base_map_center, 'editorMap.base_map_center', false),
+  ];
+  return candidates.find(Boolean) || null;
+}
+
+function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransform) {
+  const bounds = headerBounds(cleanMap);
+  const captureCenter = extractCaptureCenter(editorMap);
+  const captureCenterAlreadyTarget = pointLooksGlobalApollo(captureCenter?.coordinate);
+  const captureCenterTarget = captureCenter
+    ? captureCenterAlreadyTarget
+      ? captureCenter.coordinate
+      : applyCoordinateTransform(captureCenter.coordinate, coordinateTransform)
+    : null;
+  const mapCenter = boundsCenter(bounds);
+  return {
+    version: 1,
+    mapName,
+    generatedAt: new Date().toISOString(),
+    frames: {
+      acceptedSourceCrs: {
+        WGS84_LON_LAT: 'longitude, latitude, height on WGS84; converted to UTM zone 50N',
+        LOCAL_ENU_METERS: 'editor-local meter coordinates; requires apolloOrigin/utmOrigin or explicit map center',
+        APOLLO_UTM_ZONE_50: 'Apollo map coordinates already in WGS84 UTM zone 50N meters',
+      },
+      targetCrs: APOLLO_TARGET_CRS,
+    },
+    sourceCrs: coordinateTransform?.sourceCrs || coordinateFrameFromEditorMap(editorMap) || 'LOCAL_ENU_METERS',
+    targetCrs: APOLLO_TARGET_CRS,
+    transform: coordinateTransform
+      ? {
+          mode: coordinateTransform.mode,
+          source: coordinateTransform.source,
+          offsetMeters: coordinateTransform.offset,
+          origin: coordinateTransform.origin,
+          localCenter: coordinateTransform.localCenter,
+          targetCenter: coordinateTransform.targetCenter,
+        }
+      : null,
+    bounds,
+    mapCenter,
+    captureTrajectoryCenter: captureCenterTarget
+      ? {
+          source: captureCenter.source,
+          enforce: captureCenter.enforce,
+          enforcement: captureCenter.enforce ? 'strict' : 'advisory',
+          raw: captureCenter.coordinate,
+          target: captureCenterTarget,
+          alreadyInTargetCrs: captureCenterAlreadyTarget,
+          distanceToMapCenterMeters: mapCenter ? Number(distance(captureCenterTarget, mapCenter).toFixed(3)) : null,
+        }
+      : null,
+  };
+}
+
+function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateMetadata, routeArtifacts }) {
+  const checks = [];
+  const addCheck = (idValue, status, title, message, details = null) => {
+    checks.push({
+      id: idValue,
+      status,
+      title,
+      message,
+      ...(details ? { details } : {}),
+    });
+  };
+  const conversionErrors = warnings.filter((warning) => String(warning.severity || '').toLowerCase() === 'error');
+  addCheck(
+    'coordinate-metadata',
+    coordinateMetadata?.targetCrs?.epsg === APOLLO_TARGET_CRS.epsg ? 'ok' : 'error',
+    'Coordinate metadata',
+    coordinateMetadata?.targetCrs?.epsg === APOLLO_TARGET_CRS.epsg
+      ? `Target CRS is fixed to ${APOLLO_TARGET_CRS.epsg} / UTM zone ${APOLLO_TARGET_CRS.zone}N`
+      : 'Target CRS metadata is missing or inconsistent',
+    coordinateMetadata?.targetCrs || null
+  );
+  addCheck(
+    'coordinate-bounds',
+    boundsLookGlobalApollo(coordinateMetadata.bounds) ? 'ok' : 'error',
+    'Apollo map bounds',
+    boundsLookGlobalApollo(coordinateMetadata.bounds)
+      ? 'Map coordinates look like global Apollo UTM coordinates'
+      : 'Map bounds look like local/editor coordinates; deployment must not proceed until the coordinate anchor is fixed',
+    coordinateMetadata.bounds
+  );
+  const coordinateErrors = conversionErrors.filter((warning) => /^apollo-coordinate/u.test(warning.code || ''));
+  if (coordinateErrors.length > 0) {
+    addCheck(
+      'coordinate-conversion-errors',
+      'error',
+      'Coordinate conversion',
+      coordinateErrors.map((warning) => warning.message || warning.code).join('; '),
+      coordinateErrors
+    );
+  }
+  const captureDistance = coordinateMetadata.captureTrajectoryCenter?.distanceToMapCenterMeters;
+  if (Number.isFinite(captureDistance)) {
+    const captureCenterCheck = coordinateMetadata.captureTrajectoryCenter;
+    const strictCaptureCenter = captureCenterCheck?.enforce === true;
+    const captureDistanceStatus =
+      captureDistance <= 100 ? 'ok' : captureDistance <= 5000 ? 'warning' : strictCaptureCenter ? 'error' : 'warning';
+    addCheck(
+      'capture-center-distance',
+      captureDistanceStatus,
+      'Map center vs capture trajectory center',
+      `Center distance is ${captureDistance.toFixed(2)}m`,
+      captureCenterCheck
+    );
+  } else {
+    addCheck(
+      'capture-center-distance',
+      'warning',
+      'Map center vs capture trajectory center',
+      'No capture trajectory/base-map center was found in editor_map.json; edge preflight will rely on reference maps and live pose',
+    );
+  }
+  const laneCount = arr(cleanMap.lane).length;
+  const routingNodeCount = arr(routingGraph.node).length;
+  const routingEdgeCount = arr(routingGraph.edge).length;
+  addCheck(
+    'routing-node-coverage',
+    laneCount === 0 || routingNodeCount === laneCount ? 'ok' : 'error',
+    'Routing node coverage',
+    `${routingNodeCount}/${laneCount} lanes have routing nodes`,
+    { laneCount, routingNodeCount }
+  );
+  addCheck(
+    'routing-edge-coverage',
+    laneCount <= 1 || routingEdgeCount > 0 ? 'ok' : 'error',
+    'Routing edge coverage',
+    laneCount <= 1 ? 'Single-lane map does not require successor routing edges' : `${routingEdgeCount} routing edges generated`,
+    { laneCount, routingEdgeCount }
+  );
+  const connectivity = buildGraphConnectivity(routingGraph);
+  addCheck(
+    'routing-connectivity',
+    connectivity.componentCount <= 1 ? 'ok' : 'warning',
+    'Routing reachability',
+    connectivity.componentCount <= 1
+      ? 'Routing graph is connected'
+      : `Routing graph has ${connectivity.componentCount} connected components; verify this is intentional`,
+    connectivity
+  );
+  const invalidSpeedLanes = arr(cleanMap.lane).filter((lane) => !Number.isFinite(Number(lane.speedLimit)) || Number(lane.speedLimit) <= 0);
+  const suspiciousSpeedLanes = arr(cleanMap.lane).filter((lane) => Number(lane.speedLimit) > 35);
+  addCheck(
+    'speed-limit-units',
+    invalidSpeedLanes.length ? 'error' : suspiciousSpeedLanes.length ? 'warning' : 'ok',
+    'Lane speed limits',
+    invalidSpeedLanes.length
+      ? `${invalidSpeedLanes.length} lanes have invalid speed_limit`
+      : suspiciousSpeedLanes.length
+        ? `${suspiciousSpeedLanes.length} lanes exceed 35m/s; check km/h vs m/s units`
+        : 'Lane speed limits are finite Apollo m/s values',
+    {
+      invalidLaneIds: invalidSpeedLanes.map((lane) => lane.id?.id).filter(Boolean).slice(0, 20),
+      suspiciousLaneIds: suspiciousSpeedLanes.map((lane) => lane.id?.id).filter(Boolean).slice(0, 20),
+    }
+  );
+  const unsupportedWarnings = warnings.filter((warning) =>
+    ['signal-missing-stop-line', 'stop-sign-missing-stop-line', 'yield-sign-missing-stop-line', 'overlap-not-found'].includes(warning.code)
+  );
+  addCheck(
+    'overlap-junction-stop-sign',
+    unsupportedWarnings.some((warning) => String(warning.severity).toLowerCase() === 'error') ? 'error' : unsupportedWarnings.length ? 'warning' : 'ok',
+    'Overlap / junction / stop sign export',
+    unsupportedWarnings.length
+      ? `${unsupportedWarnings.length} export warnings need review`
+      : 'Overlap-related Apollo export checks passed',
+    unsupportedWarnings
+  );
+  addCheck(
+    'default-routing-artifacts',
+    routeArtifacts ? 'ok' : laneCount > 0 ? 'error' : 'warning',
+    'Default route and POI files',
+    routeArtifacts
+      ? 'default_routing_request.json, routing_loop_plan.json and poi.json will be generated'
+      : 'No default route can be generated from this map',
+    routeArtifacts
+      ? {
+          laneIds: routeArtifacts.loopPlan.laneIds,
+          estimatedLengthMeters: routeArtifacts.loopPlan.estimatedLengthMeters,
+        }
+      : null
+  );
+  const errors = checks.filter((check) => check.status === 'error');
+  const warningChecks = checks.filter((check) => check.status === 'warning');
+  return {
+    version: 1,
+    ready: errors.length === 0,
+    errors: errors.length,
+    warnings: warningChecks.length,
+    checks,
+  };
+}
+
 function indent(level) {
   return '  '.repeat(level);
 }
@@ -2233,6 +2707,27 @@ async function convertEditorMapToApolloPackage(options) {
   const warnings = mapMessage._conversionWarnings || [];
   const coordinateTransform = mapMessage._coordinateTransform || null;
   const contract = buildConversionContract(editorMap, cleanMap, routingGraph, warnings);
+  const coordinateMetadata = buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransform);
+  const routeArtifacts = buildDefaultRouteArtifacts(mapName, mapMessage);
+  const qualityGate = buildReleaseQualityGate({
+    cleanMap,
+    routingGraph,
+    warnings,
+    coordinateMetadata,
+    routeArtifacts,
+  });
+  const files = [
+    'editor_map.json',
+    'base_map.txt',
+    'base_map.bin',
+    'sim_map.txt',
+    'sim_map.bin',
+    'routing_map.txt',
+    'routing_map.bin',
+    'coordinate_metadata.json',
+    'quality_gate.json',
+    ...(routeArtifacts ? ['default_routing_request.json', 'routing_loop_plan.json', 'poi.json'] : []),
+  ];
 
   await fs.copyFile(jsonPath, path.join(releaseDir, 'editor_map.json'));
   await fs.writeFile(path.join(releaseDir, 'base_map.txt'), `${objectToText(cleanMap)}\n`, 'utf8');
@@ -2241,6 +2736,17 @@ async function convertEditorMapToApolloPackage(options) {
   await writeBinary(root, 'apollo.hdmap.Map', cleanMap, path.join(releaseDir, 'base_map.bin'));
   await writeBinary(root, 'apollo.hdmap.Map', cleanMap, path.join(releaseDir, 'sim_map.bin'));
   await writeBinary(root, 'apollo.routing.Graph', routingGraph, path.join(releaseDir, 'routing_map.bin'));
+  await fs.writeFile(path.join(releaseDir, 'coordinate_metadata.json'), JSON.stringify(coordinateMetadata, null, 2), 'utf8');
+  await fs.writeFile(path.join(releaseDir, 'quality_gate.json'), JSON.stringify(qualityGate, null, 2), 'utf8');
+  if (routeArtifacts) {
+    await fs.writeFile(
+      path.join(releaseDir, 'default_routing_request.json'),
+      JSON.stringify(routeArtifacts.request, null, 2),
+      'utf8'
+    );
+    await fs.writeFile(path.join(releaseDir, 'routing_loop_plan.json'), JSON.stringify(routeArtifacts.loopPlan, null, 2), 'utf8');
+    await fs.writeFile(path.join(releaseDir, 'poi.json'), JSON.stringify(routeArtifacts.poi, null, 2), 'utf8');
+  }
   await fs.writeFile(
     path.join(releaseDir, 'manifest.json'),
     JSON.stringify(
@@ -2250,6 +2756,7 @@ async function convertEditorMapToApolloPackage(options) {
         converter: 'mapeditor-js-compat',
         nativeConverter: false,
         baseMapDir,
+        coordinateMetadata,
         targetCrs: APOLLO_TARGET_CRS,
         sourceCrs: coordinateTransform?.sourceCrs || coordinateFrameFromEditorMap(editorMap) || 'LOCAL_ENU_METERS',
         anchor: coordinateTransform?.origin
@@ -2281,15 +2788,17 @@ async function convertEditorMapToApolloPackage(options) {
           : null,
         warnings,
         contract,
-        files: [
-          'editor_map.json',
-          'base_map.txt',
-          'base_map.bin',
-          'sim_map.txt',
-          'sim_map.bin',
-          'routing_map.txt',
-          'routing_map.bin',
-        ],
+        qualityGate,
+        routeArtifacts: routeArtifacts
+          ? {
+              defaultRoutingRequest: 'default_routing_request.json',
+              loopPlan: 'routing_loop_plan.json',
+              poi: 'poi.json',
+              laneIds: routeArtifacts.loopPlan.laneIds,
+              estimatedLengthMeters: routeArtifacts.loopPlan.estimatedLengthMeters,
+            }
+          : null,
+        files,
         summary: {
           lanes: cleanMap.lane.length,
           roads: cleanMap.road.length,
@@ -2308,6 +2817,10 @@ async function convertEditorMapToApolloPackage(options) {
           warnings: warnings.length,
           contractWarnings: contract.warningCounts.warning || 0,
           contractErrors: contract.warningCounts.error || 0,
+          qualityGateReady: qualityGate.ready,
+          qualityGateErrors: qualityGate.errors,
+          qualityGateWarnings: qualityGate.warnings,
+          defaultRouteGenerated: Boolean(routeArtifacts),
         },
       },
       null,
