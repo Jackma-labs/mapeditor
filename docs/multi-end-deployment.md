@@ -129,6 +129,70 @@ GitHub main -> Dell
 GitHub main -> Cloud
 ```
 
+## Automatic Git Distribution
+
+The target flow is:
+
+```text
+local workstation -> git push origin main -> GitHub main
+GitHub main -> Dell pull timer
+GitHub main -> Cloud GitHub Actions release
+```
+
+### Dell Pull Timer
+
+Dell is usually inside the LAN, so a GitHub-hosted runner cannot reliably SSH
+into it. Install a pull timer on Dell instead:
+
+```bash
+cd /home/dell/mapeditor-unified
+APP_DIR=/home/dell/mapeditor-unified \
+BRANCH=main \
+PORT=58000 \
+INTERVAL=60s \
+bash deploy/server/install-auto-deploy.sh
+```
+
+The timer runs `deploy/server/auto-deploy-pull.sh`. It fetches `origin/main`,
+deploys only when the commit changes, refuses to run when tracked files are
+dirty, and reuses `deploy/server/bootstrap.sh` for the actual build and service
+restart.
+
+Check it with:
+
+```bash
+systemctl --user list-timers mapeditor-auto-deploy.timer
+systemctl --user status mapeditor-auto-deploy.service
+journalctl --user -u mapeditor-auto-deploy.service -n 80 --no-pager
+```
+
+### Cloud GitHub Actions Release
+
+Cloud deployment is handled by `.github/workflows/deploy-cloud.yml`. The action
+builds the frontend on GitHub, uploads the artifact to the cloud server, then
+runs `deploy/server/deploy-cloud-release.sh` to create a timestamped release and
+switch `/opt/landing/apps/mapeditor/current`.
+
+Configure these GitHub repository secrets:
+
+```text
+CLOUD_SSH_HOST=106.8.105.69
+CLOUD_SSH_PORT=35118
+CLOUD_SSH_USER=root
+CLOUD_SSH_KEY=<private key content>
+```
+
+Optional overrides:
+
+```text
+CLOUD_APP_ROOT=/opt/landing/apps/mapeditor
+CLOUD_NODE_BIN_DIR=/opt/landing/runtime/node/bin
+CLOUD_SERVICE_NAME=landing-mapeditor.service
+```
+
+After the secrets are set, pushing `main` automatically deploys the cloud
+server. The workflow can also be run manually from GitHub Actions.
+
 Map data sync direction when needed:
 
 ```text

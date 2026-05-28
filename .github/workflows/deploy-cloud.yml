@@ -1,0 +1,68 @@
+name: Deploy cloud mapeditor
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloud-mapeditor
+  cancel-in-progress: false
+
+jobs:
+  deploy-cloud:
+    runs-on: ubuntu-latest
+    env:
+      CLOUD_SSH_HOST: ${{ secrets.CLOUD_SSH_HOST }}
+      CLOUD_SSH_USER: ${{ secrets.CLOUD_SSH_USER }}
+      CLOUD_SSH_KEY: ${{ secrets.CLOUD_SSH_KEY }}
+      CLOUD_SSH_PORT: ${{ secrets.CLOUD_SSH_PORT || '22' }}
+      CLOUD_APP_ROOT: ${{ secrets.CLOUD_APP_ROOT || '/opt/landing/apps/mapeditor' }}
+      CLOUD_NODE_BIN_DIR: ${{ secrets.CLOUD_NODE_BIN_DIR || '/opt/landing/runtime/node/bin' }}
+      CLOUD_SERVICE_NAME: ${{ secrets.CLOUD_SERVICE_NAME || 'landing-mapeditor.service' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Skip when cloud secrets are missing
+        if: env.CLOUD_SSH_HOST == '' || env.CLOUD_SSH_USER == '' || env.CLOUD_SSH_KEY == ''
+        run: |
+          echo "Cloud deploy skipped. Configure CLOUD_SSH_HOST, CLOUD_SSH_USER and CLOUD_SSH_KEY repository secrets."
+
+      - name: Build frontend
+        if: env.CLOUD_SSH_HOST != '' && env.CLOUD_SSH_USER != '' && env.CLOUD_SSH_KEY != ''
+        run: |
+          npm ci --prefix frontend
+          npm --prefix frontend run build
+          tar -czf /tmp/mapeditor-frontend-${GITHUB_SHA}.tgz -C frontend/build map_editor_frontend
+
+      - name: Configure SSH
+        if: env.CLOUD_SSH_HOST != '' && env.CLOUD_SSH_USER != '' && env.CLOUD_SSH_KEY != ''
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$CLOUD_SSH_KEY" > ~/.ssh/mapeditor_cloud_key
+          chmod 600 ~/.ssh/mapeditor_cloud_key
+          ssh-keyscan -p "$CLOUD_SSH_PORT" "$CLOUD_SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload frontend artifact
+        if: env.CLOUD_SSH_HOST != '' && env.CLOUD_SSH_USER != '' && env.CLOUD_SSH_KEY != ''
+        run: |
+          scp -i ~/.ssh/mapeditor_cloud_key -P "$CLOUD_SSH_PORT" \
+            /tmp/mapeditor-frontend-${GITHUB_SHA}.tgz \
+            "$CLOUD_SSH_USER@$CLOUD_SSH_HOST:/tmp/mapeditor-frontend-${GITHUB_SHA}.tgz"
+
+      - name: Deploy cloud release
+        if: env.CLOUD_SSH_HOST != '' && env.CLOUD_SSH_USER != '' && env.CLOUD_SSH_KEY != ''
+        run: |
+          ssh -i ~/.ssh/mapeditor_cloud_key -p "$CLOUD_SSH_PORT" \
+            "$CLOUD_SSH_USER@$CLOUD_SSH_HOST" \
+            "APP_ROOT='$CLOUD_APP_ROOT' BRANCH='main' COMMIT_SHA='$GITHUB_SHA' FRONTEND_TARBALL='/tmp/mapeditor-frontend-${GITHUB_SHA}.tgz' NODE_BIN_DIR='$CLOUD_NODE_BIN_DIR' SERVICE_NAME='$CLOUD_SERVICE_NAME' bash -s" \
+            < deploy/server/deploy-cloud-release.sh
