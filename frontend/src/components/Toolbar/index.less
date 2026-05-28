@@ -1864,6 +1864,35 @@
     }
 }
 
+@media (max-width: 900px) {
+    #toolbar-container {
+        .brand-logo {
+            width: 190px;
+        }
+
+        .brand-divider,
+        .brand-title,
+        .production-menu-bar {
+            display: none;
+        }
+
+        .account-chip {
+            right: 12px;
+            gap: 8px;
+            max-width: 116px;
+            overflow: hidden;
+        }
+    }
+}
+
+@media (max-width: 520px) {
+    #toolbar-container {
+        .account-chip {
+            display: none;
+        }
+    }
+}
+
 .publish-preflight-item {
     margin: 0 0 8px;
     padding: 8px 10px;

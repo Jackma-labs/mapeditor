@@ -20,7 +20,7 @@
     }
     .basemap-layer-panel {
         position: absolute;
-        left: 16px;
+        left: 108px;
         bottom: 16px;
         z-index: 8;
         display: flex;
@@ -135,6 +135,18 @@
         .lane-handle-btn.disable {
             background: #383d47 !important;
             cursor: not-allowed;
+        }
+    }
+}
+
+@media (max-width: 760px) {
+    #map-editor-container {
+        z-index: auto;
+        isolation: auto;
+
+        .basemap-layer-panel {
+            left: 98px;
+            width: calc(100% - 108px);
         }
     }
 }
