@@ -1,14 +1,68 @@
 import React, { useMemo, useState } from 'react';
 import PubSub from 'pubsub-js';
-import { EyeInvisibleOutlined, EyeOutlined, LockOutlined, PushpinOutlined, UnlockOutlined } from '@ant-design/icons';
+import { Eye, EyeOff, Layers, LocateFixed, Lock, MousePointer2, PanelLeftClose, Unlock } from 'lucide-react';
 import { editorLayerConfigs, mergeEditorLayers } from 'src/constant/editorLayers';
+import { Badge } from 'src/components/ui/badge';
+import { Button } from 'src/components/ui/button';
 import { ThreeElementType } from 'src/interface/commonInterFace';
-import { EditorLayerId } from 'src/interface/layerInterface';
+import { EditorLayerId, EditorLayerMap } from 'src/interface/layerInterface';
 import { MapState } from 'src/interface/mapStateInterface';
 import { inspectMapQuality } from 'src/quality/mapQuality';
 import { useManagerStore } from 'src/store';
 import { filterPickElementsByEditorLayers, getEditorLayerForThreeElementType } from 'src/utils/editorLayerUtil';
 import './index.less';
+
+const editLayerIds: EditorLayerId[] = ['lane', 'boundary', 'junction', 'traffic', 'area'];
+
+const layerPresets = [
+    {
+        id: 'edit',
+        label: '编辑全部',
+        description: '全部图层可见，标注图层可编辑。',
+        build: (): EditorLayerMap => {
+            const next = mergeEditorLayers();
+            editorLayerConfigs.forEach((config) => {
+                next[config.id] = {
+                    visible: true,
+                    locked: false,
+                };
+            });
+            next.reference.locked = true;
+            next.quality.locked = true;
+            return next;
+        },
+    },
+    {
+        id: 'inspect',
+        label: '检查问题',
+        description: '显示所有地图内容，并打开质检覆盖层。',
+        build: (): EditorLayerMap => {
+            const next = mergeEditorLayers();
+            editorLayerConfigs.forEach((config) => {
+                next[config.id] = {
+                    visible: true,
+                    locked: editLayerIds.includes(config.id),
+                };
+            });
+            return next;
+        },
+    },
+    {
+        id: 'preview',
+        label: '发布预览',
+        description: '隐藏质检覆盖层，锁定所有编辑图层。',
+        build: (): EditorLayerMap => {
+            const next = mergeEditorLayers();
+            editorLayerConfigs.forEach((config) => {
+                next[config.id] = {
+                    visible: config.id !== 'quality',
+                    locked: true,
+                };
+            });
+            return next;
+        },
+    },
+];
 
 function getLayerCounts(mapState: MapState, issueCount: number): Record<EditorLayerId, number> {
     const pointCounts = {} as Partial<Record<EditorLayerId, number>>;
@@ -134,6 +188,20 @@ export default function LayerPanel() {
         });
     };
 
+    const replaceLayers = (nextLayers: EditorLayerMap) => {
+        const currentMapState = useManagerStore.getState().mapState;
+        const nextMapState = {
+            ...currentMapState,
+            editorLayers: nextLayers,
+        };
+        const nextPickElements = filterPickElementsByEditorLayers(nextMapState, currentMapState.currentPickElement);
+        setMapState({
+            ...nextMapState,
+            currentPickElement: nextPickElements,
+            needRender: true,
+        });
+    };
+
     const handleFitLayer = (layerId: EditorLayerId) => {
         if (layerId === 'reference') {
             PubSub.publish('fitBaseMap');
@@ -149,49 +217,124 @@ export default function LayerPanel() {
             onMouseUp={(event) => event.stopPropagation()}
         >
             <div className="editor-layer-panel-header">
-                <button type="button" className="editor-layer-collapse" onClick={() => setCollapsed(!collapsed)}>
-                    {collapsed ? '图层' : '收起'}
-                </button>
-                {!collapsed && <strong>编辑图层</strong>}
+                {collapsed ? (
+                    <Button
+                        type="button"
+                        className="editor-layer-collapsed-button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setCollapsed(false)}
+                    >
+                        <Layers data-icon="inline-start" />
+                        图层
+                    </Button>
+                ) : (
+                    <>
+                        <div className="editor-layer-title">
+                            <strong>图层控制</strong>
+                            <span>先选模式，再按需显示、锁定或定位图层。</span>
+                        </div>
+                        <Button
+                            type="button"
+                            className="editor-layer-collapse"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label="收起图层控制"
+                            onClick={() => setCollapsed(true)}
+                        >
+                            <PanelLeftClose />
+                        </Button>
+                    </>
+                )}
             </div>
             {!collapsed && (
-                <div className="editor-layer-list">
-                    {editorLayerConfigs.map((config) => {
-                        const layer = layers[config.id];
-                        return (
-                            <div className="editor-layer-row" key={config.id} title={config.description}>
-                                <span className="editor-layer-name">{config.label}</span>
-                                <span className="editor-layer-count">{counts[config.id] || 0}</span>
-                                <button
-                                    type="button"
-                                    aria-label={`${config.label}${layer.visible ? '隐藏' : '显示'}`}
-                                    title={layer.visible ? '隐藏' : '显示'}
-                                    className={layer.visible ? 'active' : ''}
-                                    onClick={() => updateLayer(config.id, { visible: !layer.visible })}
+                <div className="editor-layer-content">
+                    <div className="editor-layer-presets" aria-label="图层模式">
+                        {layerPresets.map((preset) => (
+                            <Button
+                                key={preset.id}
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                title={preset.description}
+                                onClick={() => replaceLayers(preset.build())}
+                            >
+                                {preset.label}
+                            </Button>
+                        ))}
+                    </div>
+                    <div className="editor-layer-help">
+                        <MousePointer2 />
+                        锁定后不会被选中，隐藏后从画布消失；定位只移动视角，不修改地图。
+                    </div>
+                    <div className="editor-layer-list">
+                        {editorLayerConfigs.map((config) => {
+                            const layer = layers[config.id];
+                            const count = counts[config.id] || 0;
+                            const visibleLabel = layer.visible ? '隐藏' : '显示';
+                            const lockLabel = layer.locked ? '解锁' : '锁定';
+                            return (
+                                <div
+                                    className={`editor-layer-row ${!layer.visible ? 'is-hidden' : ''} ${
+                                        layer.locked ? 'is-locked' : ''
+                                    }`}
+                                    key={config.id}
                                 >
-                                    {layer.visible ? <EyeOutlined /> : <EyeInvisibleOutlined />}
-                                </button>
-                                <button
-                                    type="button"
-                                    aria-label={`${config.label}${layer.locked ? '解锁' : '锁定'}`}
-                                    title={layer.locked ? '解锁' : '锁定'}
-                                    className={layer.locked ? 'locked' : ''}
-                                    onClick={() => updateLayer(config.id, { locked: !layer.locked })}
-                                >
-                                    {layer.locked ? <LockOutlined /> : <UnlockOutlined />}
-                                </button>
-                                <button
-                                    type="button"
-                                    aria-label={`定位${config.label}`}
-                                    title="定位"
-                                    disabled={counts[config.id] === 0}
-                                    onClick={() => handleFitLayer(config.id)}
-                                >
-                                    <PushpinOutlined />
-                                </button>
-                            </div>
-                        );
-                    })}
+                                    <div className="editor-layer-meta">
+                                        <div className="editor-layer-mainline">
+                                            <span className={`editor-layer-dot layer-${config.id}`} />
+                                            <span className="editor-layer-name">{config.label}</span>
+                                            <Badge variant={count > 0 ? 'secondary' : 'outline'}>{count}</Badge>
+                                        </div>
+                                        <span className="editor-layer-description">{config.description}</span>
+                                    </div>
+                                    <div className="editor-layer-actions">
+                                        <Button
+                                            type="button"
+                                            variant={layer.visible ? 'secondary' : 'outline'}
+                                            size="sm"
+                                            aria-label={`${visibleLabel}${config.label}`}
+                                            title={`${visibleLabel}${config.label}`}
+                                            onClick={() => updateLayer(config.id, { visible: !layer.visible })}
+                                        >
+                                            {layer.visible ? (
+                                                <Eye data-icon="inline-start" />
+                                            ) : (
+                                                <EyeOff data-icon="inline-start" />
+                                            )}
+                                            {visibleLabel}
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant={layer.locked ? 'secondary' : 'outline'}
+                                            size="sm"
+                                            aria-label={`${lockLabel}${config.label}`}
+                                            title={`${lockLabel}${config.label}`}
+                                            onClick={() => updateLayer(config.id, { locked: !layer.locked })}
+                                        >
+                                            {layer.locked ? (
+                                                <Lock data-icon="inline-start" />
+                                            ) : (
+                                                <Unlock data-icon="inline-start" />
+                                            )}
+                                            {lockLabel}
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon-sm"
+                                            aria-label={`定位${config.label}`}
+                                            title={count === 0 ? '该图层暂无内容' : `定位到${config.label}`}
+                                            disabled={count === 0}
+                                            onClick={() => handleFitLayer(config.id)}
+                                        >
+                                            <LocateFixed />
+                                        </Button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
         </div>

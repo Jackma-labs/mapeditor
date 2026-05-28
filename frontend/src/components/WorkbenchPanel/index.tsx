@@ -1,4 +1,7 @@
 import React, { useMemo, useState } from 'react';
+import { AlertCircle, Bot, CheckCircle2, ClipboardCheck, ListChecks, MousePointer2 } from 'lucide-react';
+import { Badge } from 'src/components/ui/badge';
+import { Button } from 'src/components/ui/button';
 import { useManagerStore } from 'src/store';
 import { inspectMapQuality } from 'src/quality/mapQuality';
 import Attr from '../Attr';
@@ -6,24 +9,14 @@ import MapQualityPanel from '../Toolbar/MapQualityPanel';
 import AIAssistantPanel from './AIAssistantPanel';
 import './index.less';
 
-type WorkbenchTab = 'attr' | 'quality' | 'ai' | 'publish' | 'history';
+type WorkbenchTab = 'attr' | 'quality' | 'ai' | 'publish';
 
-const tabs: { key: WorkbenchTab; label: string }[] = [
-    { key: 'attr', label: '属性' },
-    { key: 'quality', label: '质检' },
-    { key: 'ai', label: 'AI助手' },
-    { key: 'publish', label: '发布' },
-    { key: 'history', label: '历史' },
+const tabs: { key: WorkbenchTab; label: string; desc: string; icon: React.ElementType }[] = [
+    { key: 'attr', label: '属性', desc: '编辑选中对象', icon: MousePointer2 },
+    { key: 'quality', label: '质检', desc: '定位地图问题', icon: ListChecks },
+    { key: 'ai', label: 'AI诊断', desc: '解释修复建议', icon: Bot },
+    { key: 'publish', label: '发布检查', desc: '确认能否发布', icon: ClipboardCheck },
 ];
-
-function PlaceholderPanel({ title, desc }: { title: string; desc: string }) {
-    return (
-        <div className="workbench-placeholder">
-            <div className="workbench-placeholder-title">{title}</div>
-            <p>{desc}</p>
-        </div>
-    );
-}
 
 export default function WorkbenchPanel() {
     const [activeTab, setActiveTab] = useState<WorkbenchTab>('attr');
@@ -34,14 +27,40 @@ export default function WorkbenchPanel() {
     const publishWarning = !publishBlocked && report.summary.warnings > 0;
     let publishStatusClass = 'ready';
     let publishTitle = '可以发布';
+    let publishDescription = '当前没有阻断发布的问题，可以保存后从顶部“生产”菜单发布。';
+    let PublishIcon = CheckCircle2;
 
     if (publishBlocked) {
         publishStatusClass = 'blocked';
         publishTitle = '禁止发布';
+        publishDescription = '请先处理红色错误。发布按钮仍会保留，但不建议绕过门禁。';
+        PublishIcon = AlertCircle;
     } else if (publishWarning) {
         publishStatusClass = 'warning';
         publishTitle = '可以发布，需确认警告';
+        publishDescription = '黄色警告不会阻断发布，但需要在仿真和实车前确认。';
+        PublishIcon = AlertCircle;
     }
+    const selectionSubtitle =
+        selectedCount > 0
+            ? `已选中 ${selectedCount} 个对象，右侧显示可编辑属性。`
+            : '未选中对象，先在画布或左侧工具开始。';
+    let publishBadgeVariant: 'outline' | 'secondary' | 'destructive' = 'outline';
+    if (publishBlocked) {
+        publishBadgeVariant = 'destructive';
+    } else if (publishWarning) {
+        publishBadgeVariant = 'secondary';
+    }
+
+    const getTabBadge = (tabKey: WorkbenchTab) => {
+        if (tabKey === 'quality') {
+            return report.summary.errors + report.summary.warnings;
+        }
+        if (tabKey === 'publish') {
+            return report.summary.errors;
+        }
+        return 0;
+    };
 
     const stopPanelEvent = (event: React.MouseEvent) => {
         event.stopPropagation();
@@ -52,22 +71,29 @@ export default function WorkbenchPanel() {
             <div className="workbench-header">
                 <div>
                     <div className="workbench-title">工作台</div>
-                    <div className="workbench-subtitle">
-                        {selectedCount > 0 ? `已选中 ${selectedCount} 个对象` : '未选中对象'}
-                    </div>
+                    <div className="workbench-subtitle">{selectionSubtitle}</div>
                 </div>
             </div>
             <div className="workbench-tabs">
-                {tabs.map((tab) => (
-                    <button
-                        type="button"
-                        key={tab.key}
-                        className={activeTab === tab.key ? 'active' : ''}
-                        onClick={() => setActiveTab(tab.key)}
-                    >
-                        {tab.label}
-                    </button>
-                ))}
+                {tabs.map((tab) => {
+                    const TabIcon = tab.icon;
+                    const tabBadge = getTabBadge(tab.key);
+                    return (
+                        <button
+                            type="button"
+                            key={tab.key}
+                            className={activeTab === tab.key ? 'active' : ''}
+                            onClick={() => setActiveTab(tab.key)}
+                        >
+                            <TabIcon />
+                            <span>
+                                <strong>{tab.label}</strong>
+                                <small>{tab.desc}</small>
+                            </span>
+                            {tabBadge > 0 && <em>{tabBadge}</em>}
+                        </button>
+                    );
+                })}
             </div>
             <div className="workbench-body">
                 {activeTab === 'attr' && <Attr />}
@@ -76,8 +102,14 @@ export default function WorkbenchPanel() {
                 {activeTab === 'publish' && (
                     <div className="workbench-publish">
                         <div className={`publish-gate ${publishStatusClass}`}>
-                            <strong>{publishTitle}</strong>
-                            <span>{`错误 ${report.summary.errors} / 警告 ${report.summary.warnings}`}</span>
+                            <PublishIcon />
+                            <div>
+                                <strong>{publishTitle}</strong>
+                                <span>{publishDescription}</span>
+                            </div>
+                            <Badge variant={publishBadgeVariant}>
+                                {`错误 ${report.summary.errors} / 警告 ${report.summary.warnings}`}
+                            </Badge>
                         </div>
                         <div className="publish-metrics">
                             <div>
@@ -93,14 +125,16 @@ export default function WorkbenchPanel() {
                                 <strong>{report.summary.laneComponents}</strong>
                             </div>
                         </div>
-                        <p className="workbench-note">发布前先清理红色错误；只剩黄色警告时，可以发布并在仿真中确认。</p>
+                        <div className="publish-next-actions">
+                            <Button type="button" variant="secondary" onClick={() => setActiveTab('quality')}>
+                                查看质检问题
+                            </Button>
+                            <span>发布入口在顶部“生产”菜单，避免检查页和发布动作重复。</span>
+                        </div>
+                        <p className="workbench-note">
+                            发布前先保存标注，再清理红色错误；只剩黄色警告时，发布后进入仿真确认。
+                        </p>
                     </div>
-                )}
-                {activeTab === 'history' && (
-                    <PlaceholderPanel
-                        title="任务历史"
-                        desc="后续这里会汇总导入、构建、发布、部署和 AI 修复记录。当前阶段先保留入口，避免再增加浮窗。"
-                    />
                 )}
             </div>
         </aside>

@@ -3,17 +3,24 @@
     left: 16px;
     top: 16px;
     z-index: 9;
-    width: 318px;
+    width: 382px;
     max-width: calc(100% - 64px);
-    border: 1px solid rgba(102, 116, 140, 0.55);
+    overflow: hidden;
+    border: 1px solid rgba(111, 127, 154, 0.42);
     border-radius: 8px;
-    background: rgba(18, 23, 33, 0.96);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    background: rgba(15, 20, 29, 0.96);
+    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.34);
     color: #dbe7f7;
     user-select: none;
 
     &.is-collapsed {
         width: auto;
+        border-color: rgba(72, 91, 124, 0.75);
+        background: rgba(19, 26, 38, 0.94);
+    }
+
+    button {
+        white-space: nowrap;
     }
 }
 
@@ -21,99 +28,220 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    min-height: 40px;
-    padding: 0 10px 0 12px;
-    border-bottom: 1px solid rgba(75, 88, 108, 0.7);
+    min-height: 52px;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(75, 88, 108, 0.62);
+}
+
+.editor-layer-collapsed-button {
+    border-color: rgba(88, 112, 150, 0.8);
+    background: #182235;
+    color: #e6eefc;
+}
+
+.editor-layer-title {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
 
     strong {
         color: #ffffff;
         font-size: 14px;
-        font-weight: 600;
+        font-weight: 650;
         line-height: 20px;
+    }
+
+    span {
+        color: #8ea0ba;
+        font-size: 12px;
+        line-height: 18px;
     }
 }
 
 .editor-layer-collapse {
-    height: 28px;
-    padding: 0 9px;
-    border: 1px solid #3a465a;
-    border-radius: 5px;
-    background: #202838;
-    color: #c8d6ea;
-    font-size: 12px;
-    cursor: pointer;
+    color: #9fb0ca;
+}
 
-    &:hover {
-        border-color: #3288fa;
-        color: #ffffff;
+.editor-layer-content {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+}
+
+.editor-layer-presets {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+
+    button {
+        border-color: #334258;
+        background: #172033;
+        color: #d9e6f8;
+
+        &:hover {
+            border-color: #3d82f6;
+            background: #1b2d4e;
+            color: #ffffff;
+        }
+    }
+}
+
+.editor-layer-help {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid rgba(68, 85, 110, 0.64);
+    border-radius: 6px;
+    background: rgba(30, 40, 56, 0.72);
+    color: #9fb0c7;
+    font-size: 12px;
+    line-height: 18px;
+
+    svg {
+        flex: 0 0 auto;
+        width: 14px;
+        height: 14px;
+        margin-top: 2px;
+        color: #7fb2ff;
     }
 }
 
 .editor-layer-list {
     display: flex;
+    max-height: min(540px, calc(100vh - 230px));
     flex-direction: column;
-    padding: 6px;
+    gap: 8px;
+    overflow: auto;
+    padding-right: 2px;
 }
 
 .editor-layer-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 36px repeat(3, 30px);
-    align-items: center;
-    gap: 6px;
-    min-height: 36px;
-    padding: 3px 4px 3px 8px;
-    border-radius: 6px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid rgba(58, 72, 95, 0.9);
+    border-radius: 8px;
+    background: rgba(21, 28, 40, 0.82);
 
     &:hover {
-        background: rgba(52, 63, 82, 0.7);
+        border-color: rgba(78, 105, 146, 0.95);
+        background: rgba(27, 37, 54, 0.92);
     }
 
-    button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 28px;
-        height: 28px;
-        padding: 0;
-        border: 1px solid transparent;
-        border-radius: 5px;
-        background: transparent;
-        color: #8796ad;
-        cursor: pointer;
+    &.is-hidden {
+        opacity: 0.64;
+    }
 
-        &:hover:not(:disabled),
-        &.active {
-            border-color: #3e6db5;
-            color: #ffffff;
-            background: #1f365d;
+    &.is-locked {
+        .editor-layer-name::after {
+            content: '已锁定';
+            margin-left: 8px;
+            color: #f2b56b;
+            font-size: 11px;
+            font-weight: 500;
         }
+    }
+}
 
-        &.locked {
-            border-color: #7a4b35;
-            color: #ffbc78;
-            background: #32241d;
-        }
+.editor-layer-meta {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+}
 
-        &:disabled {
-            cursor: not-allowed;
-            opacity: 0.35;
-        }
+.editor-layer-mainline {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+}
+
+.editor-layer-dot {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: #6aa6ff;
+    box-shadow: 0 0 0 3px rgba(106, 166, 255, 0.12);
+
+    &.layer-reference {
+        background: #9aa8bd;
+    }
+
+    &.layer-lane {
+        background: #3d82f6;
+    }
+
+    &.layer-boundary {
+        background: #f59e0b;
+    }
+
+    &.layer-junction {
+        background: #22c55e;
+    }
+
+    &.layer-traffic {
+        background: #ef4444;
+    }
+
+    &.layer-area {
+        background: #14b8a6;
+    }
+
+    &.layer-quality {
+        background: #a855f7;
     }
 }
 
 .editor-layer-name {
     min-width: 0;
     overflow: hidden;
-    color: #d9e4f4;
+    color: #eef5ff;
     font-size: 13px;
+    font-weight: 650;
     line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.editor-layer-count {
-    color: #7f8fa7;
+.editor-layer-description {
+    overflow: hidden;
+    color: #8494ad;
     font-size: 12px;
     line-height: 18px;
-    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.editor-layer-actions {
+    display: grid;
+    grid-template-columns: minmax(72px, 1fr) minmax(72px, 1fr) 32px;
+    gap: 8px;
+
+    button {
+        border-color: rgba(65, 81, 106, 0.92);
+    }
+
+    svg {
+        width: 14px;
+        height: 14px;
+    }
+}
+
+@media (max-width: 760px) {
+    .editor-layer-panel {
+        left: 10px;
+        top: 10px;
+        width: calc(100% - 20px);
+        max-width: none;
+    }
+
+    .editor-layer-presets {
+        grid-template-columns: 1fr;
+    }
 }

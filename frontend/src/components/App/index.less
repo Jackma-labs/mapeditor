@@ -86,49 +86,6 @@
     border-radius: 8px;
     background: rgba(22, 27, 37, 0.96);
     box-shadow: 0 24px 70px rgba(0, 0, 0, 0.48);
-
-    .ant-input,
-    .ant-input-affix-wrapper {
-        width: 100% !important;
-        height: 44px;
-        box-sizing: border-box;
-        border-color: #38445a;
-        border-radius: 6px;
-        background: #101620 !important;
-        color: #dbe6f5;
-    }
-
-    .ant-input-affix-wrapper {
-        display: flex;
-        align-items: center;
-        overflow: hidden;
-    }
-
-    .ant-input-affix-wrapper:hover,
-    .ant-input-affix-wrapper-focused {
-        border-color: #2f7ff7;
-        box-shadow: 0 0 0 2px rgba(47, 127, 247, 0.14);
-    }
-
-    .ant-input::placeholder,
-    .ant-input-password input::placeholder {
-        color: #68768c;
-    }
-
-    .ant-input-affix-wrapper input {
-        width: 100% !important;
-        min-width: 0;
-        background: transparent !important;
-        border: 0 !important;
-        box-shadow: none !important;
-        color: #dbe6f5;
-    }
-
-    .ant-btn {
-        height: 44px;
-        border-radius: 6px;
-        font-weight: 600;
-    }
 }
 
 .login-brand {
@@ -210,6 +167,56 @@
         color: #b8c6da;
         font-size: 13px;
         font-weight: 600;
+    }
+
+    > button {
+        height: 44px;
+        border-radius: 6px;
+        font-weight: 650;
+    }
+}
+
+.login-input-shell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 44px;
+    min-width: 0;
+    overflow: hidden;
+    padding: 0 12px;
+    border: 1px solid #38445a;
+    border-radius: 6px;
+    background: #101620;
+    color: #899ab3;
+
+    &:focus-within {
+        border-color: #2f7ff7;
+        box-shadow: 0 0 0 2px rgba(47, 127, 247, 0.14);
+    }
+
+    svg {
+        width: 16px;
+        height: 16px;
+        flex: 0 0 auto;
+    }
+
+    input {
+        height: 42px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: #dbe6f5;
+        box-shadow: none;
+
+        &::placeholder {
+            color: #68768c;
+        }
+
+        &:focus,
+        &:focus-visible {
+            border: 0;
+            box-shadow: none;
+        }
     }
 }
 

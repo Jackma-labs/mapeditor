@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Input, message } from 'antd';
-import { LockOutlined, UserOutlined } from '@ant-design/icons';
+import { message } from 'antd';
+import { Lock, LogIn, User } from 'lucide-react';
 import './index.less';
 import { useManagerStore } from 'src/store';
 import { clearScene } from 'src/utils/threeObjectUtil';
 import PubSub from 'pubsub-js';
 import FileService from 'src/service/index';
 import { MapElementType, OperationType, PermissionStatus } from 'src/interface/commonInterFace';
+import { Button } from 'src/components/ui/button';
+import { Input } from 'src/components/ui/input';
 import MapEditor from '../MapEditor/index';
 import Toolbar from '../Toolbar';
 import WorkbenchPanel from '../WorkbenchPanel';
@@ -129,6 +131,17 @@ export default function App() {
             authenticated: false,
         });
     };
+    const handleLoginKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+        if (event.key === 'Enter') {
+            handleLogin();
+        }
+    };
+    const handleUsernameChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        setLoginForm({ ...loginForm, username: event.target.value });
+    };
+    const handlePasswordChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        setLoginForm({ ...loginForm, password: event.target.value });
+    };
     useEffect(
         () => () => {
             PubSub.publishSync('removeAllRange');
@@ -202,41 +215,44 @@ export default function App() {
                         <div className="login-form">
                             <div className="login-field">
                                 <span>用户名</span>
-                                <Input
-                                    id="landing-login-username"
-                                    aria-label="用户名"
-                                    size="large"
-                                    prefix={<UserOutlined />}
-                                    placeholder="请输入用户名"
-                                    value={loginForm.username}
-                                    autoComplete="username"
-                                    onChange={(event) => setLoginForm({ ...loginForm, username: event.target.value })}
-                                    onPressEnter={handleLogin}
-                                />
+                                <div className="login-input-shell">
+                                    <User />
+                                    <Input
+                                        id="landing-login-username"
+                                        aria-label="用户名"
+                                        placeholder="请输入用户名"
+                                        value={loginForm.username}
+                                        autoComplete="username"
+                                        onChange={handleUsernameChange}
+                                        onKeyDown={handleLoginKeyDown}
+                                    />
+                                </div>
                             </div>
                             <div className="login-field">
                                 <span>密码</span>
-                                <Input.Password
-                                    id="landing-login-password"
-                                    aria-label="密码"
-                                    size="large"
-                                    prefix={<LockOutlined />}
-                                    placeholder="请输入密码"
-                                    value={loginForm.password}
-                                    autoComplete="current-password"
-                                    onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })}
-                                    onPressEnter={handleLogin}
-                                />
+                                <div className="login-input-shell">
+                                    <Lock />
+                                    <Input
+                                        id="landing-login-password"
+                                        aria-label="密码"
+                                        type="password"
+                                        placeholder="请输入密码"
+                                        value={loginForm.password}
+                                        autoComplete="current-password"
+                                        onChange={handlePasswordChange}
+                                        onKeyDown={handleLoginKeyDown}
+                                    />
+                                </div>
                             </div>
                             <Button
-                                size="large"
-                                type="primary"
-                                block
-                                loading={loginLoading}
-                                disabled={!loginForm.username || !loginForm.password}
+                                type="button"
+                                size="lg"
+                                disabled={loginLoading || !loginForm.username || !loginForm.password}
                                 onClick={handleLogin}
                             >
+                                <LogIn data-icon="inline-start" />
                                 登录
+                                {loginLoading ? '中...' : ''}
                             </Button>
                         </div>
                     </div>

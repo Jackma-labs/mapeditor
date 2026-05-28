@@ -19,6 +19,8 @@ import { rotateElementsUpdate } from 'src/threeUtil/RotateControl/util';
 import { PickObjectsControl } from 'src/threeUtil/PickObjectsControl';
 import RangingControl from 'src/threeUtil/ RangingControl';
 import RecoverDataRemind from 'src/components/RecoverDataRemind';
+import { Button } from 'src/components/ui/button';
+import { Slider } from 'src/components/ui/slider';
 import { comparePointsWithPreCheck } from 'src/diff/compareWithPreCheck';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer';
 import { updateElements } from 'src/diff/updateElement';
@@ -446,39 +448,45 @@ export default function MapEditor() {
                     onMouseUp={(event) => event.stopPropagation()}
                 >
                     <div className="basemap-layer-header">
-                        <div className="basemap-layer-title">底图控制</div>
-                        <button type="button" onClick={() => PubSub.publish('fitBaseMap')}>
-                            居中
-                        </button>
+                        <div>
+                            <div className="basemap-layer-title">底图显示</div>
+                            <div className="basemap-layer-subtitle">只影响查看效果，不修改地图数据。</div>
+                        </div>
+                        <Button type="button" variant="outline" size="sm" onClick={() => PubSub.publish('fitBaseMap')}>
+                            回到底图
+                        </Button>
                     </div>
                     <div className="basemap-layer-actions">
-                        <span>透明度</span>
-                        <input
-                            type="range"
-                            min="0.35"
-                            max="1"
-                            step="0.05"
-                            value={baseMapUi.opacity}
-                            onChange={(event) => handleOpacityChange(Number(event.target.value))}
+                        <div className="basemap-control-copy">
+                            <span>底图透明度</span>
+                            <small>降低透明度可以更清楚地检查标注线。</small>
+                        </div>
+                        <Slider
+                            min={0.35}
+                            max={1}
+                            step={0.05}
+                            value={[baseMapUi.opacity]}
+                            onValueChange={(value) => handleOpacityChange(value[0] || 0.35)}
                         />
                         <span className="basemap-control-value">{`${Math.round(baseMapUi.opacity * 100)}%`}</span>
                     </div>
                     <div className={`basemap-layer-actions ${baseMapUi.supportsPointSize ? '' : 'is-disabled'}`}>
-                        <span>点大小</span>
-                        <input
-                            type="range"
-                            min="0.6"
-                            max="3"
-                            step="0.1"
-                            value={baseMapUi.pointSize}
+                        <div className="basemap-control-copy">
+                            <span>点云点大小</span>
+                            <small>
+                                {baseMapUi.supportsPointSize ? '用于看清稀疏点云。' : 'PNG 瓦片底图暂不支持实时调整。'}
+                            </small>
+                        </div>
+                        <Slider
+                            min={0.6}
+                            max={3}
+                            step={0.1}
+                            value={[baseMapUi.pointSize]}
                             disabled={!baseMapUi.supportsPointSize}
-                            title={
-                                baseMapUi.supportsPointSize ? '调整点云渲染大小' : 'PNG 瓦片的点大小需要重新生成底图'
-                            }
-                            onChange={(event) => handlePointSizeChange(Number(event.target.value))}
+                            onValueChange={(value) => handlePointSizeChange(value[0] || 0.6)}
                         />
                         <span className="basemap-control-value">
-                            {baseMapUi.supportsPointSize ? baseMapUi.pointSize.toFixed(1) : '瓦片固定'}
+                            {baseMapUi.supportsPointSize ? baseMapUi.pointSize.toFixed(1) : '固定'}
                         </span>
                     </div>
                 </div>

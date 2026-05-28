@@ -2,7 +2,7 @@ import { MapElementType } from 'src/interface/commonInterFace';
 
 export const mapElements = [
     {
-        name: '线',
+        name: '直线',
         mapElementType: MapElementType.StraightLine,
     },
     {

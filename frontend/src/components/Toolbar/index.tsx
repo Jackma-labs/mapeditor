@@ -1158,7 +1158,7 @@ export default function Index(prop: ToolbarProps) {
                 </div>
             )}
             <Tooltip
-                title="还没有编辑内容!"
+                title="没有可撤销的操作"
                 trigger="hover"
                 color="rgba(61,67,78,0.80)"
                 open={!canUndo && curHoverTool === HoverTool.Back}
@@ -1181,7 +1181,7 @@ export default function Index(prop: ToolbarProps) {
             </Tooltip>
 
             <Tooltip
-                title="还没有撤销内容!"
+                title="没有可重做的操作"
                 trigger="hover"
                 color="rgba(61,67,78,0.80)"
                 open={!canRedo && curHoverTool === HoverTool.Next}
@@ -1206,7 +1206,7 @@ export default function Index(prop: ToolbarProps) {
             </Tooltip>
 
             <Tooltip
-                title="为选中内容!"
+                title="请先选中可旋转的对象"
                 trigger="hover"
                 color="rgba(61,67,78,0.80)"
                 open={rotateStatus === RotateStatus.Disable && curHoverTool === HoverTool.Rotate}
@@ -1287,7 +1287,7 @@ export default function Index(prop: ToolbarProps) {
             {showSaveDataRemind && (
                 <RemindModal
                     titledata="确定退出当前界面吗？"
-                    content="已编辑的内容不被保存"
+                    content="未保存的编辑内容将不会保留"
                     onCancelCallback={() => changeShowSaveDataRemind(false)}
                     onOkCallback={() => {
                         setVisibleVal({ ...visibleVal, map: true });
