@@ -1167,6 +1167,150 @@ async function loadEditorMap(mapName) {
   return JSON.parse(content);
 }
 
+function coordinateFromAny(value) {
+  if (!value) {
+    return null;
+  }
+  const source = Array.isArray(value)
+    ? { x: value[0], y: value[1], z: value[2] }
+    : value.position || value;
+  const x = Number(source.x ?? source.lng ?? source.lon ?? source.longitude);
+  const y = Number(source.y ?? source.lat ?? source.latitude);
+  const z = Number(source.z ?? source.height ?? 0);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y, z } : null;
+}
+
+function coordinateDistanceMeters(left, right) {
+  if (!left || !right) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.hypot(Number(left.x) - Number(right.x), Number(left.y) - Number(right.y));
+}
+
+function getEditorMapBaseCenter(map) {
+  return coordinateFromAny(map?.basemapCenter || map?.baseMapCenter || map?.base_map_center);
+}
+
+function getEditorMapApolloAnchor(map) {
+  const anchor = map?.anchor || map?.coordinateAnchor || map?.coordinate_anchor || map?.coordinateMetadata?.anchor;
+  const anchorCoordinate =
+    coordinateFromAny(anchor?.utm) ||
+    coordinateFromAny(anchor?.apolloUtm) ||
+    coordinateFromAny(anchor?.apollo_utm) ||
+    coordinateFromAny(anchor?.origin);
+  const direct =
+    coordinateFromAny(map?.apolloOrigin) ||
+    coordinateFromAny(map?.apollo_origin) ||
+    coordinateFromAny(map?.utmOrigin) ||
+    coordinateFromAny(map?.utm_origin) ||
+    coordinateFromAny(map?.mapOrigin) ||
+    coordinateFromAny(map?.map_origin);
+  if (direct) {
+    return {
+      coordinate: direct,
+      source: anchorCoordinate && coordinateDistanceMeters(anchorCoordinate, direct) <= 0.001
+        ? anchor?.source || "apolloOrigin"
+        : "apolloOrigin",
+    };
+  }
+  if (anchorCoordinate) {
+    return {
+      coordinate: anchorCoordinate,
+      source: anchor?.source || "anchor.utm",
+    };
+  }
+  const headerOrigin = coordinateFromAny(map?.header?.origin);
+  return headerOrigin ? { coordinate: headerOrigin, source: "header.origin" } : null;
+}
+
+async function findApolloAnchorForBaseCenter(mapName, baseCenter) {
+  if (!baseCenter) {
+    return null;
+  }
+  const candidates = [];
+  const pushCandidate = async (candidateName, filePath, kind) => {
+    if (!candidateName || candidateName === mapName || !(await pathExists(filePath))) {
+      return;
+    }
+    try {
+      const stat = await fsp.stat(filePath);
+      const candidate = JSON.parse(await fsp.readFile(filePath, "utf8"));
+      const candidateBaseCenter = getEditorMapBaseCenter(candidate);
+      const anchor = getEditorMapApolloAnchor(candidate);
+      if (!candidateBaseCenter || !anchor) {
+        return;
+      }
+      const baseCenterDistance = coordinateDistanceMeters(candidateBaseCenter, baseCenter);
+      if (baseCenterDistance <= 5) {
+        candidates.push({
+          mapName: candidateName,
+          kind,
+          filePath,
+          anchor,
+          baseCenterDistance,
+          mtimeMs: stat.mtimeMs,
+        });
+      }
+    } catch (error) {
+      log("Failed to inspect coordinate anchor candidate:", filePath, error.message);
+    }
+  };
+
+  await ensureDir(config.editorMapRoot);
+  const editorEntries = await fsp.readdir(config.editorMapRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of editorEntries) {
+    if (entry.isFile() && entry.name.endsWith(".json")) {
+      await pushCandidate(entry.name.replace(/\.json$/i, ""), path.join(config.editorMapRoot, entry.name), "editor_map");
+    }
+  }
+
+  const releaseEntries = await fsp.readdir(config.releaseRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of releaseEntries) {
+    if (entry.isDirectory() && !entry.name.startsWith(".")) {
+      await pushCandidate(entry.name, path.join(config.releaseRoot, entry.name, "editor_map.json"), "released_map");
+    }
+  }
+
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  return candidates[0] || null;
+}
+
+async function inferMissingApolloAnchor(mapName, map) {
+  const sourceCrs = String(map?.sourceCrs || map?.source_crs || map?.coordinateFrame || "").toUpperCase();
+  if (!map || sourceCrs === "APOLLO_UTM_ZONE_50" || getEditorMapApolloAnchor(map)) {
+    return { map, inferred: null };
+  }
+  const baseCenter = getEditorMapBaseCenter(map);
+  const match = await findApolloAnchorForBaseCenter(mapName, baseCenter);
+  if (!match) {
+    return { map, inferred: null };
+  }
+  const inferredMap = JSON.parse(JSON.stringify(map));
+  const origin = match.anchor.coordinate;
+  inferredMap.apolloOrigin = origin;
+  inferredMap.anchor = {
+    source: `inferred_same_basemap:${match.mapName}:${match.anchor.source}`,
+    utm: origin,
+    referenceMap: match.mapName,
+    referenceKind: match.kind,
+    baseCenterDistanceMeters: Number(match.baseCenterDistance.toFixed(3)),
+  };
+  inferredMap.header = {
+    ...(inferredMap.header || {}),
+    origin,
+  };
+  return {
+    map: inferredMap,
+    inferred: {
+      sourceMap: match.mapName,
+      sourceKind: match.kind,
+      sourceAnchor: match.anchor.source,
+      baseCenterDistanceMeters: Number(match.baseCenterDistance.toFixed(3)),
+      origin,
+    },
+  };
+}
+
 function timestampForFileName() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
@@ -1435,7 +1579,14 @@ async function handleReleaseMapFile(ws, requestId, info) {
       });
       return;
     }
-    const jsonPath = await saveEditorMap(mapName, map);
+    const anchorInference = await inferMissingApolloAnchor(mapName, map);
+    if (anchorInference.inferred) {
+      log(
+        `Inferred Apollo coordinate anchor for ${mapName} from ${anchorInference.inferred.sourceMap}`,
+        anchorInference.inferred,
+      );
+    }
+    const jsonPath = await saveEditorMap(mapName, anchorInference.map);
     const result = await runConverter(mapName, jsonPath, dir);
     let apolloLiteStage = null;
     let apolloLiteStageError = null;
@@ -1457,6 +1608,7 @@ async function handleReleaseMapFile(ws, requestId, info) {
         mapName,
         output_dir: dir,
         stdout: result.stdout.trim(),
+        coordinateAnchorInference: anchorInference.inferred,
         apolloLiteStage,
         apolloLiteStageError,
         lock,

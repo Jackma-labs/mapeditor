@@ -1415,8 +1415,18 @@ async function listReleasedMaps(config) {
     ];
     const sizeBytes = await getDirectorySize(mapDir);
     const missingExpectedFiles = expectedFiles.filter((fileName) => !files.includes(fileName));
-    const ready = missingExpectedFiles.length === 0 && sizeBytes > 0;
+    const manifest = await readReleasedMapManifest(mapDir).catch((error) => ({
+      parseError: error.message,
+    }));
+    const conversionErrors = getReleasedMapManifestErrors(manifest);
+    const ready = missingExpectedFiles.length === 0 && sizeBytes > 0 && conversionErrors.length === 0;
     const selectable = isSelectableReleasedMapName(mapName);
+    const status = ready ? 'ready' : conversionErrors.length > 0 ? 'coordinate_invalid' : 'invalid';
+    const statusMessage = ready
+      ? 'Ready for deployment and simulation'
+      : conversionErrors.length > 0
+        ? `Coordinate conversion failed: ${summarizeReleasedMapErrors(conversionErrors)}`
+        : `Missing ${missingExpectedFiles.join(', ') || 'valid map files'}`;
     maps.push({
       mapName,
       path: mapDir,
@@ -1427,8 +1437,12 @@ async function listReleasedMaps(config) {
       missingExpectedFiles,
       ready,
       selectable,
-      status: ready ? 'ready' : 'invalid',
-      statusMessage: ready ? 'Ready for deployment and simulation' : `Missing ${missingExpectedFiles.join(', ') || 'valid map files'}`,
+      status,
+      statusMessage,
+      conversionErrors,
+      sourceCrs: manifest?.sourceCrs || null,
+      coordinateTransform: manifest?.coordinateTransform || null,
+      bounds: manifest?.bounds || null,
     });
   }
   maps.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt));
@@ -1479,6 +1493,31 @@ async function readReleasedMapManifest(mapDir) {
   }
   const content = await fsp.readFile(manifestPath, 'utf8');
   return JSON.parse(content.replace(/^\uFEFF/, ''));
+}
+
+function getReleasedMapManifestErrors(manifest) {
+  if (!manifest || manifest.parseError) {
+    return [];
+  }
+  const warnings = Array.isArray(manifest.warnings) ? manifest.warnings : [];
+  const errors = warnings
+    .filter((warning) => String(warning?.severity || '').toLowerCase() === 'error')
+    .map((warning) => warning?.message || warning?.code || 'manifest conversion error')
+    .filter(Boolean);
+  const contractErrors = Number(manifest.contract?.warningCounts?.error || manifest.summary?.contractErrors || 0);
+  if (contractErrors > 0 && errors.length === 0) {
+    errors.push(`${contractErrors} conversion error(s) in release manifest`);
+  }
+  return errors;
+}
+
+function summarizeReleasedMapErrors(errors) {
+  const messages = (Array.isArray(errors) ? errors : []).filter(Boolean);
+  if (messages.length === 0) {
+    return 'unknown release error';
+  }
+  const summary = messages.slice(0, 2).join('; ');
+  return messages.length > 2 ? `${summary}; +${messages.length - 2} more` : summary;
 }
 
 async function inspectReleasedMapForApolloLite(config, mapName) {
@@ -1541,6 +1580,10 @@ async function inspectReleasedMapForApolloLite(config, mapName) {
   }));
   if (manifest?.parseError) {
     warnings.push(`manifest.json parse failed: ${manifest.parseError}`);
+  }
+  const manifestErrors = getReleasedMapManifestErrors(manifest);
+  for (const error of manifestErrors) {
+    errors.push(`manifest conversion error: ${error}`);
   }
 
   return {
