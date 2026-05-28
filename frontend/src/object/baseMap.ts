@@ -8,7 +8,7 @@ import PubSub from 'pubsub-js';
 import { configureTextureForWebGL1 } from 'src/utils/textureUtil';
 import { applyEditorLayerVisibility } from 'src/utils/editorLayerUtil';
 import CameraControl from '../threeUtil/cameraControl';
-import { baseHttpURL } from '../config/index';
+import { baseApiURL } from '../config/index';
 
 export interface TileItem {
     offset_x: string;
@@ -503,7 +503,7 @@ export default class BaseMap {
                 this.activeLayerId && this.activeLayerId !== 'enhanced'
                     ? `/layers/${encodeURIComponent(this.activeLayerId)}`
                     : '';
-            const url = `http://${baseHttpURL}/mapcreator/${this.dir}${layerPath}/${this.scale}/${y}/${x}.png`;
+            const url = `${baseApiURL}/mapcreator/${this.dir}${layerPath}/${this.scale}/${y}/${x}.png`;
             const point = new THREE.Vector3(parseInt(x, 10) * pixel * resolution, parseInt(y, 10) * pixel * resolution);
             const id = `tile_${this.scale}_${x}_${y}`;
             if (this.meshs[id]) {

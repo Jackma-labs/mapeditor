@@ -1,6 +1,6 @@
 import shortUUID from 'short-uuid';
 import Socket from 'websocket-as-promised';
-import { baseHttpURL } from '../config/index';
+import { baseApiURL, baseWsURL } from '../config/index';
 
 interface SocketMessageData {
     info: string;
@@ -38,7 +38,7 @@ class FileService {
 
     private init() {
         const option = {};
-        const url = `ws://${baseHttpURL}/plugins/map`;
+        const url = `${baseWsURL}/plugins/map`;
 
         this.isOpen = false;
 
@@ -118,7 +118,7 @@ class FileService {
     }
 
     private async requestJson(path: string, options: RequestInit = {}) {
-        const response = await fetch(`http://${baseHttpURL}${path}`, {
+        const response = await fetch(`${baseApiURL}${path}`, {
             headers: {
                 'Content-Type': 'application/json',
                 ...(options.headers || {}),
@@ -230,7 +230,7 @@ class FileService {
         formData.append('file', file);
         formData.append('mapName', mapName);
         formData.append('overwrite', overwrite ? 'true' : 'false');
-        const response = await fetch(`http://${baseHttpURL}/runtime/import-base-map`, {
+        const response = await fetch(`${baseApiURL}/runtime/import-base-map`, {
             method: 'POST',
             credentials: 'include',
             body: formData,
@@ -247,7 +247,7 @@ class FileService {
         files.forEach((item) => formData.append(files.length === 1 ? 'file' : 'files', item));
         formData.append('mapName', mapName);
         formData.append('overwrite', overwrite ? 'true' : 'false');
-        const response = await fetch(`http://${baseHttpURL}/runtime/import-point-cloud-base-map`, {
+        const response = await fetch(`${baseApiURL}/runtime/import-point-cloud-base-map`, {
             method: 'POST',
             credentials: 'include',
             body: formData,
@@ -263,7 +263,7 @@ class FileService {
         const files = Array.isArray(file) ? file : [file];
         files.forEach((item) => formData.append(files.length === 1 ? 'file' : 'files', item));
         formData.append('packageName', packageName);
-        const response = await fetch(`http://${baseHttpURL}/runtime/analyze-data-package`, {
+        const response = await fetch(`${baseApiURL}/runtime/analyze-data-package`, {
             method: 'POST',
             credentials: 'include',
             body: formData,
@@ -279,7 +279,7 @@ class FileService {
         const files = Array.isArray(file) ? file : [file];
         files.forEach((item) => formData.append(files.length === 1 ? 'file' : 'files', item));
         formData.append('packageName', packageName);
-        const response = await fetch(`http://${baseHttpURL}/runtime/analyze-data-package-job`, {
+        const response = await fetch(`${baseApiURL}/runtime/analyze-data-package-job`, {
             method: 'POST',
             credentials: 'include',
             body: formData,
@@ -419,7 +419,7 @@ class FileService {
         formData.append('file', file);
         formData.append('mapName', mapName);
         formData.append('overwrite', overwrite ? 'true' : 'false');
-        const response = await fetch(`http://${baseHttpURL}/runtime/import-map-package`, {
+        const response = await fetch(`${baseApiURL}/runtime/import-map-package`, {
             method: 'POST',
             credentials: 'include',
             body: formData,
@@ -511,7 +511,7 @@ class FileService {
 
     getBaseMapInfo(dir: string, layerId: string = 'enhanced') {
         const layerPath = layerId && layerId !== 'enhanced' ? `/layers/${encodeURIComponent(layerId)}` : '';
-        return fetch(`http://${baseHttpURL}/mapcreator/${dir}${layerPath}/tiles.json?mode=0`, {
+        return fetch(`${baseApiURL}/mapcreator/${dir}${layerPath}/tiles.json?mode=0`, {
             credentials: 'include',
         })
             .then((response) => response.json())

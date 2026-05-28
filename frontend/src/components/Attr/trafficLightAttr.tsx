@@ -8,7 +8,7 @@ import PubSub from 'pubsub-js';
 import { searchTrafficLightByTrafficLightId } from 'src/utils/search/trafficLightSearch';
 import { vector3TransTpVector2 } from 'src/utils/vectorUtil';
 import { ChangeTrafficLightTypeCommand } from 'src/command/TrafficLightCommand';
-import { baseHttpURL } from '../../config';
+import { baseApiURL } from '../../config';
 import { clone } from '../../utils/common';
 import { trafficSubSignalTypes, trafficSignalTypes, initTrafficLightAttr } from './constData';
 import CloseIcon from '../../assets/images/ic_close.svg';
@@ -214,7 +214,7 @@ export default function Index() {
         if (data?.info?.code === 0 && data?.info?.data?.projDir && data?.info?.data?.projDir.length !== 0) {
             setImages(
                 data.info.data.projDir.map((item: string) => ({
-                    url: `http://${baseHttpURL}/mapcreator/${mapState.baseMapDir}/${item}/proj.png?${Date.now()}`,
+                    url: `${baseApiURL}/mapcreator/${mapState.baseMapDir}/${item}/proj.png?${Date.now()}`,
                 })),
             );
             setImageVisible(true);
