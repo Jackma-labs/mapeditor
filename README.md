@@ -128,6 +128,9 @@ sudo ufw allow 58000/tcp
 See `deploy/server/README.md` and `runtime/native/README.md` for the server and
 native Apollo runtime details.
 
+For the Git-centered Dell + cloud + edge deployment workflow, see
+`docs/multi-end-deployment.md`.
+
 ## Backend configuration
 
 Config file: `backend/server.config.json`.

@@ -11,6 +11,8 @@ import { ApplyMapQualityRepairsCommand, buildMapQualityRepairActions } from 'src
 import { QUALITY_OVERLAY_GROUP_NAME, applyEditorLayerVisibility } from 'src/utils/editorLayerUtil';
 
 const QUALITY_FOCUS_MIN_EXTENT = 45;
+const TOPOLOGY_GAP_DISTANCE_METERS = 6;
+const TOPOLOGY_COMPONENT_COLORS = [0x2f80ed, 0x27ae60, 0xf2994a, 0x9b51e0, 0x00a6a6, 0xeb5757, 0x56ccf2, 0xf2c94c];
 
 type WorkflowStepStatus = 'pass' | 'warning' | 'error';
 type IssueFilter = 'all' | 'error' | 'warning' | 'topology';
@@ -25,6 +27,24 @@ interface IssueGuide {
     title: string;
     steps: string[];
     note?: string;
+}
+
+interface TopologyComponent {
+    id: number;
+    laneIds: string[];
+}
+
+interface TopologyEndpoint {
+    laneId: string;
+    componentId: number;
+    endpoint: 'start' | 'end';
+    center: THREE.Vector3;
+}
+
+interface TopologyGap {
+    from: TopologyEndpoint;
+    to: TopologyEndpoint;
+    distance: number;
 }
 
 function getPointPosition(mapState: MapState, pointId: string) {
@@ -215,6 +235,133 @@ function addMarker(group: THREE.Group, positions: THREE.Vector3[], color: number
     group.add(marker);
 }
 
+function getEndpointCenter(mapState: MapState, pointIds: [string | null, string | null], z = 0.34) {
+    const leftPoint = pointIds[0] ? mapState.points[pointIds[0]] : null;
+    const rightPoint = pointIds[1] ? mapState.points[pointIds[1]] : null;
+    if (!leftPoint || !rightPoint) {
+        return null;
+    }
+    return new THREE.Vector3(
+        (leftPoint.position.x + rightPoint.position.x) / 2,
+        (leftPoint.position.y + rightPoint.position.y) / 2,
+        z,
+    );
+}
+
+function buildTopologyComponents(report: MapQualityReport): TopologyComponent[] {
+    const relations = report.laneRelations || {};
+    const laneIds = Object.keys(relations);
+    const visited = new Set<string>();
+    const components: TopologyComponent[] = [];
+    laneIds.forEach((laneId) => {
+        if (visited.has(laneId)) {
+            return;
+        }
+        const componentLaneIds: string[] = [];
+        const queue = [laneId];
+        visited.add(laneId);
+        while (queue.length > 0) {
+            const currentLaneId = queue.shift();
+            if (currentLaneId) {
+                componentLaneIds.push(currentLaneId);
+                const relation = relations[currentLaneId];
+                [...(relation?.predecessors || []), ...(relation?.successors || [])].forEach((nextLaneId) => {
+                    if (!visited.has(nextLaneId) && relations[nextLaneId]) {
+                        visited.add(nextLaneId);
+                        queue.push(nextLaneId);
+                    }
+                });
+            }
+        }
+        components.push({
+            id: components.length + 1,
+            laneIds: componentLaneIds,
+        });
+    });
+    return components;
+}
+
+function getTopologyEndpoints(mapState: MapState, component: TopologyComponent, report: MapQualityReport) {
+    return component.laneIds.flatMap((laneId) => {
+        const relation = report.laneRelations[laneId];
+        if (!relation) {
+            return [];
+        }
+        return [
+            {
+                laneId,
+                componentId: component.id,
+                endpoint: 'start' as const,
+                center: getEndpointCenter(mapState, relation.startPointIds),
+            },
+            {
+                laneId,
+                componentId: component.id,
+                endpoint: 'end' as const,
+                center: getEndpointCenter(mapState, relation.endPointIds),
+            },
+        ].filter((item) => Boolean(item.center)) as TopologyEndpoint[];
+    });
+}
+
+function getNearestTopologyGaps(mapState: MapState, components: TopologyComponent[], report: MapQualityReport) {
+    const gaps: TopologyGap[] = [];
+    for (let i = 0; i < components.length; i += 1) {
+        for (let j = i + 1; j < components.length; j += 1) {
+            const leftEndpoints = getTopologyEndpoints(mapState, components[i], report);
+            const rightEndpoints = getTopologyEndpoints(mapState, components[j], report);
+            let bestGap: TopologyGap = null;
+            leftEndpoints.forEach((from) => {
+                rightEndpoints.forEach((to) => {
+                    const distance = from.center.distanceTo(to.center);
+                    if (!bestGap || distance < bestGap.distance) {
+                        bestGap = { from, to, distance };
+                    }
+                });
+            });
+            if (bestGap && bestGap.distance <= TOPOLOGY_GAP_DISTANCE_METERS) {
+                gaps.push(bestGap);
+            }
+        }
+    }
+    return gaps.sort((left, right) => left.distance - right.distance);
+}
+
+function addTopologyGapLine(group: THREE.Group, gap: TopologyGap) {
+    const geometry = new THREE.BufferGeometry().setFromPoints([gap.from.center, gap.to.center]);
+    const material = new THREE.LineDashedMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.95,
+        dashSize: 1.2,
+        gapSize: 0.7,
+        depthTest: false,
+        depthWrite: false,
+    });
+    const line = new THREE.Line(geometry, material);
+    line.computeLineDistances();
+    line.renderOrder = 905;
+    group.add(line);
+    addMarker(group, [gap.from.center, gap.to.center], 0xffffff);
+}
+
+function removeQualityOverlay(mapState: MapState) {
+    const { scene } = mapState;
+    if (!scene) {
+        return false;
+    }
+    const oldGroup = scene.getObjectByName(QUALITY_OVERLAY_GROUP_NAME);
+    if (!oldGroup) {
+        return false;
+    }
+    scene.remove(oldGroup);
+    oldGroup.traverse((object: any) => {
+        object.geometry?.dispose?.();
+        object.material?.dispose?.();
+    });
+    return true;
+}
+
 function getIssueColor(issue: MapQualityIssue, selectedIssueId: string) {
     if (issue.id === selectedIssueId) {
         return 0xff2d2d;
@@ -268,18 +415,42 @@ function renderQualityOverlay(mapState: MapState, issues: MapQualityIssue[], sel
     PubSub.publish('render');
 }
 
-function clearQualityOverlay(mapState: MapState) {
+function renderTopologyOverlay(mapState: MapState, report: MapQualityReport) {
     const { scene } = mapState;
     if (!scene) {
         return;
     }
-    const oldGroup = scene.getObjectByName(QUALITY_OVERLAY_GROUP_NAME);
-    if (oldGroup) {
-        scene.remove(oldGroup);
-        oldGroup.traverse((object: any) => {
-            object.geometry?.dispose?.();
-            object.material?.dispose?.();
+    removeQualityOverlay(mapState);
+    const components = buildTopologyComponents(report);
+    if (components.length === 0) {
+        return;
+    }
+    const group = new THREE.Group();
+    group.name = QUALITY_OVERLAY_GROUP_NAME;
+    components.forEach((component, index) => {
+        const color = TOPOLOGY_COMPONENT_COLORS[index % TOPOLOGY_COMPONENT_COLORS.length];
+        component.laneIds.forEach((laneId) => {
+            const lane = mapState.lanes[laneId];
+            if (!lane) {
+                return;
+            }
+            const leftPositions = getBoundaryPositions(mapState, lane.leftBoundaryId);
+            const rightPositions = getBoundaryPositions(mapState, lane.rightBoundaryId);
+            addLine(group, leftPositions, color);
+            addLine(group, rightPositions, color);
+            addMarker(group, [...leftPositions, ...rightPositions], color);
         });
+    });
+    getNearestTopologyGaps(mapState, components, report)
+        .slice(0, 16)
+        .forEach((gap) => addTopologyGapLine(group, gap));
+    scene.add(group);
+    applyEditorLayerVisibility(mapState);
+    PubSub.publish('render');
+}
+
+function clearQualityOverlay(mapState: MapState) {
+    if (removeQualityOverlay(mapState)) {
         PubSub.publish('render');
     }
 }
@@ -376,6 +547,7 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
     const [collapsed, setCollapsed] = useState(false);
     const [selectedIssueId, setSelectedIssueId] = useState('');
     const [issueFilter, setIssueFilter] = useState<IssueFilter>('all');
+    const [topologyOverlayEnabled, setTopologyOverlayEnabled] = useState(false);
     const [mapState, setMapState, addCommand] = useManagerStore((state) => [
         state.mapState,
         state.setMapState,
@@ -387,6 +559,12 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
     const issues = report.issues;
 
     useEffect(() => () => clearQualityOverlay(useManagerStore.getState().mapState), []);
+
+    useEffect(() => {
+        if (topologyOverlayEnabled) {
+            renderTopologyOverlay(mapState, report);
+        }
+    }, [mapState, report, topologyOverlayEnabled]);
 
     if (!hasMapData && !embedded) {
         return null;
@@ -409,8 +587,21 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
         setSelectedIssueId(issue.id);
     };
 
+    const handleToggleTopologyOverlay = () => {
+        setTopologyOverlayEnabled((enabled) => {
+            const nextEnabled = !enabled;
+            if (!nextEnabled) {
+                clearQualityOverlay(mapState);
+            } else {
+                setSelectedIssueId('');
+            }
+            return nextEnabled;
+        });
+    };
+
     const handleLocateIssue = (issue: MapQualityIssue, event?: React.MouseEvent) => {
         event?.stopPropagation();
+        setTopologyOverlayEnabled(false);
         setSelectedIssueId(issue.id);
         const pickElement = pickElementFromIssue(mapState, issue);
         if (pickElement) {
@@ -555,6 +746,14 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
                 <div className="quality-panel-actions">
                     <Button size="small" disabled={issues.length === 0} onClick={handleAutoRepair}>
                         {repairActions.length > 0 ? `智能修复 ${repairActions.length}` : '智能修复'}
+                    </Button>
+                    <Button
+                        size="small"
+                        disabled={report.summary.lanes === 0}
+                        type={topologyOverlayEnabled ? 'primary' : 'default'}
+                        onClick={handleToggleTopologyOverlay}
+                    >
+                        {topologyOverlayEnabled ? '隐藏拓扑' : '显示拓扑'}
                     </Button>
                     {issues.length > 0 && (
                         <Button size="small" onClick={handleCopyReport}>
