@@ -89,11 +89,19 @@
 
     .ant-input,
     .ant-input-affix-wrapper {
+        width: 100% !important;
         height: 44px;
+        box-sizing: border-box;
         border-color: #38445a;
         border-radius: 6px;
-        background: #101620;
+        background: #101620 !important;
         color: #dbe6f5;
+    }
+
+    .ant-input-affix-wrapper {
+        display: flex;
+        align-items: center;
+        overflow: hidden;
     }
 
     .ant-input-affix-wrapper:hover,
@@ -108,7 +116,11 @@
     }
 
     .ant-input-affix-wrapper input {
-        background: transparent;
+        width: 100% !important;
+        min-width: 0;
+        background: transparent !important;
+        border: 0 !important;
+        box-shadow: none !important;
         color: #dbe6f5;
     }
 
@@ -128,17 +140,11 @@
     font-weight: 700;
 }
 
-.login-mark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 42px;
-    height: 42px;
-    border-radius: 50%;
-    background: #3567e8;
-    color: #ffffff;
-    font-size: 13px;
-    letter-spacing: 0;
+.login-brand-logo {
+    display: block;
+    width: 142px;
+    height: 28px;
+    object-fit: contain;
 }
 
 .login-layout {
@@ -194,10 +200,12 @@
 
 .login-form {
     display: grid;
+    min-width: 0;
     gap: 16px;
 
     .login-field {
         display: grid;
+        min-width: 0;
         gap: 8px;
         color: #b8c6da;
         font-size: 13px;

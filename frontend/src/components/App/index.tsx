@@ -11,6 +11,7 @@ import MapEditor from '../MapEditor/index';
 import Toolbar from '../Toolbar';
 import WorkbenchPanel from '../WorkbenchPanel';
 import { message as messageFunc } from '../Message/index';
+import LandingLogo from '../../assets/images/landing-logo.png';
 
 const drawElementNames: Record<number, string> = {
     [MapElementType.Lane]: '车道',
@@ -166,11 +167,11 @@ export default function App() {
             <div className="login-shell">
                 <div className="login-panel">
                     <div className="login-brand">
-                        <span className="login-mark">LAN</span>
-                        <span>LANDING Mapeditor</span>
+                        <img className="login-brand-logo" src={LandingLogo} alt="LANDING" />
+                        <span>高精地图编辑器</span>
                     </div>
-                    <div className="login-title">Checking Session</div>
-                    <div className="login-subtitle">Preparing the map production workspace.</div>
+                    <div className="login-title">正在检查登录状态</div>
+                    <div className="login-subtitle">正在准备地图生产工作台。</div>
                 </div>
                 {contextHolder}
             </div>
@@ -182,32 +183,31 @@ export default function App() {
             <div className="login-shell">
                 <div className="login-panel">
                     <div className="login-brand">
-                        <span className="login-mark">LAN</span>
-                        <span>LANDING Mapeditor</span>
+                        <img className="login-brand-logo" src={LandingLogo} alt="LANDING" />
+                        <span>高精地图编辑器</span>
                     </div>
                     <div className="login-layout">
                         <div className="login-copy">
-                            <div className="login-eyebrow">Map Production Console</div>
-                            <div className="login-title">Secure workspace for HD map editing.</div>
+                            <div className="login-eyebrow">地图生产控制台</div>
+                            <div className="login-title">统一管理高精地图编辑、发布与边缘部署。</div>
                             <div className="login-subtitle">
-                                Manage capture assets, editor maps, Apollo releases, and edge deployment from one
-                                console.
+                                集中处理采图资产、编辑地图、Apollo 发布和边缘设备部署，确保多端地图数据一致。
                             </div>
                             <div className="login-status-list">
-                                <span>Map packages</span>
-                                <span>Edge deploy</span>
-                                <span>Apollo checks</span>
+                                <span>地图包管理</span>
+                                <span>边缘部署</span>
+                                <span>Apollo 校验</span>
                             </div>
                         </div>
                         <div className="login-form">
                             <div className="login-field">
-                                <span>Username</span>
+                                <span>用户名</span>
                                 <Input
                                     id="landing-login-username"
-                                    aria-label="Username"
+                                    aria-label="用户名"
                                     size="large"
                                     prefix={<UserOutlined />}
-                                    placeholder="admin"
+                                    placeholder="请输入用户名"
                                     value={loginForm.username}
                                     autoComplete="username"
                                     onChange={(event) => setLoginForm({ ...loginForm, username: event.target.value })}
@@ -215,13 +215,13 @@ export default function App() {
                                 />
                             </div>
                             <div className="login-field">
-                                <span>Password</span>
+                                <span>密码</span>
                                 <Input.Password
                                     id="landing-login-password"
-                                    aria-label="Password"
+                                    aria-label="密码"
                                     size="large"
                                     prefix={<LockOutlined />}
-                                    placeholder="Enter password"
+                                    placeholder="请输入密码"
                                     value={loginForm.password}
                                     autoComplete="current-password"
                                     onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })}
@@ -236,7 +236,7 @@ export default function App() {
                                 disabled={!loginForm.username || !loginForm.password}
                                 onClick={handleLogin}
                             >
-                                Sign In
+                                登录
                             </Button>
                         </div>
                     </div>
