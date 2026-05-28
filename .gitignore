@@ -10,6 +10,7 @@ data/import_packages_trash/*
 data/import_tmp/*
 data/released_map/*
 data/runtime_jobs/*
+data/runtime_state/*
 runtime/bin/*
 *.log
 .env.server
@@ -22,4 +23,5 @@ runtime/bin/*
 !data/import_tmp/.gitkeep
 !data/released_map/.gitkeep
 !data/runtime_jobs/.gitkeep
+!data/runtime_state/.gitkeep
 !runtime/bin/.gitkeep
