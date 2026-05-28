@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Button, Input, message } from 'antd';
+import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import './index.less';
 import { useManagerStore } from 'src/store';
 import { clearScene } from 'src/utils/threeObjectUtil';
@@ -164,8 +165,12 @@ export default function App() {
         return (
             <div className="login-shell">
                 <div className="login-panel">
-                    <div className="login-title">高清地图编辑器</div>
-                    <div className="login-subtitle">正在检查登录状态</div>
+                    <div className="login-brand">
+                        <span className="login-mark">LAN</span>
+                        <span>LANDING Mapeditor</span>
+                    </div>
+                    <div className="login-title">Checking Session</div>
+                    <div className="login-subtitle">Preparing the map production workspace.</div>
                 </div>
                 {contextHolder}
             </div>
@@ -176,32 +181,65 @@ export default function App() {
         return (
             <div className="login-shell">
                 <div className="login-panel">
-                    <div className="login-title">高清地图编辑器</div>
-                    <div className="login-subtitle">登录后进入采图、标注、仿真与部署工作台</div>
-                    <Input
-                        size="large"
-                        placeholder="用户名"
-                        value={loginForm.username}
-                        onChange={(event) => setLoginForm({ ...loginForm, username: event.target.value })}
-                        onPressEnter={handleLogin}
-                    />
-                    <Input.Password
-                        size="large"
-                        placeholder="密码"
-                        value={loginForm.password}
-                        onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })}
-                        onPressEnter={handleLogin}
-                    />
-                    <Button
-                        size="large"
-                        type="primary"
-                        block
-                        loading={loginLoading}
-                        disabled={!loginForm.username || !loginForm.password}
-                        onClick={handleLogin}
-                    >
-                        登录
-                    </Button>
+                    <div className="login-brand">
+                        <span className="login-mark">LAN</span>
+                        <span>LANDING Mapeditor</span>
+                    </div>
+                    <div className="login-layout">
+                        <div className="login-copy">
+                            <div className="login-eyebrow">Map Production Console</div>
+                            <div className="login-title">Secure workspace for HD map editing.</div>
+                            <div className="login-subtitle">
+                                Manage capture assets, editor maps, Apollo releases, and edge deployment from one
+                                console.
+                            </div>
+                            <div className="login-status-list">
+                                <span>Map packages</span>
+                                <span>Edge deploy</span>
+                                <span>Apollo checks</span>
+                            </div>
+                        </div>
+                        <div className="login-form">
+                            <div className="login-field">
+                                <span>Username</span>
+                                <Input
+                                    id="landing-login-username"
+                                    aria-label="Username"
+                                    size="large"
+                                    prefix={<UserOutlined />}
+                                    placeholder="admin"
+                                    value={loginForm.username}
+                                    autoComplete="username"
+                                    onChange={(event) => setLoginForm({ ...loginForm, username: event.target.value })}
+                                    onPressEnter={handleLogin}
+                                />
+                            </div>
+                            <div className="login-field">
+                                <span>Password</span>
+                                <Input.Password
+                                    id="landing-login-password"
+                                    aria-label="Password"
+                                    size="large"
+                                    prefix={<LockOutlined />}
+                                    placeholder="Enter password"
+                                    value={loginForm.password}
+                                    autoComplete="current-password"
+                                    onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })}
+                                    onPressEnter={handleLogin}
+                                />
+                            </div>
+                            <Button
+                                size="large"
+                                type="primary"
+                                block
+                                loading={loginLoading}
+                                disabled={!loginForm.username || !loginForm.password}
+                                onClick={handleLogin}
+                            >
+                                Sign In
+                            </Button>
+                        </div>
+                    </div>
                 </div>
                 {contextHolder}
             </div>
