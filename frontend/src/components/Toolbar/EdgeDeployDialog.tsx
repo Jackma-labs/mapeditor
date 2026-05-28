@@ -112,6 +112,7 @@ const checkTitleMap: Record<string, string> = {
     'edge-runtime-status': '边缘运行状态',
     'edge-dreamview-switch': 'Dreamview 切换',
     'edge-dreamview-hmi': 'Dreamview 当前地图',
+    'edge-dreamview-runtime-sync': 'Dreamview/运行时一致性',
     'selected-map-coordinates': '发布包坐标',
     'selected-map-vehicle-pose': '车辆位置',
 };

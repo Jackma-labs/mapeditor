@@ -8160,6 +8160,7 @@ function getDeployConfig(config) {
 async function preflightEdgeDeploy(config, params = {}) {
   const deployConfig = getDeployConfig(config);
   const checks = [];
+  let edgeRuntimeCurrentMap = null;
   const addCheck = (name, ok, severity, message, details = null) => {
     checks.push({
       name,
@@ -8275,16 +8276,16 @@ async function preflightEdgeDeploy(config, params = {}) {
   }
 
   try {
-    const currentMap = await readEdgeRuntimeCurrentMap(config);
-    const runtimeOk = currentMap.map_exists !== 'no' && currentMap.dreamview_http === 'ok';
-    const mapText = currentMap.map_name || currentMap.flag_map_dir || 'unknown';
-    const httpText = currentMap.dreamview_http || 'unknown';
+    edgeRuntimeCurrentMap = await readEdgeRuntimeCurrentMap(config);
+    const runtimeOk = edgeRuntimeCurrentMap.map_exists !== 'no' && edgeRuntimeCurrentMap.dreamview_http === 'ok';
+    const mapText = edgeRuntimeCurrentMap.map_name || edgeRuntimeCurrentMap.flag_map_dir || 'unknown';
+    const httpText = edgeRuntimeCurrentMap.dreamview_http || 'unknown';
     addCheck(
       'edge-runtime-status',
       runtimeOk,
       'warning',
       `Edge runtime current map: ${mapText}; Dreamview HTTP ${httpText}`,
-      currentMap
+      edgeRuntimeCurrentMap
     );
   } catch (error) {
     addCheck(
@@ -8324,17 +8325,41 @@ async function preflightEdgeDeploy(config, params = {}) {
     }
     try {
       const hmi = await readEdgeDreamviewHmiStatus(config);
+      const hmiCurrentMap = getDreamviewCurrentMap(hmi.status);
       addCheck(
         'edge-dreamview-hmi',
         true,
         'warning',
-        `Dreamview HMI reachable: current map ${getDreamviewCurrentMap(hmi.status) || 'unknown'}`,
+        `Dreamview HMI reachable: current map ${hmiCurrentMap || 'unknown'}`,
         {
           wsUrl: hmi.wsUrl,
-          currentMap: getDreamviewCurrentMap(hmi.status),
+          currentMap: hmiCurrentMap,
           maps: getDreamviewStatusMaps(hmi.status).slice(0, 20),
         }
       );
+      if (edgeRuntimeCurrentMap) {
+        const runtimeMapName =
+          edgeRuntimeCurrentMap.map_name ||
+          path.posix.basename(String(edgeRuntimeCurrentMap.resolved_map_dir || edgeRuntimeCurrentMap.flag_map_dir || '').replace(/\/+$/u, ''));
+        const runtimeNormalized = normalizeDreamviewName(runtimeMapName);
+        const hmiNormalized = normalizeDreamviewName(hmiCurrentMap);
+        const syncOk = Boolean(runtimeNormalized && hmiNormalized && runtimeNormalized === hmiNormalized);
+        addCheck(
+          'edge-dreamview-runtime-sync',
+          syncOk,
+          'warning',
+          syncOk
+            ? `Dreamview HMI and runtime flag agree: ${runtimeMapName}`
+            : `Dreamview HMI current map ${hmiCurrentMap || 'unknown'} does not match runtime flag map ${runtimeMapName || 'unknown'}`,
+          {
+            runtimeMapName,
+            hmiCurrentMap,
+            flagMapDir: edgeRuntimeCurrentMap.flag_map_dir || '',
+            resolvedMapDir: edgeRuntimeCurrentMap.resolved_map_dir || '',
+            wsUrl: hmi.wsUrl,
+          }
+        );
+      }
     } catch (error) {
       addCheck(
         'edge-dreamview-hmi',
