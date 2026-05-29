@@ -28,6 +28,7 @@ const CURVE_CONNECT_WIDTH_TARGET_RATIO = 0.88;
 const CURVE_CONNECT_SIDE_ORDER_PENALTY = 12;
 const CURVE_CONNECT_MAX_CHORD_ANGLE = THREE.MathUtils.degToRad(135);
 const CURVE_CONNECT_MAX_HEADING_CHANGE = THREE.MathUtils.degToRad(150);
+const CURVE_CONNECT_DEFAULT_SPEED_KPH = 9;
 
 function pointDistance(left: PointElement, right: PointElement) {
     return left.position.distanceTo(right.position);
@@ -960,6 +961,12 @@ export function curveConnectLane(lane1: Lane, lane2: Lane): CurveConnectLaneResu
         lane2.attr.prossibleDrivingDirection === ProssibleDrivingDirection.RELATIVEDIRECTION
             ? ProssibleDrivingDirection.RELATIVEDIRECTION
             : ProssibleDrivingDirection.FORWARD;
+    const curveLaneAttr = {
+        ...lane1.attr,
+        speed: CURVE_CONNECT_DEFAULT_SPEED_KPH,
+        speedKph: CURVE_CONNECT_DEFAULT_SPEED_KPH,
+        prossibleDrivingDirection: newprossibleDrivingDirection,
+    };
     actions.push(
         new AddBoundaryCommand(
             leftCurveId,
@@ -987,7 +994,7 @@ export function curveConnectLane(lane1: Lane, lane2: Lane): CurveConnectLaneResu
             rightCurveId,
             groudId,
             arrowId,
-            { ...lane1.attr, prossibleDrivingDirection: newprossibleDrivingDirection },
+            curveLaneAttr,
             false,
             false,
             LaneTrend.Curve,
