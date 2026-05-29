@@ -5427,7 +5427,7 @@ function createRasterTileAccumulator(options = {}) {
     }
     const index = pixelY * POINT_CLOUD_TILE_SIZE + pixelX;
     const current = tile.alpha[index];
-    tile.alpha[index] = Math.max(current, alpha, Math.min(255, current + 24));
+    tile.alpha[index] = Math.max(current, Math.max(0, Math.min(255, Math.round(alpha))));
   };
 
   const addPointValue = (x, y, z = 0, value = 72, dilation = 0) => {
@@ -7506,7 +7506,8 @@ async function syncCaptureSourcePackages(config, params = {}) {
   if (autoMerge) {
     const packages = await listDataPackages(config);
     const groups = new Map();
-    for (const item of selectLatestMergeCandidates(packages)) {
+    const mergeSelection = selectLatestSpatialMergeCandidates(packages);
+    for (const item of mergeSelection.selected) {
       if (
         item.sourceManifest?.sourceRoot !== scan.sourceRoot ||
         !item.workflowStatus?.canMerge ||
@@ -7526,11 +7527,20 @@ async function syncCaptureSourcePackages(config, params = {}) {
     });
     const mergeTargets = mergeGroups[0] || [];
     if (mergeTargets.length >= 2) {
-      await progress(`Generating stitched base map: ${mergedMapName}; packages=${mergeTargets.length}`);
+      const skippedInGroup = mergeSelection.skipped.filter((item) =>
+        mergeTargets.some((target) => target.packageId === item.replacedByPackageId),
+      );
+      await progress(
+        `Generating stitched base map: ${mergedMapName}; packages=${mergeTargets.length}; skipped duplicates=${skippedInGroup.length}`,
+      );
       mergedMap = await importMergedDataPackagesBaseMap(config, {
         packageIds: mergeTargets.map((item) => item.packageId),
         mapName: mergedMapName,
         overwrite: params.overwriteMergedMap !== false,
+        spatialDuplicatePolicy: {
+          mode: 'latest_overlapping_capture',
+          skipped: skippedInGroup,
+        },
         progress,
       });
     } else {
@@ -7598,7 +7608,8 @@ async function prebuildDataPackageBaseMaps(config, params = {}) {
     } else {
       const latestPackages = await listDataPackages(config);
       const groups = new Map();
-      for (const item of selectLatestMergeCandidates(latestPackages)) {
+      const mergeSelection = selectLatestSpatialMergeCandidates(latestPackages);
+      for (const item of mergeSelection.selected) {
         if (!item.workflowStatus?.canMerge || !item.coordinateGroup) {
           continue;
         }
@@ -7614,11 +7625,20 @@ async function prebuildDataPackageBaseMaps(config, params = {}) {
       });
       const mergeTargets = mergeGroups[0] || [];
       if (mergeTargets.length >= 2) {
-        await progress(`Generating stitched base map: ${mergedMapName}; packages=${mergeTargets.length}`);
+        const skippedInGroup = mergeSelection.skipped.filter((item) =>
+          mergeTargets.some((target) => target.packageId === item.replacedByPackageId),
+        );
+        await progress(
+          `Generating stitched base map: ${mergedMapName}; packages=${mergeTargets.length}; skipped duplicates=${skippedInGroup.length}`,
+        );
         mergedMap = await importMergedDataPackagesBaseMap(config, {
           packageIds: mergeTargets.map((item) => item.packageId),
           mapName: mergedMapName,
           overwrite: true,
+          spatialDuplicatePolicy: {
+            mode: 'latest_overlapping_capture',
+            skipped: skippedInGroup,
+          },
           progress,
         });
       } else {
@@ -7841,6 +7861,98 @@ function annotateLatestCapturePackages(packages) {
 
 function selectLatestMergeCandidates(packages) {
   return annotateLatestCapturePackages(packages).filter((item) => item.isLatestCapturePackage);
+}
+
+function getPackageSpatialBounds(packageInfo) {
+  const bounds = packageInfo?.quality?.bounds || packageInfo?.summary?.bounds || packageInfo?.bounds || null;
+  if (!bounds) {
+    return null;
+  }
+  const minX = Number(bounds.minX);
+  const maxX = Number(bounds.maxX);
+  const minY = Number(bounds.minY);
+  const maxY = Number(bounds.maxY);
+  if (![minX, maxX, minY, maxY].every(Number.isFinite) || maxX <= minX || maxY <= minY) {
+    return null;
+  }
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+    area: (maxX - minX) * (maxY - minY),
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2,
+  };
+}
+
+function getBoundsOverlap(left, right) {
+  if (!left || !right) {
+    return null;
+  }
+  const overlapWidth = Math.max(0, Math.min(left.maxX, right.maxX) - Math.max(left.minX, right.minX));
+  const overlapHeight = Math.max(0, Math.min(left.maxY, right.maxY) - Math.max(left.minY, right.minY));
+  const overlapArea = overlapWidth * overlapHeight;
+  const smallerArea = Math.min(left.area, right.area);
+  const largerArea = Math.max(left.area, right.area);
+  const unionArea = left.area + right.area - overlapArea;
+  const centerDistance = Math.hypot(left.centerX - right.centerX, left.centerY - right.centerY);
+  return {
+    overlapArea,
+    overlapOfSmaller: smallerArea > 0 ? overlapArea / smallerArea : 0,
+    areaRatio: largerArea > 0 ? smallerArea / largerArea : 0,
+    iou: unionArea > 0 ? overlapArea / unionArea : 0,
+    centerDistance,
+  };
+}
+
+function isSameSpatialCapture(left, right) {
+  if (!left || !right || left.coordinateGroup !== right.coordinateGroup) {
+    return false;
+  }
+  const leftBounds = getPackageSpatialBounds(left);
+  const rightBounds = getPackageSpatialBounds(right);
+  const overlap = getBoundsOverlap(leftBounds, rightBounds);
+  if (!overlap || overlap.overlapArea <= 0) {
+    return false;
+  }
+  if (overlap.areaRatio < 0.45) {
+    return false;
+  }
+  const smallerSpan = Math.min(leftBounds.width, leftBounds.height, rightBounds.width, rightBounds.height);
+  const nearCenterThreshold = Math.max(6, Math.min(25, smallerSpan * 0.08));
+  return (
+    overlap.overlapOfSmaller >= 0.82 ||
+    overlap.iou >= 0.65 ||
+    (overlap.centerDistance <= nearCenterThreshold && overlap.overlapOfSmaller >= 0.55)
+  );
+}
+
+function selectLatestSpatialMergeCandidates(packages) {
+  const ordered = selectLatestMergeCandidates(packages).sort((left, right) => {
+    const freshnessDelta = getPackageFreshnessTime(right) - getPackageFreshnessTime(left);
+    if (freshnessDelta !== 0) {
+      return freshnessDelta;
+    }
+    return String(right.packageId || '').localeCompare(String(left.packageId || ''));
+  });
+  const selected = [];
+  const skipped = [];
+  for (const item of ordered) {
+    const replacedBy = selected.find((current) => isSameSpatialCapture(item, current));
+    if (replacedBy) {
+      skipped.push({
+        packageId: item.packageId,
+        replacedByPackageId: replacedBy.packageId,
+        reason: 'same_spatial_capture_keep_latest',
+      });
+      continue;
+    }
+    selected.push(item);
+  }
+  return { selected, skipped };
 }
 
 function buildPackageWorkflowStatus({ summary, analyses, quality, sourceManifest, baseMapExists }) {
@@ -8198,9 +8310,25 @@ async function importDataPackageBaseMap(config, params) {
 async function importMergedDataPackagesBaseMap(config, params) {
   const progress = typeof params?.progress === 'function' ? params.progress : null;
   const requestedPackageIds = Array.isArray(params?.packageIds) ? params.packageIds : [];
-  const packageIds = Array.from(new Set(requestedPackageIds.map(validatePackageId)));
+  let packageIds = Array.from(new Set(requestedPackageIds.map(validatePackageId)));
   if (packageIds.length < 2) {
     throw new Error('at least two packageIds are required');
+  }
+  let spatialDuplicatePolicy = params.spatialDuplicatePolicy || null;
+  if (params.keepSpatialDuplicates !== true) {
+    const packageIdSet = new Set(packageIds);
+    const requestedPackages = (await listDataPackages(config)).filter((item) => packageIdSet.has(item.packageId));
+    const spatialSelection = selectLatestSpatialMergeCandidates(requestedPackages);
+    if (spatialSelection.selected.length > 0 && spatialSelection.selected.length < packageIds.length) {
+      packageIds = spatialSelection.selected.map((item) => item.packageId);
+      spatialDuplicatePolicy = {
+        mode: 'latest_overlapping_capture',
+        skipped: spatialSelection.skipped,
+      };
+    }
+    if (packageIds.length < 2) {
+      throw new Error('selected data packages resolve to fewer than two unique spatial captures after latest-only dedupe');
+    }
   }
   if (progress) {
     await progress(`Preparing ${packageIds.length} data packages for merged base map`);
@@ -8224,6 +8352,9 @@ async function importMergedDataPackagesBaseMap(config, params) {
     await progress(`Building stitch plan for ${packageIds.length} data packages`);
   }
   const stitchPlan = await buildDataPackageStitchPlan(config, packageIds);
+  if (spatialDuplicatePolicy) {
+    stitchPlan.spatialDuplicatePolicy = spatialDuplicatePolicy;
+  }
   if (!stitchPlan.ready && params.allowMixedCoordinateGroups !== true) {
     throw new Error(
       `selected packages cannot be merged safely: ${stitchPlan.errors.join(', ') || 'unknown stitch-plan error'}`,
@@ -8237,7 +8368,9 @@ async function importMergedDataPackagesBaseMap(config, params) {
     stitchPlan,
     sourceAsset: {
       type: 'merged_data_packages',
+      requestedPackageIds,
       packageIds,
+      spatialDuplicatePolicy,
       stitchPlan,
     },
   });
