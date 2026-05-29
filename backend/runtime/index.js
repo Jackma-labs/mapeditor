@@ -17,7 +17,7 @@ const { generateAssistDrawingCandidates } = require('./assistDrawingCandidates')
 
 const DEFAULT_POINT_CLOUD_RENDER_POINTS = 1000000;
 const configuredPointCloudRenderPoints = Number(
-  process.env.POINT_CLOUD_RENDER_POINTS || DEFAULT_POINT_CLOUD_RENDER_POINTS
+  process.env.POINT_CLOUD_RENDER_POINTS || DEFAULT_POINT_CLOUD_RENDER_POINTS,
 );
 const MAX_POINT_CLOUD_RENDER_POINTS = Number.isFinite(configuredPointCloudRenderPoints)
   ? Math.max(10000, configuredPointCloudRenderPoints)
@@ -69,9 +69,7 @@ const APOLLOLITE_DREAMVIEW_CANDIDATES = [
   'bazel-bin/modules/dreamview/dreamview',
   'bazel-bin/modules/dreamview_plus/dreamview_plus',
 ];
-const APOLLOLITE_MONITOR_CANDIDATES = [
-  'bazel-bin/modules/monitor/libmonitor.so',
-];
+const APOLLOLITE_MONITOR_CANDIDATES = ['bazel-bin/modules/monitor/libmonitor.so'];
 const APOLLOLITE_FRONTEND_ASSET_CANDIDATES = [
   'modules/dreamview/frontend/dist',
   'modules/dreamview/frontend/build',
@@ -136,6 +134,15 @@ const APOLLOLITE_TRAFFIC_LIGHT_SIM_SCRIPT = `${APOLLOLITE_TRAFFIC_LIGHT_SIM_DIR}
 const APOLLOLITE_TRAFFIC_LIGHT_SIM_IDS = `${APOLLOLITE_TRAFFIC_LIGHT_SIM_DIR}/traffic_light_ids.json`;
 const APOLLOLITE_TRAFFIC_LIGHT_SIM_LOG = `${APOLLOLITE_TRAFFIC_LIGHT_SIM_DIR}/traffic_light_sim.log`;
 const APOLLOLITE_TRAFFIC_LIGHT_CHANNEL = '/apollo/perception/traffic_light';
+const APOLLO_DEPLOY_TARGET_CRS = {
+  datum: 'WGS84',
+  projection: 'UTM',
+  zone: 50,
+  hemisphere: 'north',
+  epsg: 'EPSG:32650',
+  proj4: '+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs',
+  unit: 'meter',
+};
 
 function normalizeZipOpenError(error, label) {
   const message = String(error?.message || error || '');
@@ -146,7 +153,7 @@ function normalizeZipOpenError(error, label) {
     /central directory/i.test(message)
   ) {
     return new Error(
-      `${label} 不是完整有效的 ZIP 文件。请确认压缩包已完整生成、上传没有中断、不是分卷 ZIP，然后重新上传。原始错误：${message}`
+      `${label} 不是完整有效的 ZIP 文件。请确认压缩包已完整生成、上传没有中断、不是分卷 ZIP，然后重新上传。原始错误：${message}`,
     );
   }
   return error;
@@ -231,7 +238,7 @@ function normalizeEdgeDeployParams(config, params = {}) {
   const host = String(params.host ?? config.edgeDeploy.host ?? '').trim();
   const user = String(params.user ?? config.edgeDeploy.user ?? '').trim();
   const rawPassword =
-    params.password === undefined || params.password === '' ? config.edgeDeploy.password ?? '' : params.password;
+    params.password === undefined || params.password === '' ? (config.edgeDeploy.password ?? '') : params.password;
   const password = String(rawPassword || '').trim();
   const port = Number(params.port ?? config.edgeDeploy.port ?? 22) || 22;
   const targetMapRoot = String(params.targetMapRoot ?? config.edgeDeploy.targetMapRoot ?? '').trim();
@@ -375,12 +382,7 @@ async function configureEdgeDeploy(config, params = {}) {
 }
 
 function buildSshBaseArgs(config) {
-  const args = [
-    '-o',
-    'BatchMode=yes',
-    '-o',
-    'ConnectTimeout=5',
-  ];
+  const args = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5'];
   if (config.edgeDeploy.port) {
     args.push('-p', String(config.edgeDeploy.port));
   }
@@ -482,7 +484,14 @@ async function runEdgeSshCommand(config, command, options = {}) {
         settle(() => reject(streamError));
       });
       stream.on('close', (code, signal) => {
-        const result = { command: 'ssh', args: [command], code: code || 0, signal, stdout, stderr };
+        const result = {
+          command: 'ssh',
+          args: [command],
+          code: code || 0,
+          signal,
+          stdout,
+          stderr,
+        };
         if ((code || 0) !== 0) {
           const err = new Error(`command exited with code ${code}: ${command}\n${stderr || stdout}`.trim());
           err.result = result;
@@ -522,7 +531,9 @@ async function uploadDirectoryWithSftp(config, localDir, remoteParentDir) {
       timeoutMs: 10 * 60 * 1000,
     });
   }
-  await runEdgeSshCommand(config, `mkdir -p ${quoteShell(remoteParentDir)}`, { timeoutMs: 30000 });
+  await runEdgeSshCommand(config, `mkdir -p ${quoteShell(remoteParentDir)}`, {
+    timeoutMs: 30000,
+  });
   const conn = await createEdgeSshConnection(config);
   const startedAt = Date.now();
   let fileCount = 0;
@@ -570,9 +581,10 @@ async function uploadDirectoryWithSftp(config, localDir, remoteParentDir) {
 }
 
 function createDeploymentId(prefix = 'deploy') {
-  return `${prefix}-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
+  return `${prefix}-${new Date()
+    .toISOString()
+    .replace(/[-:.TZ]/g, '')
+    .slice(0, 14)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function summarizeCoordinateBounds(points) {
@@ -655,7 +667,11 @@ function isGlobalApolloCoordinateBounds(bounds) {
   if (![bounds.centerX, bounds.centerY, bounds.spanX, bounds.spanY].every(Number.isFinite)) {
     return false;
   }
-  return Math.max(Math.abs(bounds.centerX), Math.abs(bounds.centerY)) > 100000 && bounds.spanX < 100000 && bounds.spanY < 100000;
+  return (
+    Math.max(Math.abs(bounds.centerX), Math.abs(bounds.centerY)) > 100000 &&
+    bounds.spanX < 100000 &&
+    bounds.spanY < 100000
+  );
 }
 
 function coordinateDistance(left, right) {
@@ -669,8 +685,165 @@ function formatCoordinateBounds(bounds) {
     return 'unavailable';
   }
   return `x=${bounds.minX.toFixed(3)}..${bounds.maxX.toFixed(3)}, y=${bounds.minY.toFixed(3)}..${bounds.maxY.toFixed(
-    3
+    3,
   )}, center=${bounds.centerX.toFixed(3)},${bounds.centerY.toFixed(3)}`;
+}
+
+function parseApolloMapHeaderProjection(text) {
+  const projectionMatch = String(text || '').match(/\bprojection\s*\{\s*proj:\s*"([^"]+)"/u);
+  return projectionMatch ? projectionMatch[1].trim() : '';
+}
+
+function isApolloUtmZone50Projection(projection) {
+  const normalized = String(projection || '').toLowerCase();
+  return (
+    normalized.includes('+proj=utm') &&
+    normalized.includes('+zone=50') &&
+    normalized.includes('+datum=wgs84') &&
+    normalized.includes('+units=m')
+  );
+}
+
+function maxBoundsDeltaMeters(left, right) {
+  if (!left || !right) {
+    return Infinity;
+  }
+  const pairs = [
+    ['minX', 'minX'],
+    ['maxX', 'maxX'],
+    ['minY', 'minY'],
+    ['maxY', 'maxY'],
+    ['centerX', 'centerX'],
+    ['centerY', 'centerY'],
+  ];
+  return Math.max(...pairs.map(([leftKey, rightKey]) => Math.abs(Number(left[leftKey]) - Number(right[rightKey]))));
+}
+
+function boundsFromMetadataBounds(bounds) {
+  if (!bounds) {
+    return null;
+  }
+  const minX = Number(bounds.minX ?? bounds.xMin ?? bounds.left);
+  const maxX = Number(bounds.maxX ?? bounds.xMax ?? bounds.right);
+  const minY = Number(bounds.minY ?? bounds.yMin ?? bounds.bottom);
+  const maxY = Number(bounds.maxY ?? bounds.yMax ?? bounds.top);
+  if (![minX, maxX, minY, maxY].every(Number.isFinite)) {
+    return null;
+  }
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    spanX: maxX - minX,
+    spanY: maxY - minY,
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2,
+  };
+}
+
+async function readJsonFileIfExists(filePath) {
+  if (!(await pathExists(filePath))) {
+    return null;
+  }
+  return JSON.parse((await fsp.readFile(filePath, 'utf8')).replace(/^\uFEFF/, ''));
+}
+
+async function validateReleasedMapApolloMetadata(sourceDir, localBounds) {
+  const errors = [];
+  const warnings = [];
+  const checks = [];
+  const addCheck = (name, status, message, details = null) => {
+    checks.push({
+      name,
+      status,
+      message,
+      ...(details ? { details } : {}),
+    });
+    if (status === 'error') {
+      errors.push(message);
+    } else if (status === 'warning') {
+      warnings.push(message);
+    }
+  };
+  const baseMapTextPath = path.join(sourceDir, 'base_map.txt');
+  const baseMapText = await fsp.readFile(baseMapTextPath, 'utf8');
+  const headerProjection = parseApolloMapHeaderProjection(baseMapText);
+  addCheck(
+    'apollo-header-projection',
+    isApolloUtmZone50Projection(headerProjection) ? 'ok' : 'error',
+    isApolloUtmZone50Projection(headerProjection)
+      ? `base_map header projection is fixed to ${APOLLO_DEPLOY_TARGET_CRS.epsg}`
+      : `base_map header projection must be ${APOLLO_DEPLOY_TARGET_CRS.proj4}; got ${headerProjection || 'missing'}`,
+    { projection: headerProjection },
+  );
+
+  const coordinateMetadata = await readJsonFileIfExists(path.join(sourceDir, 'coordinate_metadata.json'));
+  addCheck(
+    'coordinate-metadata-file',
+    coordinateMetadata ? 'ok' : 'error',
+    coordinateMetadata
+      ? 'coordinate_metadata.json exists'
+      : 'coordinate_metadata.json is required before edge deployment',
+  );
+  if (coordinateMetadata) {
+    const target = coordinateMetadata.targetCrs || coordinateMetadata.frames?.targetCrs || {};
+    const targetOk =
+      String(target.epsg || '').toUpperCase() === APOLLO_DEPLOY_TARGET_CRS.epsg &&
+      Number(target.zone) === APOLLO_DEPLOY_TARGET_CRS.zone &&
+      String(target.datum || '').toUpperCase() === APOLLO_DEPLOY_TARGET_CRS.datum;
+    addCheck(
+      'coordinate-target-crs',
+      targetOk ? 'ok' : 'error',
+      targetOk
+        ? `coordinate_metadata target CRS is ${APOLLO_DEPLOY_TARGET_CRS.epsg}`
+        : 'coordinate_metadata target CRS is not WGS84 / UTM zone 50N',
+      target,
+    );
+    const metadataBounds = boundsFromMetadataBounds(coordinateMetadata.bounds);
+    const boundsDelta = maxBoundsDeltaMeters(localBounds, metadataBounds);
+    addCheck(
+      'coordinate-metadata-bounds',
+      Number.isFinite(boundsDelta) && boundsDelta <= 1 ? 'ok' : 'error',
+      Number.isFinite(boundsDelta) && boundsDelta <= 1
+        ? `coordinate_metadata bounds match base_map.txt within ${boundsDelta.toFixed(3)}m`
+        : 'coordinate_metadata bounds do not match base_map.txt coordinates',
+      { localBounds, metadataBounds, boundsDeltaMeters: boundsDelta },
+    );
+    const transform = coordinateMetadata.transform || {};
+    addCheck(
+      'coordinate-transform-source',
+      transform.source || coordinateMetadata.sourceCrs === 'APOLLO_UTM_ZONE_50' ? 'ok' : 'warning',
+      transform.source || coordinateMetadata.sourceCrs === 'APOLLO_UTM_ZONE_50'
+        ? `coordinate transform source: ${transform.source || coordinateMetadata.sourceCrs}`
+        : 'coordinate transform source is not recorded; traceability is limited',
+      { sourceCrs: coordinateMetadata.sourceCrs, transform },
+    );
+  }
+
+  const qualityGate = await readJsonFileIfExists(path.join(sourceDir, 'quality_gate.json'));
+  addCheck(
+    'quality-gate-file',
+    qualityGate ? 'ok' : 'error',
+    qualityGate ? 'quality_gate.json exists' : 'quality_gate.json is required before edge deployment',
+  );
+  if (qualityGate) {
+    addCheck(
+      'quality-gate-ready',
+      qualityGate.ready === true ? 'ok' : 'error',
+      qualityGate.ready === true ? 'release quality gate is ready' : 'release quality gate is not ready',
+      qualityGate,
+    );
+  }
+
+  return {
+    ready: errors.length === 0,
+    errors,
+    warnings,
+    checks,
+    headerProjection,
+    targetCrs: APOLLO_DEPLOY_TARGET_CRS,
+  };
 }
 
 function pointInsideCoordinateBounds(point, bounds, marginMeters = 0) {
@@ -826,7 +999,20 @@ async function readEdgeLocalizationPose(config) {
   return parseLocalizationPose(result.stdout || '');
 }
 
-function buildLocalizationQualityGate({ pose, nearest, mapBounds, warningDistanceMeters, errorDistanceMeters }) {
+function buildLocalizationQualityGate({
+  pose,
+  nearest,
+  mapBounds,
+  warningDistanceMeters,
+  errorDistanceMeters,
+  requireLocalizationGate,
+  requireRtkFix,
+  localizationWarningDelaySeconds,
+  localizationErrorDelaySeconds,
+  headingWarningRadians,
+  headingErrorRadians,
+  mapBoundaryMarginMeters,
+}) {
   const checks = [];
   const addCheck = (id, status, message, details = null) => {
     checks.push({
@@ -837,43 +1023,61 @@ function buildLocalizationQualityGate({ pose, nearest, mapBounds, warningDistanc
     });
   };
   const rtkFix = pose?.rtkFix || null;
+  let rtkStatus = 'warning';
+  if (rtkFix?.available && rtkFix.fixed === true) {
+    rtkStatus = 'ok';
+  } else if (requireRtkFix) {
+    rtkStatus = 'error';
+  }
   addCheck(
     'rtk-fix',
-    !rtkFix || !rtkFix.available ? 'warning' : rtkFix.fixed === true ? 'ok' : rtkFix.fixed === false ? 'warning' : 'warning',
+    rtkStatus,
     !rtkFix || !rtkFix.available
       ? 'RTK / INS fix status is not available from edge topics'
       : rtkFix.fixed === true
         ? `RTK / INS fix looks fixed: ${rtkFix.raw}`
         : `RTK / INS fix needs review: ${rtkFix.raw}`,
-    rtkFix
+    rtkFix,
   );
   const headingStability = pose?.headingStability || null;
   if (headingStability?.available) {
     const maxDelta = headingStability.maxDeltaRadians;
+    let headingStatus = 'ok';
+    if (maxDelta > headingErrorRadians) {
+      headingStatus = 'error';
+    } else if (maxDelta > headingWarningRadians) {
+      headingStatus = 'warning';
+    }
     addCheck(
       'heading-stability',
-      maxDelta <= 0.1 ? 'ok' : maxDelta <= 0.35 ? 'warning' : 'warning',
-      `Heading drift over recent localization samples is ${(maxDelta * 180 / Math.PI).toFixed(2)}deg`,
-      headingStability
+      headingStatus,
+      `Heading drift over recent localization samples is ${((maxDelta * 180) / Math.PI).toFixed(2)}deg`,
+      headingStability,
     );
   } else {
-    addCheck('heading-stability', 'warning', 'Not enough localization heading samples to assess stability', headingStability);
+    addCheck(
+      'heading-stability',
+      'warning',
+      'Not enough localization heading samples to assess stability',
+      headingStability,
+    );
   }
   if (Number.isFinite(pose?.delaySeconds)) {
-    addCheck(
-      'pose-delay',
-      pose.delaySeconds <= 0.5 ? 'ok' : pose.delaySeconds <= 2 ? 'warning' : 'warning',
-      `Localization pose delay is ${pose.delaySeconds.toFixed(3)}s`,
-      {
-        timestampSec: pose.timestampSec,
-        measurementTimeSec: pose.measurementTimeSec,
-        sampleTimeSec: pose.sampleTimeSec,
-      }
-    );
+    let delayStatus = 'ok';
+    if (pose.delaySeconds > localizationErrorDelaySeconds) {
+      delayStatus = 'error';
+    } else if (pose.delaySeconds > localizationWarningDelaySeconds) {
+      delayStatus = 'warning';
+    }
+    addCheck('pose-delay', delayStatus, `Localization pose delay is ${pose.delaySeconds.toFixed(3)}s`, {
+      timestampSec: pose.timestampSec,
+      measurementTimeSec: pose.measurementTimeSec,
+      sampleTimeSec: pose.sampleTimeSec,
+    });
   } else {
     addCheck('pose-delay', 'warning', 'Localization pose timestamp is not available');
   }
-  const insideBounds = pointInsideCoordinateBounds(pose, mapBounds, 10);
+  const insideBounds = pointInsideCoordinateBounds(pose, mapBounds, mapBoundaryMarginMeters);
   if (insideBounds === null) {
     addCheck('map-boundary', 'warning', 'Map boundary containment could not be evaluated', { mapBounds });
   } else {
@@ -881,18 +1085,22 @@ function buildLocalizationQualityGate({ pose, nearest, mapBounds, warningDistanc
       'map-boundary',
       insideBounds ? 'ok' : 'error',
       insideBounds ? 'Vehicle pose is inside the map boundary' : 'Vehicle pose is outside the map boundary',
-      { mapBounds, marginMeters: 10 }
+      { mapBounds, marginMeters: mapBoundaryMarginMeters },
     );
   }
   addCheck(
     'nearest-lane-distance',
-    nearest.distanceMeters > errorDistanceMeters ? 'error' : nearest.distanceMeters > warningDistanceMeters ? 'warning' : 'ok',
+    nearest.distanceMeters > errorDistanceMeters
+      ? 'error'
+      : nearest.distanceMeters > warningDistanceMeters
+        ? 'warning'
+        : 'ok',
     `Vehicle to nearest lane centerline is ${nearest.distanceMeters.toFixed(2)}m`,
     {
       nearest,
       warningDistanceMeters,
       errorDistanceMeters,
-    }
+    },
   );
   const rank = { ok: 0, warning: 1, error: 2 };
   const status = checks.reduce((current, check) => (rank[check.status] > rank[current] ? check.status : current), 'ok');
@@ -906,10 +1114,11 @@ function buildLocalizationQualityGate({ pose, nearest, mapBounds, warningDistanc
 
 async function validateReleasedMapAgainstEdgePose(config, sourceDir, mapBounds = null) {
   const laneCenterlines = await readApolloMapLaneCenterlines(sourceDir);
+  const requireLocalizationGate = config.edgeDeploy.requireLocalizationGate !== false;
   if (laneCenterlines.length === 0) {
     return {
       available: false,
-      status: 'warning',
+      status: requireLocalizationGate ? 'error' : 'warning',
       message: 'base_map.txt has no lane central_curve points',
     };
   }
@@ -917,7 +1126,7 @@ async function validateReleasedMapAgainstEdgePose(config, sourceDir, mapBounds =
   if (!pose) {
     return {
       available: false,
-      status: 'warning',
+      status: requireLocalizationGate ? 'error' : 'warning',
       message: 'edge localization pose is unavailable',
     };
   }
@@ -925,19 +1134,26 @@ async function validateReleasedMapAgainstEdgePose(config, sourceDir, mapBounds =
   if (!nearest) {
     return {
       available: false,
-      status: 'warning',
+      status: requireLocalizationGate ? 'error' : 'warning',
       pose,
       message: 'nearest lane centerline could not be computed',
     };
   }
-  const warningDistanceMeters = Number(config.edgeDeploy.vehicleLaneWarningDistanceMeters || 1);
-  const errorDistanceMeters = Number(config.edgeDeploy.vehicleLaneErrorDistanceMeters || 5);
+  const warningDistanceMeters = Number(config.edgeDeploy.vehicleLaneWarningDistanceMeters || 0.5);
+  const errorDistanceMeters = Number(config.edgeDeploy.vehicleLaneErrorDistanceMeters || 1.5);
   const localizationGate = buildLocalizationQualityGate({
     pose,
     nearest,
     mapBounds,
     warningDistanceMeters,
     errorDistanceMeters,
+    requireLocalizationGate,
+    requireRtkFix: config.edgeDeploy.requireRtkFix !== false,
+    localizationWarningDelaySeconds: Number(config.edgeDeploy.localizationWarningDelaySeconds || 0.5),
+    localizationErrorDelaySeconds: Number(config.edgeDeploy.localizationErrorDelaySeconds || 2),
+    headingWarningRadians: Number(config.edgeDeploy.headingWarningRadians || 0.05),
+    headingErrorRadians: Number(config.edgeDeploy.headingErrorRadians || 0.15),
+    mapBoundaryMarginMeters: Number(config.edgeDeploy.mapBoundaryMarginMeters || 5),
   });
   return {
     available: true,
@@ -996,9 +1212,13 @@ print(json.dumps(items))
     quoteShell(script),
   ].join(' ');
   const container = String(config.edgeDeploy.dockerContainer || '').trim();
-  const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, remoteCommand) : remoteCommand, {
-    timeoutMs: 30000,
-  });
+  const result = await runEdgeSshCommand(
+    config,
+    container ? dockerExecCommand(container, remoteCommand) : remoteCommand,
+    {
+      timeoutMs: 30000,
+    },
+  );
   return JSON.parse(result.stdout || '[]');
 }
 
@@ -1010,15 +1230,21 @@ async function validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir,
   if (!isGlobalApolloCoordinateBounds(localBounds)) {
     throw new Error(
       `released map coordinate validation failed: ${mapName} appears to use local/editor coordinates (${formatCoordinateBounds(
-        localBounds
-      )}); configure apolloOrigin/utmOrigin before edge deployment`
+        localBounds,
+      )}); configure apolloOrigin/utmOrigin before edge deployment`,
+    );
+  }
+  const apolloMetadataValidation = await validateReleasedMapApolloMetadata(sourceDir, localBounds);
+  if (!apolloMetadataValidation.ready) {
+    throw new Error(
+      `released map Apollo metadata validation failed: ${apolloMetadataValidation.errors.slice(0, 4).join('; ')}`,
     );
   }
   const allReferences = await fetchEdgeReferenceMapBounds(config, remoteRoot, mapName);
   const references = allReferences.filter(isGlobalApolloCoordinateBounds);
   if (references.length === 0) {
     throw new Error(
-      `released map coordinate validation failed: no global-coordinate reference maps were found on edge under ${remoteRoot}`
+      `released map coordinate validation failed: no global-coordinate reference maps were found on edge under ${remoteRoot}`,
     );
   }
   const nearestReference = references
@@ -1027,31 +1253,170 @@ async function validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir,
       distanceMeters: coordinateDistance(localBounds, reference),
     }))
     .sort((left, right) => left.distanceMeters - right.distanceMeters)[0];
-  const maxDistanceMeters = Number(config.edgeDeploy.coordinateValidationMaxDistanceMeters || 5000);
+  const maxDistanceMeters = Number(config.edgeDeploy.coordinateValidationMaxDistanceMeters || 1000);
   if (nearestReference.distanceMeters > maxDistanceMeters) {
     throw new Error(
       [
         `released map coordinate validation failed: ${mapName} is ${nearestReference.distanceMeters.toFixed(
-          1
+          1,
         )}m from nearest edge reference map ${nearestReference.mapName}`,
         `new=${formatCoordinateBounds(localBounds)}`,
         `reference=${formatCoordinateBounds(nearestReference)}`,
         `maxDistanceMeters=${maxDistanceMeters}`,
-      ].join('; ')
+      ].join('; '),
     );
   }
   return {
     localBounds,
+    apolloMetadataValidation,
     referencesChecked: references.length,
     nearestReference,
     maxDistanceMeters,
     vehiclePoseValidation: await validateReleasedMapAgainstEdgePose(config, sourceDir, localBounds).catch((error) => ({
       available: false,
-      status: 'warning',
+      status: config.edgeDeploy.requireLocalizationGate !== false ? 'error' : 'warning',
       message: error.message,
     })),
     passed: true,
   };
+}
+
+async function validateRemoteMapPackageOnEdge(config, remoteMapDir, expectedBounds) {
+  const toleranceMeters = Number(config.edgeDeploy.remoteBoundsToleranceMeters || 0.5);
+  const script = `
+import json, math, os, re, sys
+root = os.environ.get('MAP_DIR', '')
+expected = {
+    'minX': float(os.environ.get('EXPECTED_MIN_X', 'nan')),
+    'maxX': float(os.environ.get('EXPECTED_MAX_X', 'nan')),
+    'minY': float(os.environ.get('EXPECTED_MIN_Y', 'nan')),
+    'maxY': float(os.environ.get('EXPECTED_MAX_Y', 'nan')),
+}
+tolerance = float(os.environ.get('BOUNDS_TOLERANCE_METERS', '0.5'))
+errors = []
+warnings = []
+required = [
+    'base_map.txt',
+    'sim_map.txt',
+    'routing_map.txt',
+    'coordinate_metadata.json',
+    'quality_gate.json',
+    'default_routing_request.json',
+    'routing_loop_plan.json',
+    'poi.json',
+]
+for name in required:
+    path = os.path.join(root, name)
+    if not os.path.exists(path) or os.path.getsize(path) <= 0:
+        errors.append(f'{name} is missing or empty on edge')
+base_text = ''
+base_path = os.path.join(root, 'base_map.txt')
+if os.path.exists(base_path):
+    base_text = open(base_path, encoding='utf-8', errors='ignore').read()
+projection_match = re.search(r'\\bprojection\\s*\\{\\s*proj:\\s*"([^"]+)"', base_text)
+projection = projection_match.group(1).strip() if projection_match else ''
+projection_ok = all(token in projection.lower() for token in ['+proj=utm', '+zone=50', '+datum=wgs84', '+units=m'])
+if not projection_ok:
+    errors.append(f'base_map.txt projection is not Apollo WGS84 UTM zone 50N: {projection or "missing"}')
+points = []
+pending_x = None
+for axis, raw in re.findall(r'\\b([xy]):\\s*(-?(?:\\d+\\.?\\d*|\\.\\d+)(?:e[+-]?\\d+)?)', base_text, re.I):
+    value = float(raw)
+    if axis.lower() == 'x':
+        pending_x = value
+    elif pending_x is not None:
+        points.append((pending_x, value))
+        pending_x = None
+bounds = None
+if points:
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    bounds = {'minX': min(xs), 'maxX': max(xs), 'minY': min(ys), 'maxY': max(ys)}
+    bounds['spanX'] = bounds['maxX'] - bounds['minX']
+    bounds['spanY'] = bounds['maxY'] - bounds['minY']
+    bounds['centerX'] = (bounds['minX'] + bounds['maxX']) / 2.0
+    bounds['centerY'] = (bounds['minY'] + bounds['maxY']) / 2.0
+    if max(abs(bounds['centerX']), abs(bounds['centerY'])) <= 100000:
+        errors.append('edge base_map.txt still looks like local/editor coordinates')
+    if all(math.isfinite(value) for value in expected.values()):
+        max_delta = max(abs(bounds[key] - expected[key]) for key in expected)
+        if max_delta > tolerance:
+            errors.append(f'edge base_map.txt bounds differ from release by {max_delta:.3f}m')
+else:
+    errors.append('edge base_map.txt has no Apollo x/y points')
+coordinate_metadata = None
+coordinate_path = os.path.join(root, 'coordinate_metadata.json')
+if os.path.exists(coordinate_path):
+    try:
+        coordinate_metadata = json.load(open(coordinate_path, encoding='utf-8'))
+        target = coordinate_metadata.get('targetCrs') or coordinate_metadata.get('frames', {}).get('targetCrs') or {}
+        if str(target.get('epsg', '')).upper() != 'EPSG:32650' or int(target.get('zone', 0) or 0) != 50:
+            errors.append('coordinate_metadata.json target CRS is not EPSG:32650 / UTM zone 50N')
+    except Exception as exc:
+        errors.append(f'coordinate_metadata.json parse failed: {exc}')
+quality_gate = None
+quality_path = os.path.join(root, 'quality_gate.json')
+if os.path.exists(quality_path):
+    try:
+        quality_gate = json.load(open(quality_path, encoding='utf-8'))
+        if quality_gate.get('ready') is not True:
+            errors.append('quality_gate.json is not ready on edge')
+    except Exception as exc:
+        errors.append(f'quality_gate.json parse failed: {exc}')
+print(json.dumps({
+    'ready': len(errors) == 0,
+    'errors': errors,
+    'warnings': warnings,
+    'projection': projection,
+    'bounds': bounds,
+    'coordinateMetadataTarget': (coordinate_metadata or {}).get('targetCrs') if isinstance(coordinate_metadata, dict) else None,
+    'qualityGateReady': (quality_gate or {}).get('ready') if isinstance(quality_gate, dict) else None,
+}, ensure_ascii=False))
+sys.exit(1 if errors else 0)
+`;
+  const expected = expectedBounds || {};
+  const remoteCommand = [
+    `MAP_DIR=${quoteShell(remoteMapDir)}`,
+    `EXPECTED_MIN_X=${quoteShell(Number(expected.minX))}`,
+    `EXPECTED_MAX_X=${quoteShell(Number(expected.maxX))}`,
+    `EXPECTED_MIN_Y=${quoteShell(Number(expected.minY))}`,
+    `EXPECTED_MAX_Y=${quoteShell(Number(expected.maxY))}`,
+    `BOUNDS_TOLERANCE_METERS=${quoteShell(toleranceMeters)}`,
+    'python3',
+    '-c',
+    quoteShell(script),
+  ].join(' ');
+  const container = String(config.edgeDeploy.dockerContainer || '').trim();
+  const command = container ? dockerExecCommand(container, remoteCommand) : remoteCommand;
+  try {
+    const result = await runEdgeSshCommand(config, command, {
+      timeoutMs: 30000,
+    });
+    return {
+      ...JSON.parse(result.stdout || '{}'),
+      stdout: result.stdout,
+      stderr: result.stderr,
+      remoteMapDir,
+      toleranceMeters,
+    };
+  } catch (error) {
+    const output = error?.result?.stdout || '';
+    let parsed = null;
+    try {
+      parsed = JSON.parse(output || '{}');
+    } catch (parseError) {
+      parsed = null;
+    }
+    const errorMessage = parsed?.errors?.length
+      ? parsed.errors.join('; ')
+      : error.message || 'remote map package validation failed';
+    const validationError = new Error(`remote deployed map validation failed: ${errorMessage}`);
+    validationError.details = parsed || {
+      stdout: output,
+      stderr: error?.result?.stderr || '',
+    };
+    throw validationError;
+  }
 }
 
 function escapeRegExp(value) {
@@ -1113,9 +1478,7 @@ function resolveInside(rootDir, relativePath) {
 }
 
 function findArchivePath(normalizedPaths, relativePath) {
-  return normalizedPaths.find(
-    (entryPath) => entryPath === relativePath || entryPath.endsWith(`/${relativePath}`)
-  );
+  return normalizedPaths.find((entryPath) => entryPath === relativePath || entryPath.endsWith(`/${relativePath}`));
 }
 
 async function extractArchivePrefix(entries, archivePrefix, targetDir) {
@@ -1164,9 +1527,7 @@ async function checkDockerRuntime(config) {
     containerRunning,
     container: config.runtimeDockerContainer,
     image: config.runtimeDockerImage,
-    message: containerRunning
-      ? 'Docker runtime is ready'
-      : `Container ${config.runtimeDockerContainer} is not running`,
+    message: containerRunning ? 'Docker runtime is ready' : `Container ${config.runtimeDockerContainer} is not running`,
   };
 }
 
@@ -1231,7 +1592,7 @@ async function probeHttpUrl(urlString, timeoutMs = APOLLOLITE_DREAMVIEW_HTTP_TIM
           statusCode: res.statusCode,
           message: `HTTP ${res.statusCode}`,
         });
-      }
+      },
     );
     req.on('timeout', () => {
       req.destroy(new Error(`timeout after ${timeoutMs}ms`));
@@ -1287,7 +1648,7 @@ async function findApolloLiteCandidate(root, candidates) {
       return fullPath;
     }
     const mappedSymlinkPath = await readMappedApolloLiteSymlink(root, fullPath);
-    if (mappedSymlinkPath && await pathExists(mappedSymlinkPath)) {
+    if (mappedSymlinkPath && (await pathExists(mappedSymlinkPath))) {
       return mappedSymlinkPath;
     }
     if (bazelBinTarget && candidate.startsWith('bazel-bin/')) {
@@ -1323,7 +1684,9 @@ async function findApolloLiteFrontendAssets(root) {
       const externalRoot = path.join(cacheRoot, outputBase.name, 'external');
       let externalRepos = [];
       try {
-        externalRepos = await fsp.readdir(externalRoot, { withFileTypes: true });
+        externalRepos = await fsp.readdir(externalRoot, {
+          withFileTypes: true,
+        });
       } catch (error) {
         continue;
       }
@@ -1395,18 +1758,18 @@ async function getApolloLiteStatus(config) {
   const dreamviewHttp = dreamviewRuntimeAvailable
     ? await probeHttpUrl(dreamviewProbeUrl)
     : {
-      url: dreamviewProbeUrl,
-      ok: false,
-      message: 'Dreamview runtime is not built or configured',
-    };
+        url: dreamviewProbeUrl,
+        ok: false,
+        message: 'Dreamview runtime is not built or configured',
+      };
   const dreamviewPublicHttp =
     dreamviewRuntimeAvailable && apolloLite.dreamviewUrl && apolloLite.dreamviewUrl !== dreamviewProbeUrl
       ? await probeHttpUrl(apolloLite.dreamviewUrl).catch((error) => ({
-        url: apolloLite.dreamviewUrl,
-        ok: false,
-        error: error.message,
-        message: error.message,
-      }))
+          url: apolloLite.dreamviewUrl,
+          ok: false,
+          error: error.message,
+          message: error.message,
+        }))
       : dreamviewHttp;
   const dreamviewHttpReady = Boolean(dreamviewHttp.ok);
   const simulationReady =
@@ -1422,8 +1785,8 @@ async function getApolloLiteStatus(config) {
     ? 'ApolloLite simulation is disabled'
     : !stagingReady
       ? 'ApolloLite map staging is not ready'
-    : apolloLite.validationCommand
-      ? 'ApolloLite validation command is configured'
+      : apolloLite.validationCommand
+        ? 'ApolloLite validation command is configured'
         : dreamviewRuntimeAvailable && dreamviewHttpReady
           ? `ApolloLite Dreamview is reachable at ${dreamviewProbeUrl}`
           : dreamviewRuntimeAvailable
@@ -1473,7 +1836,9 @@ async function getStatus(config) {
   const frontendAvailable = await pathExists(config.frontendBuildRoot);
   const tileMapConfigAvailable = await pathExists(config.tileMapConfig);
   const docker =
-    config.runtimeMode === 'docker' ? await checkDockerRuntime(config) : await checkDockerRuntime(config).catch(() => null);
+    config.runtimeMode === 'docker'
+      ? await checkDockerRuntime(config)
+      : await checkDockerRuntime(config).catch(() => null);
 
   return {
     mode: config.runtimeMode,
@@ -1512,7 +1877,9 @@ async function getStatus(config) {
 
 async function listReleasedMaps(config) {
   await fsp.mkdir(config.releaseRoot, { recursive: true });
-  const entries = await fsp.readdir(config.releaseRoot, { withFileTypes: true });
+  const entries = await fsp.readdir(config.releaseRoot, {
+    withFileTypes: true,
+  });
   const maps = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) {
@@ -1602,7 +1969,9 @@ async function selectLatestReadyReleasedMap(config) {
   if (latestReady) {
     return latestReady;
   }
-  throw new Error(`no complete released map found. ${maps.map((map) => `${map.mapName}: ${map.statusMessage}`).join(' | ')}`);
+  throw new Error(
+    `no complete released map found. ${maps.map((map) => `${map.mapName}: ${map.statusMessage}`).join(' | ')}`,
+  );
 }
 
 async function readReleasedMapManifest(mapDir) {
@@ -1662,7 +2031,7 @@ async function inspectReleasedMapForApolloLite(config, mapName) {
       ...APOLLOLITE_TRACE_FILES,
       ...MAPEDITOR_RELEASE_TRACE_FILES,
       ...APOLLOLITE_RUNTIME_FILE_GROUPS.flatMap((group) => group.candidates),
-    ])
+    ]),
   );
   for (const fileName of candidateFiles) {
     const filePath = path.join(mapDir, fileName);
@@ -1817,7 +2186,9 @@ async function writeApolloLiteCurrentMapState(config, state) {
 }
 
 function normalizeApolloLiteTrafficLightColor(value) {
-  const color = String(value || 'GREEN').trim().toUpperCase();
+  const color = String(value || 'GREEN')
+    .trim()
+    .toUpperCase();
   if (['RED', 'YELLOW', 'GREEN', 'BLACK', 'UNKNOWN'].includes(color)) {
     return color;
   }
@@ -2032,7 +2403,10 @@ async function getApolloLiteTrafficLightSimulationStatus(config) {
   const processLines = sections
     .slice(processMarker >= 0 ? processMarker + 1 : 0, logMarker >= 0 ? logMarker : 0)
     .filter((line) => line.includes(APOLLOLITE_TRAFFIC_LIGHT_SIM_NAME) && line.includes('.py'));
-  const logTail = sections.slice(logMarker >= 0 ? logMarker + 1 : sections.length).filter(Boolean).slice(-20);
+  const logTail = sections
+    .slice(logMarker >= 0 ? logMarker + 1 : sections.length)
+    .filter(Boolean)
+    .slice(-20);
   return {
     available: result.code === 0,
     running: processLines.length > 0,
@@ -2063,16 +2437,8 @@ async function stopApolloLiteTrafficLightSimulation(config, progress = async () 
   await progress('Stopping ApolloLite traffic light simulation');
   await runCommand(
     'docker',
-    [
-      'exec',
-      '-u',
-      'dell',
-      containerName,
-      'bash',
-      '-lc',
-      buildApolloLiteTrafficLightSimKillCommand(true),
-    ],
-    { timeoutMs: 5000 }
+    ['exec', '-u', 'dell', containerName, 'bash', '-lc', buildApolloLiteTrafficLightSimKillCommand(true)],
+    { timeoutMs: 5000 },
   );
   const status = await getApolloLiteTrafficLightSimulationStatus(config);
   return {
@@ -2092,7 +2458,9 @@ async function startApolloLiteTrafficLightSimulation(config, params = {}, progre
   }
   const signalInfo = await readApolloLiteTrafficSignalIds(config, apolloLite);
   if (signalInfo.ids.length === 0) {
-    throw new Error('当前 ApolloLite 地图没有 trafficSignal；请先发布包含红绿灯的标注地图，或检查红绿灯是否已保存并发布。');
+    throw new Error(
+      '当前 ApolloLite 地图没有 trafficSignal；请先发布包含红绿灯的标注地图，或检查红绿灯是否已保存并发布。',
+    );
   }
   const color = normalizeApolloLiteTrafficLightColor(params.color);
   const requestedInterval = Number(params.interval);
@@ -2116,9 +2484,9 @@ async function startApolloLiteTrafficLightSimulation(config, params = {}, progre
           'cd /apollo',
           'source cyber/setup.bash >/dev/null 2>&1',
           `exec python3 ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_SCRIPT)} --ids-file ${quoteShell(
-            APOLLOLITE_TRAFFIC_LIGHT_SIM_IDS
+            APOLLOLITE_TRAFFIC_LIGHT_SIM_IDS,
           )} --color ${quoteShell(color)} --interval ${interval}`,
-        ].join(' && ')
+        ].join(' && '),
       ),
       `> ${quoteShell(APOLLOLITE_TRAFFIC_LIGHT_SIM_LOG)} 2>&1 < /dev/null`,
     ].join(' '),
@@ -2131,7 +2499,9 @@ async function startApolloLiteTrafficLightSimulation(config, params = {}, progre
   await delay(800);
   const status = await getApolloLiteTrafficLightSimulationStatus(config);
   if (!status.running) {
-    throw new Error(`traffic light simulation did not start: ${status.logTail?.join('\n') || result.stderr || result.stdout}`);
+    throw new Error(
+      `traffic light simulation did not start: ${status.logTail?.join('\n') || result.stderr || result.stdout}`,
+    );
   }
   return {
     ...status,
@@ -2165,7 +2535,9 @@ async function selectApolloLiteDefaultMapEntry(root, mapDirValues) {
   if (mapDirValues.length === 0) {
     return null;
   }
-  const entries = await Promise.all(mapDirValues.map((mapDir, index) => scoreApolloLiteMapDirEntry(root, mapDir, index)));
+  const entries = await Promise.all(
+    mapDirValues.map((mapDir, index) => scoreApolloLiteMapDirEntry(root, mapDir, index)),
+  );
   entries.sort((left, right) => {
     if (left.canonical !== right.canonical) {
       return right.canonical ? 1 : -1;
@@ -2335,11 +2707,14 @@ async function inspectApolloLitePlanningSimulationConfig(apolloLite) {
     };
   }
   const content = await fsp.readFile(confPath, 'utf8');
-  const lines = content.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const lines = content
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
   const flags = APOLLOLITE_REQUIRED_SIMULATION_PLANNING_FLAGS.map((item) => {
     const flagName = item.flag.replace(/^--/u, '');
     const matchingLines = lines.filter(
-      (line) => line.startsWith(`${item.flag}=`) || line === item.flag || line === `--no${flagName}`
+      (line) => line.startsWith(`${item.flag}=`) || line === item.flag || line === `--no${flagName}`,
     );
     const desiredLine = `${item.flag}=${item.value}`;
     return {
@@ -2382,9 +2757,9 @@ async function ensureApolloLitePlanningSimulationConfig(apolloLite, progress = a
   await fsp.copyFile(confPath, backupPath).catch(() => {});
   await fsp.writeFile(confPath, normalized.content, 'utf8');
   await progress(
-    `Updated ApolloLite planning simulation config: ${APOLLOLITE_REQUIRED_SIMULATION_PLANNING_FLAGS
-      .map((item) => `${item.flag}=${item.value}`)
-      .join(', ')}`
+    `Updated ApolloLite planning simulation config: ${APOLLOLITE_REQUIRED_SIMULATION_PLANNING_FLAGS.map(
+      (item) => `${item.flag}=${item.value}`,
+    ).join(', ')}`,
   );
   return {
     ...(await inspectApolloLitePlanningSimulationConfig(apolloLite)),
@@ -2401,7 +2776,9 @@ async function cleanupApolloLiteStaleRuntimeMapDirs(apolloLite, mapName, apolloL
       skipped: true,
     };
   }
-  const entries = await fsp.readdir(apolloLite.mapRoot, { withFileTypes: true });
+  const entries = await fsp.readdir(apolloLite.mapRoot, {
+    withFileTypes: true,
+  });
   const removed = [];
   const errors = [];
   const mapRoot = path.resolve(apolloLite.mapRoot);
@@ -2459,7 +2836,10 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
   }
 
   const targetDir = resolveApolloLiteMapPath(apolloLite.mapRoot, apolloLiteMapName);
-  const stagingDir = resolveApolloLiteMapPath(apolloLite.mapRoot, `.mapeditor-stage-${apolloLiteMapName}-${Date.now()}`);
+  const stagingDir = resolveApolloLiteMapPath(
+    apolloLite.mapRoot,
+    `.mapeditor-stage-${apolloLiteMapName}-${Date.now()}`,
+  );
   await progress(`Copying map package into ApolloLite staging: ${targetDir}`);
   await fsp.rm(stagingDir, { recursive: true, force: true });
   await fsp.cp(inspection.path, stagingDir, { recursive: true, force: true });
@@ -2485,7 +2865,11 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     apolloLiteRoot: apolloLite.root,
     planningSimulationConfig,
   };
-  await fsp.writeFile(path.join(stagingDir, 'mapeditor_apollolite_stage.json'), JSON.stringify(stageManifest, null, 2), 'utf8');
+  await fsp.writeFile(
+    path.join(stagingDir, 'mapeditor_apollolite_stage.json'),
+    JSON.stringify(stageManifest, null, 2),
+    'utf8',
+  );
   await fsp.rm(targetDir, { recursive: true, force: true });
   await fsp.rename(stagingDir, targetDir);
   const defaultMapFlag = await updateApolloLiteDefaultMapFlag(apolloLite, apolloLiteMapName);
@@ -2493,7 +2877,7 @@ async function stageReleasedMapToApolloLite(config, params = {}) {
     apolloLite,
     mapName,
     apolloLiteMapName,
-    progress
+    progress,
   ).catch((error) => ({
     error: error.message,
   }));
@@ -2666,16 +3050,20 @@ function parseApolloMapLanes(mapText) {
       const laneType = Number(block.match(/\n\s*type:\s*(\d+)/u)?.[1] || 0);
       const centralStart = block.search(/central_curve\s*\{/u);
       const centralBody = centralStart >= 0 ? block.slice(centralStart) : block;
-      const stopMatch = centralBody.search(/\n\s*(left_boundary|right_boundary|overlap_id|successor_id|predecessor_id|junction_id)\s*\{/u);
+      const stopMatch = centralBody.search(
+        /\n\s*(left_boundary|right_boundary|overlap_id|successor_id|predecessor_id|junction_id)\s*\{/u,
+      );
       const centralText = stopMatch >= 0 ? centralBody.slice(0, stopMatch) : centralBody;
       const points = Array.from(
         centralText.matchAll(
-          /point\s*\{\s*x:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*y:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu
-        )
-      ).map((match) => ({
-        x: Number(match[1]),
-        y: Number(match[2]),
-      })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+          /point\s*\{\s*x:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*y:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu,
+        ),
+      )
+        .map((match) => ({
+          x: Number(match[1]),
+          y: Number(match[2]),
+        }))
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
       const length = polylineLength(points);
       return {
         id,
@@ -2751,9 +3139,13 @@ function closestPointOnPolyline(points, target) {
     const dx = next.x - prev.x;
     const dy = next.y - prev.y;
     const segmentLength = Math.hypot(dx, dy);
-    const ratio = segmentLength > 0
-      ? Math.max(0, Math.min(1, ((target.x - prev.x) * dx + (target.y - prev.y) * dy) / (segmentLength * segmentLength)))
-      : 0;
+    const ratio =
+      segmentLength > 0
+        ? Math.max(
+            0,
+            Math.min(1, ((target.x - prev.x) * dx + (target.y - prev.y) * dy) / (segmentLength * segmentLength)),
+          )
+        : 0;
     const point = {
       x: prev.x + dx * ratio,
       y: prev.y + dy * ratio,
@@ -2873,13 +3265,12 @@ async function buildApolloLiteSimulationRoute(mapDir, startPose = null) {
   const endFraction = singleLane ? 0.88 : 0.82;
   const laneStart = pointAtPolylineFraction(startLane.points, startFraction);
   const usePoseStart = startPose && laneSelection.startProjection && laneSelection.startProjection.distanceMeters < 1.5;
-  const start = usePoseStart
-    ? { x: startPose.x, y: startPose.y }
-    : laneStart;
+  const start = usePoseStart ? { x: startPose.x, y: startPose.y } : laneStart;
   const end = pointAtPolylineFraction(endLane.points, endFraction);
-  const heading = usePoseStart && Number.isFinite(startPose.heading)
-    ? startPose.heading
-    : headingAtPolylineFraction(startLane.points, startFraction);
+  const heading =
+    usePoseStart && Number.isFinite(startPose.heading)
+      ? startPose.heading
+      : headingAtPolylineFraction(startLane.points, startFraction);
   return {
     laneIds: effectiveLanePath.map((lane) => lane.id),
     estimatedLengthMeters: effectiveLanePath.reduce((sum, lane) => sum + lane.length, 0),
@@ -2942,7 +3333,9 @@ function sendDreamviewMessage(ws, payload) {
 }
 
 function normalizeDreamviewName(value) {
-  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/gu, '');
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '');
 }
 
 function getDreamviewStatusMaps(status) {
@@ -3043,7 +3436,11 @@ async function switchDreamviewMapOnSocket(ws, mapName, progress = async () => {}
     };
   }
 
-  sendDreamviewMessage(ws, { type: 'HMIAction', action: 'CHANGE_MAP', value: dreamviewMapValue });
+  sendDreamviewMessage(ws, {
+    type: 'HMIAction',
+    action: 'CHANGE_MAP',
+    value: dreamviewMapValue,
+  });
   await delay(1000);
   const afterStatus = await readDreamviewHmiStatus(ws, APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS);
   const afterMap = getDreamviewCurrentMap(afterStatus);
@@ -3072,7 +3469,11 @@ async function ensureDreamviewSimulationMode(ws, progress = async () => {}) {
   }
 
   await progress(`Switching Dreamview mode: ${targetMode}`);
-  sendDreamviewMessage(ws, { type: 'HMIAction', action: 'CHANGE_MODE', value: targetMode });
+  sendDreamviewMessage(ws, {
+    type: 'HMIAction',
+    action: 'CHANGE_MODE',
+    value: targetMode,
+  });
   await delay(1500);
   const afterStatus = await readDreamviewHmiStatus(ws, APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS);
   return {
@@ -3157,7 +3558,10 @@ async function startApolloLiteStablePncStack(apolloLite, progress = async () => 
   return {
     containerName,
     started: true,
-    launches: APOLLOLITE_STABLE_PNC_LAUNCHES.map(({ name, launch }) => ({ name, launch })),
+    launches: APOLLOLITE_STABLE_PNC_LAUNCHES.map(({ name, launch }) => ({
+      name,
+      launch,
+    })),
     stdout: result.stdout.trim(),
     stderr: result.stderr.trim(),
   };
@@ -3218,7 +3622,7 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
     'cd /apollo',
     'export HOME=/home/dell USER=dell LOGNAME=dell XDG_CONFIG_HOME=/home/dell/.config',
     'source /apollo/scripts/apollo_base.sh >/dev/null 2>&1 || true',
-    "mkdir -p /home/dell/.apollo/dreamview/plugins /apollo/data/log/mapeditor_dreamview",
+    'mkdir -p /home/dell/.apollo/dreamview/plugins /apollo/data/log/mapeditor_dreamview',
     `find /apollo/data/log/mapeditor_dreamview -maxdepth 1 -type f \\( -name 'dreamview_*.log' -o -name 'direct_dreamview.log' \\) -size +${APOLLOLITE_DREAMVIEW_LOG_MAX_MB}M -exec sh -c ': > "$1"' _ {} \\; 2>/dev/null || true`,
     "grep -v '^--sim_control_spawn_mode=' /apollo/modules/dreamview/conf/dreamview.conf > /tmp/mapeditor_dreamview.conf || true",
     "printf '%s\\n' '--sim_control_spawn_mode=legacy' >> /tmp/mapeditor_dreamview.conf",
@@ -3226,7 +3630,7 @@ async function restartApolloLiteDreamview(apolloLite, progress = async () => {})
     "pkill -f '[d]reamview/launch/dreamview.launch' || true",
     'pkill -x dreamview || true',
     'sleep 1',
-    "if [ ! -d /apollo/modules/dreamview/frontend/dist ]; then asset_dir=$(find /apollo/.cache -path '*dreamview_frontend_assets*/dist' -type d 2>/dev/null | head -n 1); if [ -n \"$asset_dir\" ]; then mkdir -p /apollo/modules/dreamview/frontend; ln -snf \"$asset_dir\" /apollo/modules/dreamview/frontend/dist; fi; fi",
+    'if [ ! -d /apollo/modules/dreamview/frontend/dist ]; then asset_dir=$(find /apollo/.cache -path \'*dreamview_frontend_assets*/dist\' -type d 2>/dev/null | head -n 1); if [ -n "$asset_dir" ]; then mkdir -p /apollo/modules/dreamview/frontend; ln -snf "$asset_dir" /apollo/modules/dreamview/frontend/dist; fi; fi',
     'nohup /apollo/bazel-bin/modules/dreamview/dreamview --flagfile=/apollo/modules/dreamview/conf/dreamview.conf --server_ports=8888 --static_file_dir=/apollo/modules/dreamview/frontend/dist >/apollo/data/log/mapeditor_dreamview/dreamview_restart.log 2>&1 &',
   ].join(' && ');
   const startedAt = new Date().toISOString();
@@ -3325,7 +3729,8 @@ async function inspectApolloLiteSimulationProcesses(apolloLite) {
       processes: [],
     };
   }
-  const command = "ps -eo pid,user,cmd | grep -E 'routing\\.dag|planning\\.dag|control\\.dag|mpc_module\\.dag|lateral_longitudinal_module\\.dag' | grep -v grep || true";
+  const command =
+    "ps -eo pid,user,cmd | grep -E 'routing\\.dag|planning\\.dag|control\\.dag|mpc_module\\.dag|lateral_longitudinal_module\\.dag' | grep -v grep || true";
   const result = await runCommand('docker', ['exec', containerName, 'bash', '-lc', command], {
     timeoutMs: 5000,
   });
@@ -3396,13 +3801,13 @@ async function probeDreamviewMapData(apolloLite, radius = 200) {
         }
         return parsed;
       },
-      APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS
+      APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS,
     );
     sendDreamviewMessage(ws, { type: 'RetrieveMapElementIdsByRadius', radius });
     const idsResponse = await idsPromise;
     const ids = idsResponse.mapElementIds || {};
     const counts = Object.fromEntries(
-      Object.entries(ids).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0])
+      Object.entries(ids).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0]),
     );
     const mapWs = await connectDreamviewWebSocket(mapWsUrl);
     try {
@@ -3416,7 +3821,7 @@ async function probeDreamviewMapData(apolloLite, radius = 200) {
             bytes: data.length,
           };
         },
-        APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS
+        APOLLOLITE_DREAMVIEW_WS_TIMEOUT_MS,
       );
       sendDreamviewMessage(mapWs, { type: 'RetrieveMapData', elements: ids });
       const mapData = await mapDataPromise;
@@ -3460,7 +3865,8 @@ function summarizeApolloLitePncProcessHealth(processes = []) {
   if (unstableControl > 0) {
     issues.push(`${unstableControl} unstable control process(es)`);
   }
-  const ready = groups.routing.length === 1 && groups.planning.length === 1 && expectedControl === 1 && issues.length === 0;
+  const ready =
+    groups.routing.length === 1 && groups.planning.length === 1 && expectedControl === 1 && issues.length === 0;
   const idle = processes.length === 0;
   return {
     ready,
@@ -3491,7 +3897,8 @@ function classifyApolloLiteRoutingFailure(line) {
       expected: laneTypeMatch[2],
       actual: laneTypeMatch[3],
       message: `lane ${laneTypeMatch[1]} is ${laneTypeMatch[3]}, expected ${laneTypeMatch[2]}`,
-      suggestion: '重新发布当前标注地图，确认 ApolloLite 下拉只保留当前 hash 版本，并检查该车道类型是否为 CITY_DRIVING。',
+      suggestion:
+        '重新发布当前标注地图，确认 ApolloLite 下拉只保留当前 hash 版本，并检查该车道类型是否为 CITY_DRIVING。',
     };
   }
   const locateMatch = text.match(/cannot locate\s+(start|end)\s+point on map/iu);
@@ -3536,15 +3943,7 @@ function parseApolloGlogTimestamp(value) {
   const [, matchedYear, month, day, hour, minute, second, fraction] = match;
   const year = matchedYear ? Number(matchedYear) : now.getFullYear();
   const milliseconds = Number(String(fraction).slice(0, 3).padEnd(3, '0'));
-  let date = new Date(
-    year,
-    Number(month) - 1,
-    Number(day),
-    Number(hour),
-    Number(minute),
-    Number(second),
-    milliseconds
-  );
+  let date = new Date(year, Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), milliseconds);
   if (!matchedYear && date.getTime() - now.getTime() > 24 * 60 * 60 * 1000) {
     date = new Date(
       year - 1,
@@ -3553,7 +3952,7 @@ function parseApolloGlogTimestamp(value) {
       Number(hour),
       Number(minute),
       Number(second),
-      milliseconds
+      milliseconds,
     );
   }
   return Number.isNaN(date.getTime()) ? '' : date.toISOString();
@@ -3689,9 +4088,10 @@ async function diagnoseApolloLiteRuntime(config) {
     {
       name: 'current-map-source',
       status: flagMatchesExpectedMap && hmiMatchesExpectedMap ? 'ok' : 'warning',
-      message: flagMatchesExpectedMap && hmiMatchesExpectedMap
-        ? `current map ${expectedRuntimeMapName || apolloLite.defaultMapName || 'not selected'}`
-        : `expected ${expectedRuntimeMapName || 'unknown'}, flag=${apolloLite.defaultMapName || 'unknown'}, hmi=${hmi?.currentMap || 'unknown'}`,
+      message:
+        flagMatchesExpectedMap && hmiMatchesExpectedMap
+          ? `current map ${expectedRuntimeMapName || apolloLite.defaultMapName || 'not selected'}`
+          : `expected ${expectedRuntimeMapName || 'unknown'}, flag=${apolloLite.defaultMapName || 'unknown'}, hmi=${hmi?.currentMap || 'unknown'}`,
     },
     {
       name: 'stable-pnc-stack',
@@ -3755,7 +4155,7 @@ async function repairApolloLiteRuntime(config, progress = async () => {}) {
           apolloLite,
           selectedManifest.mapName,
           flagMapName,
-          progress
+          progress,
         ).catch((error) => ({
           error: error.message,
         })),
@@ -3900,13 +4300,14 @@ async function getApolloLiteWorkflow(config) {
     error: error.message,
     checks: [],
   }));
-  const currentMapState = diagnosis.currentMapState || await readApolloLiteCurrentMapState(config);
+  const currentMapState = diagnosis.currentMapState || (await readApolloLiteCurrentMapState(config));
   const failedChecks = (diagnosis.checks || []).filter((check) => check.status !== 'ok');
   const latestRoutingFailure = diagnosis.routingDiagnostics?.latestFailure;
   const routingFailureTime = Date.parse(latestRoutingFailure?.timestamp || '');
   const resetTime = Date.parse(currentMapState?.lastSimulationResetAt || '');
   const routingFailure =
-    latestRoutingFailure && (!Number.isFinite(resetTime) || !Number.isFinite(routingFailureTime) || routingFailureTime > resetTime)
+    latestRoutingFailure &&
+    (!Number.isFinite(resetTime) || !Number.isFinite(routingFailureTime) || routingFailureTime > resetTime)
       ? latestRoutingFailure
       : null;
   const steps = [
@@ -3914,9 +4315,7 @@ async function getApolloLiteWorkflow(config) {
       key: 'release',
       title: '发布地图包',
       status: currentMapState?.mapName ? 'done' : 'pending',
-      detail: currentMapState?.mapName
-        ? `当前发布: ${currentMapState.mapName}`
-        : '先保存标注并发布 Apollo 地图包',
+      detail: currentMapState?.mapName ? `当前发布: ${currentMapState.mapName}` : '先保存标注并发布 Apollo 地图包',
     },
     {
       key: 'stage',
@@ -3929,10 +4328,12 @@ async function getApolloLiteWorkflow(config) {
     {
       key: 'dreamview',
       title: 'Dreamview 加载地图',
-      status: diagnosis.hmi?.currentMap ? (failedChecks.some((check) => check.name === 'current-map-source') ? 'warning' : 'done') : 'blocked',
-      detail: diagnosis.hmi?.currentMap
-        ? `当前地图: ${diagnosis.hmi.currentMap}`
-        : 'Dreamview 尚未返回当前地图',
+      status: diagnosis.hmi?.currentMap
+        ? failedChecks.some((check) => check.name === 'current-map-source')
+          ? 'warning'
+          : 'done'
+        : 'blocked',
+      detail: diagnosis.hmi?.currentMap ? `当前地图: ${diagnosis.hmi.currentMap}` : 'Dreamview 尚未返回当前地图',
     },
     {
       key: 'pnc',
@@ -3944,7 +4345,9 @@ async function getApolloLiteWorkflow(config) {
       key: 'route',
       title: '设置起终点并发 Routing',
       status: routingFailure ? 'warning' : diagnosis.ready ? 'ready' : 'pending',
-      detail: routingFailure ? `${routingFailure.message}. ${routingFailure.suggestion}` : '点选绿色车道中心线附近；换路段前先重置仿真会话',
+      detail: routingFailure
+        ? `${routingFailure.message}. ${routingFailure.suggestion}`
+        : '点选绿色车道中心线附近；换路段前先重置仿真会话',
     },
   ];
   return {
@@ -3953,11 +4356,12 @@ async function getApolloLiteWorkflow(config) {
     currentMapState,
     diagnosis,
     steps,
-    nextAction: failedChecks.length > 0
-      ? `处理 ${failedChecks[0].name}: ${failedChecks[0].message}`
-      : routingFailure
-        ? routingFailure.suggestion
-        : '可以开始仿真测试；切换新路段前使用“重置仿真会话”。',
+    nextAction:
+      failedChecks.length > 0
+        ? `处理 ${failedChecks[0].name}: ${failedChecks[0].message}`
+        : routingFailure
+          ? routingFailure.suggestion
+          : '可以开始仿真测试；切换新路段前使用“重置仿真会话”。',
   };
 }
 
@@ -4032,7 +4436,10 @@ async function resolveApolloLiteDockerContainer(apolloLite) {
   if (!result || result.code !== 0) {
     return '';
   }
-  const names = result.stdout.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean);
+  const names = result.stdout
+    .split(/\r?\n/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
   return names.find((name) => /apollo.*dev|apollo.*lite|apollo_dev/u.test(name)) || '';
 }
 
@@ -4063,7 +4470,10 @@ function extractRtkFixStatus(stdout) {
       }
     }
   }
-  const raw = values.find((value) => /fix|float|single|narrow|invalid|none|good|integer|rtk|converged/iu.test(value)) || values[values.length - 1] || '';
+  const raw =
+    values.find((value) => /fix|float|single|narrow|invalid|none|good|integer|rtk|converged/iu.test(value)) ||
+    values[values.length - 1] ||
+    '';
   if (!raw) {
     return {
       available: false,
@@ -4087,8 +4497,8 @@ function extractRtkFixStatus(stdout) {
 function parseLocalizationPose(stdout) {
   const positionMatches = Array.from(
     stdout.matchAll(
-      /position\s*\{\s*x:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*y:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu
-    )
+      /position\s*\{\s*x:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*y:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu,
+    ),
   );
   if (positionMatches.length === 0) {
     return null;
@@ -4100,7 +4510,9 @@ function parseLocalizationPose(stdout) {
   const timestampMatches = Array.from(stdout.matchAll(/\btimestamp_sec:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu))
     .map((match) => Number(match[1]))
     .filter(Number.isFinite);
-  const measurementMatches = Array.from(stdout.matchAll(/\bmeasurement_time:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu))
+  const measurementMatches = Array.from(
+    stdout.matchAll(/\bmeasurement_time:\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/giu),
+  )
     .map((match) => Number(match[1]))
     .filter(Number.isFinite);
   const timestampSec = timestampMatches.length ? timestampMatches[timestampMatches.length - 1] : null;
@@ -4228,7 +4640,7 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
   const missingComponents = components.filter((component) => !component.available);
   if (missingComponents.length > 0) {
     throw new Error(
-      `ApolloLite PNC components are missing: ${missingComponents.map((component) => component.name).join(', ')}. Build routing/planning/control first.`
+      `ApolloLite PNC components are missing: ${missingComponents.map((component) => component.name).join(', ')}. Build routing/planning/control first.`,
     );
   }
   const startPose = await readApolloLiteLocalizationPose(apolloLite, progress);
@@ -4240,7 +4652,7 @@ async function runApolloLiteSimulationSmokeTest(config, params = {}) {
   const trafficLightSimulation = await startApolloLiteTrafficLightSimulation(
     config,
     { color: params.trafficLightColor || 'GREEN' },
-    progress
+    progress,
   ).catch((error) => ({
     skipped: true,
     error: error.message,
@@ -4325,8 +4737,8 @@ async function importBaseMapZip(config, params) {
   const normalizedPaths = entries.map((entry) => entry.path.replace(/\\/g, '/'));
   const tilePath = findArchivePath(normalizedPaths, 'map_images/tiles.json');
   if (!tilePath) {
-    const looksLikePointCloudPackage = normalizedPaths.some((entryPath) =>
-      isSupportedPointCloudName(entryPath) || path.extname(entryPath).toLowerCase() === '.laz'
+    const looksLikePointCloudPackage = normalizedPaths.some(
+      (entryPath) => isSupportedPointCloudName(entryPath) || path.extname(entryPath).toLowerCase() === '.laz',
     );
     if (looksLikePointCloudPackage) {
       throw new Error('这是点云数据包，请使用“导入点云底图”；瓦片底图 ZIP 必须包含 map_images/tiles.json');
@@ -4336,7 +4748,9 @@ async function importBaseMapZip(config, params) {
       findArchivePath(normalizedPaths, 'base_map.bin') ||
       findArchivePath(normalizedPaths, 'routing_map.bin');
     if (looksLikeApolloMapPackage) {
-      throw new Error('这是 Apollo 完整地图包，不是底图瓦片包；请在“打开标注地图”里导入，或上传包含 map_images/tiles.json 的底图 ZIP');
+      throw new Error(
+        '这是 Apollo 完整地图包，不是底图瓦片包；请在“打开标注地图”里导入，或上传包含 map_images/tiles.json 的底图 ZIP',
+      );
     }
     throw new Error('底图 ZIP 必须包含 map_images/tiles.json');
   }
@@ -4393,10 +4807,7 @@ async function importMapPackageZip(config, params) {
     throw new Error('Apollo 地图包 ZIP 必须包含 editor_map.json');
   }
 
-  const archivePrefix = editorMapPathInArchive.slice(
-    0,
-    editorMapPathInArchive.length - 'editor_map.json'.length
-  );
+  const archivePrefix = editorMapPathInArchive.slice(0, editorMapPathInArchive.length - 'editor_map.json'.length);
   const targetReleaseDir = path.join(config.releaseRoot, mapName);
   const targetEditorMapPath = path.join(config.editorMapRoot, `${mapName}.json`);
   const stagingReleaseDir = path.join(config.releaseRoot, `.import-${mapName}-${Date.now()}`);
@@ -4554,7 +4965,10 @@ function parseNumericPointLine(line) {
 async function parseTextPointCloud(filePath) {
   const accumulator = createPointCloudAccumulator();
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
-  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const lines = readline.createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
   for await (const line of lines) {
     const point = parseNumericPointLine(line);
     if (!point) {
@@ -4656,11 +5070,19 @@ async function parsePcdPointCloud(filePath) {
   if (dataType === 'ascii') {
     const body = buffer.slice(dataOffset).toString('utf8');
     body.split(/\r?\n/).forEach((line) => {
-      const values = line.trim().split(/\s+/).map((value) => Number(value));
+      const values = line
+        .trim()
+        .split(/\s+/)
+        .map((value) => Number(value));
       if (values.length <= Math.max(xIndex, yIndex) || values.some((value) => Number.isNaN(value))) {
         return;
       }
-      accumulator.addPoint(values[xIndex], values[yIndex], zIndex >= 0 ? values[zIndex] : 0, intensityIndex >= 0 ? values[intensityIndex] : null);
+      accumulator.addPoint(
+        values[xIndex],
+        values[yIndex],
+        zIndex >= 0 ? values[zIndex] : 0,
+        intensityIndex >= 0 ? values[intensityIndex] : null,
+      );
     });
     return accumulator.finalize();
   }
@@ -4750,7 +5172,10 @@ async function parsePlyPointCloud(filePath) {
   const body = content.slice(headerEnd + 'end_header'.length);
   const accumulator = createPointCloudAccumulator();
   body.split(/\r?\n/).forEach((line) => {
-    const values = line.trim().split(/\s+/).map((value) => Number(value));
+    const values = line
+      .trim()
+      .split(/\s+/)
+      .map((value) => Number(value));
     if (values.length <= Math.max(xIndex, yIndex) || values.some((value) => Number.isNaN(value))) {
       return;
     }
@@ -4830,7 +5255,9 @@ async function parseLasPointCloud(filePath) {
 }
 
 function isKnownMetadataName(fileName) {
-  const normalized = String(fileName || '').replace(/\\/g, '/').toLowerCase();
+  const normalized = String(fileName || '')
+    .replace(/\\/g, '/')
+    .toLowerCase();
   const baseName = normalized.split('/').pop() || normalized;
   const ext = path.extname(baseName);
   if (
@@ -4859,7 +5286,7 @@ function isKnownMetadataName(fileName) {
     return true;
   }
   return /(camera|c2e|gnss|gps|imu|ins|nav|odom|pose|pos|rtk|traj|trajectory|calib|extrinsic|intrinsic|shuttle_log)/i.test(
-    baseName
+    baseName,
   );
 }
 
@@ -4879,7 +5306,11 @@ function isImageName(fileName) {
 }
 
 function archiveBaseName(fileName) {
-  return String(fileName || '').split(/[\\/]/).pop() || '';
+  return (
+    String(fileName || '')
+      .split(/[\\/]/)
+      .pop() || ''
+  );
 }
 
 function getPointCloudEntryRank(fileName) {
@@ -4940,7 +5371,7 @@ async function parsePointCloudZip(filePath) {
 }
 
 function getPointCloudTileResolution(level) {
-  return 0.5 / (2 ** level);
+  return 0.5 / 2 ** level;
 }
 
 function normalizePointIntensity(intensity) {
@@ -4991,12 +5422,7 @@ function createRasterTileAccumulator(options = {}) {
   };
 
   const addAlpha = (tile, pixelX, pixelY, alpha) => {
-    if (
-      pixelX < 0 ||
-      pixelY < 0 ||
-      pixelX >= POINT_CLOUD_TILE_SIZE ||
-      pixelY >= POINT_CLOUD_TILE_SIZE
-    ) {
+    if (pixelX < 0 || pixelY < 0 || pixelX >= POINT_CLOUD_TILE_SIZE || pixelY >= POINT_CLOUD_TILE_SIZE) {
       return;
     }
     const index = pixelY * POINT_CLOUD_TILE_SIZE + pixelX;
@@ -5142,10 +5568,7 @@ function createRasterTileAccumulator(options = {}) {
       sourceFiles: payload.sourceFiles,
       imageFileCount: payload.imageFileCount,
       layerPointCount: result.totalPointCount,
-      tileCount: POINT_CLOUD_TILE_LEVELS.reduce(
-        (count, level) => count + tilesByLevel.get(level).size,
-        0
-      ),
+      tileCount: POINT_CLOUD_TILE_LEVELS.reduce((count, level) => count + tilesByLevel.get(level).size, 0),
     };
   };
 
@@ -5159,7 +5582,14 @@ function createRasterTileAccumulator(options = {}) {
 
   const getPointCount = () => result.totalPointCount;
 
-  return { addPoint, addPointValue, addSourceFile, addImageFiles, getPointCount, writeTiles };
+  return {
+    addPoint,
+    addPointValue,
+    addSourceFile,
+    addImageFiles,
+    getPointCount,
+    writeTiles,
+  };
 }
 
 function createPointCloudProcessingStats() {
@@ -5177,8 +5607,7 @@ function createPointCloudProcessingStats() {
       maxZ: -Infinity,
     },
   };
-  const cellKey = (x, y) =>
-    `${Math.floor(x / GROUND_GRID_SIZE_METERS)},${Math.floor(y / GROUND_GRID_SIZE_METERS)}`;
+  const cellKey = (x, y) => `${Math.floor(x / GROUND_GRID_SIZE_METERS)},${Math.floor(y / GROUND_GRID_SIZE_METERS)}`;
 
   const addIntensitySample = (intensity) => {
     if (!Number.isFinite(intensity)) {
@@ -5235,9 +5664,7 @@ function createPointCloudProcessingStats() {
     if (stats.totalPointCount === 0) {
       throw new Error('点云文件没有解析到有效 x/y/z 点');
     }
-    const sortedIntensity = intensitySamples
-      .filter(Number.isFinite)
-      .sort((left, right) => left - right);
+    const sortedIntensity = intensitySamples.filter(Number.isFinite).sort((left, right) => left - right);
     const p02 = percentile(sortedIntensity, 0.02, 0);
     const p50 = percentile(sortedIntensity, 0.5, 0);
     const p90 = percentile(sortedIntensity, 0.9, Infinity);
@@ -5343,7 +5770,8 @@ function classifyCoordinateSystem(bounds) {
       message: '坐标范围落在经纬度合法区间内，但也可能只是小范围局部坐标；需要 LAS CRS/VLR、采集系统配置或控制点确认。',
     };
   }
-  const projectedLike = Math.max(Math.abs(bounds.minX), Math.abs(bounds.maxX), Math.abs(bounds.minY), Math.abs(bounds.maxY)) > 10000;
+  const projectedLike =
+    Math.max(Math.abs(bounds.minX), Math.abs(bounds.maxX), Math.abs(bounds.minY), Math.abs(bounds.maxY)) > 10000;
   if (projectedLike) {
     return {
       kind: 'projected_meters_or_large_local',
@@ -5365,8 +5793,7 @@ function getImageOverlayMetadata(imageFileCount) {
   }
   return {
     status: 'stored_unplaced',
-    message:
-      '图片已随底图保存，但缺少相机内参、外参、时间戳和车辆轨迹，暂不能可靠贴到地图坐标上。',
+    message: '图片已随底图保存，但缺少相机内参、外参、时间戳和车辆轨迹，暂不能可靠贴到地图坐标上。',
     requiredForProjection: [
       'camera intrinsics',
       'camera-to-lidar or camera-to-vehicle extrinsics',
@@ -5385,7 +5812,7 @@ async function readArchiveTextEntry(entry) {
         chunks.push(chunk);
         callback();
       },
-    })
+    }),
   );
   const buffer = Buffer.concat(chunks);
   return buffer.toString('utf8').replace(/^\uFEFF/, '');
@@ -5458,8 +5885,8 @@ function parseLipCamera(lines, prefix, side, cameraId) {
   const height = imageSize[1];
   const fx = focal / pixelSize;
   const fy = focal / pixelSize;
-  const cx = width / 2 + ((principalPoint?.[0] ?? 0) / pixelSize);
-  const cy = height / 2 + ((principalPoint?.[1] ?? 0) / pixelSize);
+  const cx = width / 2 + (principalPoint?.[0] ?? 0) / pixelSize;
+  const cy = height / 2 + (principalPoint?.[1] ?? 0) / pixelSize;
   const nominalHorizontalFovDeg = (2 * Math.atan((width * pixelSize) / (2 * focal)) * 180) / Math.PI;
   const nominalVerticalFovDeg = (2 * Math.atan((height * pixelSize) / (2 * focal)) * 180) / Math.PI;
   return {
@@ -5667,7 +6094,8 @@ function interpolateEnhancedPose(poses, time) {
   }
   const right = poses[Math.min(low, poses.length - 1)];
   const left = poses[Math.max(0, low - 1)];
-  const nearest = Math.abs((left?.time ?? Infinity) - time) <= Math.abs((right?.time ?? Infinity) - time) ? left : right;
+  const nearest =
+    Math.abs((left?.time ?? Infinity) - time) <= Math.abs((right?.time ?? Infinity) - time) ? left : right;
   if (!left || !right || left === right) {
     return nearest && Math.abs(nearest.time - time) <= 2 ? nearest : null;
   }
@@ -5683,7 +6111,8 @@ function interpolateEnhancedPose(poses, time) {
     x: left.x + (right.x - left.x) * ratio,
     y: left.y + (right.y - left.y) * ratio,
     z: left.z + (right.z - left.z) * ratio,
-    roll: Number.isFinite(left.roll) && Number.isFinite(right.roll) ? left.roll + (right.roll - left.roll) * ratio : null,
+    roll:
+      Number.isFinite(left.roll) && Number.isFinite(right.roll) ? left.roll + (right.roll - left.roll) * ratio : null,
     pitch:
       Number.isFinite(left.pitch) && Number.isFinite(right.pitch)
         ? left.pitch + (right.pitch - left.pitch) * ratio
@@ -5745,7 +6174,9 @@ async function buildZipImagePoseIndex(zipPath) {
         y: roundPointValue(mapPose.y),
         z: roundPointValue(mapPose.z),
         yaw: Number.isFinite(mapPose.yaw) ? roundPointValue(mapPose.yaw) : null,
-        bodyHeadingDeg: Number.isFinite(headingRad) ? roundPointValue(normalizeAngleDeg((headingRad * 180) / Math.PI)) : null,
+        bodyHeadingDeg: Number.isFinite(headingRad)
+          ? roundPointValue(normalizeAngleDeg((headingRad * 180) / Math.PI))
+          : null,
       },
       ecef: {
         x: roundPointValue(row.ecef[0]),
@@ -6037,7 +6468,10 @@ function parsePcdHeaderBuffer(buffer, sourceName, sizeBytes = null) {
 }
 
 function parseImageFilenameGpsTime(sourceName) {
-  const filename = String(sourceName || '').split(/[\\/]/).pop() || '';
+  const filename =
+    String(sourceName || '')
+      .split(/[\\/]/)
+      .pop() || '';
   const match = filename.match(/^(\d{4})-(\d{6})-(\d{3})_(\d+)-([LR])\.(?:jpe?g|png|webp|tiff?)$/i);
   if (!match) {
     return null;
@@ -6066,7 +6500,10 @@ function parseImageFilenameGpsTime(sourceName) {
 }
 
 function parseImageFrameParts(sourceName) {
-  const filename = String(sourceName || '').split(/[\\/]/).pop() || '';
+  const filename =
+    String(sourceName || '')
+      .split(/[\\/]/)
+      .pop() || '';
   const match = filename.match(/^(\d{4})-(\d{6})-(\d{3})_(\d+)-([LR])\.(?:jpe?g|png|webp|tiff?)$/i);
   if (!match) {
     return null;
@@ -6113,12 +6550,7 @@ function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
     }
     const length = buffer.readUInt16BE(offset);
     const payload = buffer.slice(offset + 2, offset + length);
-    if (
-      marker === 0xc0 ||
-      marker === 0xc1 ||
-      marker === 0xc2 ||
-      marker === 0xc3
-    ) {
+    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2 || marker === 0xc3) {
       info.height = payload.readUInt16BE(1);
       info.width = payload.readUInt16BE(3);
     }
@@ -6160,16 +6592,18 @@ function parseJpegMetadataBuffer(buffer, sourceName, sizeBytes = null) {
   const yaw = Number(info.xmp['share:Yaw'] || info.xmp['drone-dji:GimbalYawDegree']);
   info.poseUsable = Boolean(
     Number.isFinite(lat) &&
-      Number.isFinite(lon) &&
-      Math.abs(lat) > 0.000001 &&
-      Math.abs(lon) > 0.000001 &&
-      Number.isFinite(yaw)
+    Number.isFinite(lon) &&
+    Math.abs(lat) > 0.000001 &&
+    Math.abs(lon) > 0.000001 &&
+    Number.isFinite(yaw),
   );
   return info;
 }
 
 function classifyTrajectorySource(sourceName) {
-  const normalized = String(sourceName || '').replace(/\\/g, '/').toLowerCase();
+  const normalized = String(sourceName || '')
+    .replace(/\\/g, '/')
+    .toLowerCase();
   if (normalized.includes('gnss')) return 'gnss_lonlat';
   if (normalized.includes('camerapos') || normalized.includes('camera')) return 'camera_pose';
   if (normalized.includes('pos_enh')) return 'enhanced_pose';
@@ -6247,9 +6681,7 @@ function parseTrajectoryMetadataBuffer(buffer, sourceName, sizeBytes = null) {
       continue;
     }
     const numericText = line.replace(/^\S+\.(?:jpe?g|png|webp|tiff?)\s+/i, '');
-    const nums = (numericText.match(/[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/g) || [])
-      .map(Number)
-      .filter(Number.isFinite);
+    const nums = (numericText.match(/[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/g) || []).map(Number).filter(Number.isFinite);
     if (nums.length < 5) {
       continue;
     }
@@ -6309,8 +6741,14 @@ function parseTrajectoryMetadataBuffer(buffer, sourceName, sizeBytes = null) {
   }
   const coordinate = classifyCoordinateSystem(bounds);
   if (
-    Math.max(Math.abs(bounds.minX), Math.abs(bounds.maxX), Math.abs(bounds.minY), Math.abs(bounds.maxY), Math.abs(bounds.minZ), Math.abs(bounds.maxZ)) >
-      1000000 &&
+    Math.max(
+      Math.abs(bounds.minX),
+      Math.abs(bounds.maxX),
+      Math.abs(bounds.minY),
+      Math.abs(bounds.maxY),
+      Math.abs(bounds.minZ),
+      Math.abs(bounds.maxZ),
+    ) > 1000000 &&
     Math.abs(
       Math.sqrt(
         ((bounds.minX + bounds.maxX) / 2) ** 2 +
@@ -6425,7 +6863,9 @@ function summarizePackageAnalysis(analysis) {
   const usableImages = analysis.images.filter((image) => image.poseUsable).length;
   const filenameGpsTimeImages = analysis.images.filter((image) => image.filenameGpsTime).length;
   const crsKnown = analysis.pointClouds.some((item) => item.hasCrsVlr);
-  const coordinateKinds = Array.from(new Set(analysis.pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
+  const coordinateKinds = Array.from(
+    new Set(analysis.pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)),
+  );
   const trajectory = summarizeTrajectoryAnalyses(analysis.trajectories || []);
   const recommendations = [];
   if (!analysis.counts.pointCloudFiles) {
@@ -6436,7 +6876,9 @@ function summarizePackageAnalysis(analysis) {
   }
   if (analysis.counts.imageFiles && usableImages === 0) {
     if (filenameGpsTimeImages) {
-      recommendations.push('图片文件名包含 GPS 时间戳，可用于和 LAS GPS Time/轨迹对齐；但缺少可信姿态和标定，不能单独贴图。');
+      recommendations.push(
+        '图片文件名包含 GPS 时间戳，可用于和 LAS GPS Time/轨迹对齐；但缺少可信姿态和标定，不能单独贴图。',
+      );
     } else {
       recommendations.push('图片有 EXIF/XMP，但样例未包含有效经纬度/姿态；需要相机标定、时间戳和轨迹才能自动贴图。');
     }
@@ -6445,10 +6887,14 @@ function summarizePackageAnalysis(analysis) {
     recommendations.push('当前坐标更像局部米制坐标；只要 las/pcd 已经在同一坐标系，可以直接拼在同一底图里。');
   }
   if (coordinateKinds.includes('projected_meters_or_large_local')) {
-    recommendations.push('当前坐标不是经纬度，数值更像米制投影坐标或大范围局部坐标；如需跨批次对齐，需要确认 EPSG/投影或转换参数。');
+    recommendations.push(
+      '当前坐标不是经纬度，数值更像米制投影坐标或大范围局部坐标；如需跨批次对齐，需要确认 EPSG/投影或转换参数。',
+    );
   }
   if (trajectory.poseFileCount > 0) {
-    recommendations.push(`已解析 ${trajectory.poseFileCount} 个定位/姿态文件；多包拼图应优先使用 ${trajectory.preferredSource}。`);
+    recommendations.push(
+      `已解析 ${trajectory.poseFileCount} 个定位/姿态文件；多包拼图应优先使用 ${trajectory.preferredSource}。`,
+    );
   }
   return {
     pointCount,
@@ -6490,7 +6936,9 @@ function summarizeCombinedPackageAnalysis(analyses) {
   }
   if (counts.imageFiles && images.filter((image) => image.poseUsable).length === 0) {
     if (filenameGpsTimeImages) {
-      addRecommendation('图片文件名包含 GPS 时间戳，可用于和 LAS GPS Time/轨迹对齐；但缺少可信姿态和标定，不能单独贴图。');
+      addRecommendation(
+        '图片文件名包含 GPS 时间戳，可用于和 LAS GPS Time/轨迹对齐；但缺少可信姿态和标定，不能单独贴图。',
+      );
     } else {
       addRecommendation('图片有 EXIF/XMP，但样例未包含有效经纬度/姿态；需要相机标定、时间戳和轨迹才能自动贴图。');
     }
@@ -6499,10 +6947,14 @@ function summarizeCombinedPackageAnalysis(analyses) {
     addRecommendation('当前坐标更像局部米制坐标；只要 las/pcd 已经在同一坐标系，可以直接拼在同一底图里。');
   }
   if (coordinateKinds.includes('projected_meters_or_large_local')) {
-    addRecommendation('当前坐标不是经纬度，数值更像米制投影坐标或大范围局部坐标；如需跨批次对齐，需要确认 EPSG/投影或转换参数。');
+    addRecommendation(
+      '当前坐标不是经纬度，数值更像米制投影坐标或大范围局部坐标；如需跨批次对齐，需要确认 EPSG/投影或转换参数。',
+    );
   }
   if (trajectory.poseFileCount > 0) {
-    addRecommendation(`已解析 ${trajectory.poseFileCount} 个定位/姿态文件；多包拼图应优先使用 ${trajectory.preferredSource}。`);
+    addRecommendation(
+      `已解析 ${trajectory.poseFileCount} 个定位/姿态文件；多包拼图应优先使用 ${trajectory.preferredSource}。`,
+    );
   }
   const pointCloudsForCount = selectPreferredPointCloudAnalyses(pointClouds);
   return {
@@ -6566,7 +7018,7 @@ async function analyzeZipDataPackage(filePath, originalName) {
         analysis.pointClouds.push(
           ext === '.las'
             ? parseLasHeaderBuffer(prefix, entry.path, entrySize)
-            : parsePcdHeaderBuffer(prefix, entry.path, entrySize)
+            : parsePcdHeaderBuffer(prefix, entry.path, entrySize),
         );
       }
     } else if (isImageName(entry.path)) {
@@ -6601,7 +7053,7 @@ async function analyzeSingleDataFile(filePath, originalName) {
   }
   const prefix = await readFilePrefix(
     filePath,
-    isKnownMetadataName(originalName) ? TRAJECTORY_METADATA_READ_BYTES : 512 * 1024
+    isKnownMetadataName(originalName) ? TRAJECTORY_METADATA_READ_BYTES : 512 * 1024,
   );
   const analysis = {
     source: originalName,
@@ -6645,7 +7097,10 @@ async function analyzeDataPackage(config, params) {
   const packageRoot = getImportPackageRoot(config);
   await fsp.mkdir(packageRoot, { recursive: true });
   const packageName = sanitizePackageName(params.packageName || files[0].originalName || files[0].originalname);
-  const packageId = `${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${packageName}`;
+  const packageId = `${new Date()
+    .toISOString()
+    .replace(/[-:.TZ]/g, '')
+    .slice(0, 14)}-${packageName}`;
   const targetDir = path.join(packageRoot, packageId);
   const uploadDir = path.join(targetDir, 'uploads');
   await fsp.mkdir(uploadDir, { recursive: true });
@@ -6750,16 +7205,11 @@ async function listDataPackageImportFilesFromRoot(packageDir, uploadDir = path.j
 }
 
 function getImportPackageRoot(config) {
-  return path.resolve(
-    config.importPackageRoot || path.resolve(config.baseMapRoot, '..', 'import_packages')
-  );
+  return path.resolve(config.importPackageRoot || path.resolve(config.baseMapRoot, '..', 'import_packages'));
 }
 
 function getImportPackageTrashRoot(config) {
-  return path.resolve(
-    config.importPackageTrashRoot ||
-      path.resolve(config.baseMapRoot, '..', 'import_packages_trash')
-  );
+  return path.resolve(config.importPackageTrashRoot || path.resolve(config.baseMapRoot, '..', 'import_packages_trash'));
 }
 
 function getCaptureSourceRoot(config) {
@@ -6920,9 +7370,7 @@ async function importCaptureSourcePackage(config, params = {}) {
     const sourceStat = await fsp.stat(sourcePath);
     const minAgeMinutes = Number(params.minAgeMinutes || 0);
     if (!isCapturePackageStable(files, sourceStat, minAgeMinutes)) {
-      throw new Error(
-        `capture package is still changing; wait at least ${minAgeMinutes} minute(s): ${sourcePackage}`
-      );
+      throw new Error(`capture package is still changing; wait at least ${minAgeMinutes} minute(s): ${sourcePackage}`);
     }
   }
   const packageRoot = getImportPackageRoot(config);
@@ -7017,7 +7465,7 @@ async function syncCaptureSourcePackages(config, params = {}) {
   const results = [];
   const unstableCount = scan.packages.filter((item) => item.stable === false).length;
   await progress(
-    `Capture source scan: ${scan.packages.length} package(s), ${targets.length} to sync, ${unstableCount} waiting for stability`
+    `Capture source scan: ${scan.packages.length} package(s), ${targets.length} to sync, ${unstableCount} waiting for stability`,
   );
   for (let index = 0; index < targets.length; index += 1) {
     const item = targets[index];
@@ -7028,7 +7476,7 @@ async function syncCaptureSourcePackages(config, params = {}) {
         overwrite,
         minAgeMinutes,
         progress,
-      })
+      }),
     );
   }
   const generatedBaseMaps = [];
@@ -7050,7 +7498,7 @@ async function syncCaptureSourcePackages(config, params = {}) {
           mapName,
           overwrite: params.overwriteBaseMaps === true,
           progress,
-        })
+        }),
       );
     }
   }
@@ -7059,7 +7507,11 @@ async function syncCaptureSourcePackages(config, params = {}) {
     const packages = await listDataPackages(config);
     const groups = new Map();
     for (const item of selectLatestMergeCandidates(packages)) {
-      if (item.sourceManifest?.sourceRoot !== scan.sourceRoot || !item.workflowStatus?.canMerge || !item.coordinateGroup) {
+      if (
+        item.sourceManifest?.sourceRoot !== scan.sourceRoot ||
+        !item.workflowStatus?.canMerge ||
+        !item.coordinateGroup
+      ) {
         continue;
       }
       if (!groups.has(item.coordinateGroup)) {
@@ -7134,7 +7586,7 @@ async function prebuildDataPackageBaseMaps(config, params = {}) {
         mapName,
         overwrite: overwriteBaseMaps,
         progress,
-      })
+      }),
     );
   }
 
@@ -7303,8 +7755,7 @@ function buildPackageQuality(summary, analyses) {
   const areaSquareMeters = width > 0 && height > 0 ? width * height : 0;
   const pointDensity = areaSquareMeters > 0 ? pointCount / areaSquareMeters : 0;
   const coordinateKinds = Array.from(new Set(pointClouds.map((item) => item.coordinate?.kind).filter(Boolean)));
-  const representativeCoordinateKind =
-    summary?.trajectory?.preferredCoordinateKind || coordinateKinds[0] || null;
+  const representativeCoordinateKind = summary?.trajectory?.preferredCoordinateKind || coordinateKinds[0] || null;
   const coordinateGroup = buildCoordinateGroup(representativeCoordinateKind, bounds);
   const hasMixedCoordinateKinds = coordinateKinds.length > 1;
   let rating = 'unknown';
@@ -7360,7 +7811,7 @@ function getPackageFreshnessTime(packageInfo) {
     Date.parse(packageInfo?.sourceManifest?.newestLastWriteUtc || '') || 0,
     Date.parse(packageInfo?.sourceManifest?.syncedAt || '') || 0,
     Date.parse(packageInfo?.modifiedAt || '') || 0,
-    Date.parse(packageInfo?.createdAt || '') || 0
+    Date.parse(packageInfo?.createdAt || '') || 0,
   );
 }
 
@@ -7763,7 +8214,7 @@ async function importMergedDataPackagesBaseMap(config, params) {
     allFiles.push(...files.map((file) => ({ ...file, packageId })));
   }
   const importableFiles = allFiles.filter(
-    (file) => isSupportedPointCloudUploadName(file.originalName) || isImageName(file.originalName)
+    (file) => isSupportedPointCloudUploadName(file.originalName) || isImageName(file.originalName),
   );
   if (importableFiles.length === 0) {
     throw new Error('selected data packages have no importable point cloud files');
@@ -7775,7 +8226,7 @@ async function importMergedDataPackagesBaseMap(config, params) {
   const stitchPlan = await buildDataPackageStitchPlan(config, packageIds);
   if (!stitchPlan.ready && params.allowMixedCoordinateGroups !== true) {
     throw new Error(
-      `selected packages cannot be merged safely: ${stitchPlan.errors.join(', ') || 'unknown stitch-plan error'}`
+      `selected packages cannot be merged safely: ${stitchPlan.errors.join(', ') || 'unknown stitch-plan error'}`,
     );
   }
   const result = await importPointCloudFilesBaseMap(config, {
@@ -7799,7 +8250,10 @@ async function importMergedDataPackagesBaseMap(config, params) {
 
 async function scanTextPointCloud(filePath, onPoint) {
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
-  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const lines = readline.createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
   for await (const line of lines) {
     const point = parseNumericPointLine(line);
     if (point) {
@@ -7828,7 +8282,10 @@ async function scanPcdPointCloud(filePath, onPoint) {
   if (dataType === 'ascii') {
     const body = buffer.slice(dataOffset).toString('utf8');
     body.split(/\r?\n/).forEach((line) => {
-      const values = line.trim().split(/\s+/).map((value) => Number(value));
+      const values = line
+        .trim()
+        .split(/\s+/)
+        .map((value) => Number(value));
       if (values.length <= Math.max(xIndex, yIndex) || values.some((value) => Number.isNaN(value))) {
         return;
       }
@@ -7836,7 +8293,7 @@ async function scanPcdPointCloud(filePath, onPoint) {
         values[xIndex],
         values[yIndex],
         zIndex >= 0 ? values[zIndex] : 0,
-        intensityIndex >= 0 ? values[intensityIndex] : null
+        intensityIndex >= 0 ? values[intensityIndex] : null,
       );
     });
     return;
@@ -7867,13 +8324,13 @@ async function scanPcdPointCloud(filePath, onPoint) {
           dataBuffer,
           fieldColumnOffsets[fieldIndex] + index * (sizes[fieldIndex] || 4),
           types[fieldIndex] || 'F',
-          sizes[fieldIndex] || 4
+          sizes[fieldIndex] || 4,
         );
       onPoint(
         readField(xIndex),
         readField(yIndex),
         zIndex >= 0 ? readField(zIndex) : 0,
-        intensityIndex >= 0 ? readField(intensityIndex) : null
+        intensityIndex >= 0 ? readField(intensityIndex) : null,
       );
     }
     return;
@@ -7894,7 +8351,7 @@ async function scanPcdPointCloud(filePath, onPoint) {
       readField(xIndex),
       readField(yIndex),
       zIndex >= 0 ? readField(zIndex) : 0,
-      intensityIndex >= 0 ? readField(intensityIndex) : null
+      intensityIndex >= 0 ? readField(intensityIndex) : null,
     );
   }
 }
@@ -7924,7 +8381,10 @@ async function scanPlyPointCloud(filePath, onPoint) {
   }
   const body = content.slice(headerEnd + 'end_header'.length);
   body.split(/\r?\n/).forEach((line) => {
-    const values = line.trim().split(/\s+/).map((value) => Number(value));
+    const values = line
+      .trim()
+      .split(/\s+/)
+      .map((value) => Number(value));
     if (values.length <= Math.max(xIndex, yIndex) || values.some((value) => Number.isNaN(value))) {
       return;
     }
@@ -7975,7 +8435,7 @@ async function scanLasPointCloud(filePath, onPoint) {
         chunk,
         0,
         bytesToRead,
-        offsetToPointData + readPointCount * pointRecordLength
+        offsetToPointData + readPointCount * pointRecordLength,
       );
       if (bytesRead <= 0) {
         break;
@@ -8098,7 +8558,9 @@ async function importPointCloudFilesBaseMap(config, params) {
     throw new Error('file is required');
   }
 
-  const cloudFiles = files.filter((file) => isSupportedPointCloudUploadName(file.originalName || file.originalname || file.path));
+  const cloudFiles = files.filter((file) =>
+    isSupportedPointCloudUploadName(file.originalName || file.originalname || file.path),
+  );
   const imageFiles = files.filter((file) => isImageName(file.originalName || file.originalname || file.path));
   if (cloudFiles.length === 0) {
     throw new Error('点云底图请上传 .pcd/.ply/.xyz/.txt/.csv/.las 文件，或包含这些文件的 .zip');
@@ -8137,12 +8599,18 @@ async function importPointCloudFilesBaseMap(config, params) {
     const imageIndex = await buildImageOverlayIndex(files, stagingDir);
     const imageOverlay = getImageOverlayMetadataFromIndex(imageFileCount, imageIndex);
     const layers = {
-      enhanced: createRasterTileAccumulator({ sourceType: 'point_cloud_enhanced' }),
+      enhanced: createRasterTileAccumulator({
+        sourceType: 'point_cloud_enhanced',
+      }),
       raw: createRasterTileAccumulator({ sourceType: 'point_cloud_raw' }),
       ground: createRasterTileAccumulator({ sourceType: 'point_cloud_ground' }),
-      marking: createRasterTileAccumulator({ sourceType: 'point_cloud_marking' }),
+      marking: createRasterTileAccumulator({
+        sourceType: 'point_cloud_marking',
+      }),
       edge: createRasterTileAccumulator({ sourceType: 'point_cloud_edge' }),
-      structure: createRasterTileAccumulator({ sourceType: 'point_cloud_structure' }),
+      structure: createRasterTileAccumulator({
+        sourceType: 'point_cloud_structure',
+      }),
     };
 
     const renderEnhancedPoint = (x, y, z = 0, intensity = null) => {
@@ -8235,7 +8703,11 @@ async function importPointCloudFilesBaseMap(config, params) {
     }
     await copyImportSources(files, stagingDir);
     if (params.stitchPlan) {
-      await fsp.writeFile(path.join(stagingDir, 'stitch_plan.json'), JSON.stringify(params.stitchPlan, null, 2), 'utf8');
+      await fsp.writeFile(
+        path.join(stagingDir, 'stitch_plan.json'),
+        JSON.stringify(params.stitchPlan, null, 2),
+        'utf8',
+      );
     }
     if (progress) {
       await progress(`Activating base map: ${mapName}`);
@@ -8277,7 +8749,7 @@ async function getRuntimeDoctor(config) {
     'error',
     status.paths.frontendAvailable
       ? 'Frontend build is available'
-      : `Frontend build not found at ${status.paths.frontendBuildRoot}`
+      : `Frontend build not found at ${status.paths.frontendBuildRoot}`,
   );
   addCheck(
     'tile-config',
@@ -8285,25 +8757,25 @@ async function getRuntimeDoctor(config) {
     'error',
     status.paths.tileMapConfigAvailable
       ? 'Tile-map config is available'
-      : `Tile-map config not found at ${status.paths.tileMapConfig}`
+      : `Tile-map config not found at ${status.paths.tileMapConfig}`,
   );
   addCheck(
     'base-map-dir',
     await pathWritable(config.baseMapRoot),
     'error',
-    `Base map directory is writable: ${config.baseMapRoot}`
+    `Base map directory is writable: ${config.baseMapRoot}`,
   );
   addCheck(
     'editor-map-dir',
     await pathWritable(config.editorMapRoot),
     'error',
-    `Editor map directory is writable: ${config.editorMapRoot}`
+    `Editor map directory is writable: ${config.editorMapRoot}`,
   );
   addCheck(
     'release-dir',
     await pathWritable(config.releaseRoot),
     'error',
-    `Release directory is writable: ${config.releaseRoot}`
+    `Release directory is writable: ${config.releaseRoot}`,
   );
 
   if (config.runtimeMode === 'local') {
@@ -8314,7 +8786,7 @@ async function getRuntimeDoctor(config) {
       'error',
       status.local.converterAvailable
         ? 'Native editor_map_converter is available'
-        : `Native editor_map_converter is missing at ${status.local.converterBinary}; JS compatible converter will be used`
+        : `Native editor_map_converter is missing at ${status.local.converterBinary}; JS compatible converter will be used`,
     );
     addCheck(
       'tile-map-images-creator',
@@ -8322,7 +8794,7 @@ async function getRuntimeDoctor(config) {
       'warning',
       status.local.tileMapCreatorAvailable
         ? 'Native tile_map_images_creator is available'
-        : `Native tile_map_images_creator is missing at ${status.local.tileMapCreatorBinary}`
+        : `Native tile_map_images_creator is missing at ${status.local.tileMapCreatorBinary}`,
     );
   }
 
@@ -8331,7 +8803,7 @@ async function getRuntimeDoctor(config) {
       'docker-runtime',
       status.docker && status.docker.available,
       'error',
-      status.docker ? status.docker.message : 'Docker runtime status is unavailable'
+      status.docker ? status.docker.message : 'Docker runtime status is unavailable',
     );
   }
 
@@ -8341,13 +8813,13 @@ async function getRuntimeDoctor(config) {
     'warning',
     status.edgeDeploy.enabled
       ? `Edge deploy enabled for ${status.edgeDeploy.user}@${status.edgeDeploy.host}:${status.edgeDeploy.targetMapRoot}`
-      : 'Edge deploy is disabled'
+      : 'Edge deploy is disabled',
   );
   addCheck(
     'apollolite-staging',
     status.apolloLite.stagingReady,
     status.apolloLite.enabled ? 'error' : 'warning',
-    status.apolloLite.stagingMessage || status.apolloLite.message
+    status.apolloLite.stagingMessage || status.apolloLite.message,
   );
   if (status.apolloLite.enabled && status.apolloLite.root) {
     addCheck(
@@ -8356,13 +8828,13 @@ async function getRuntimeDoctor(config) {
       'warning',
       status.apolloLite.apolloShAvailable
         ? `ApolloLite source is available: ${status.apolloLite.root}`
-        : `ApolloLite source is incomplete or missing apollo.sh: ${status.apolloLite.root}`
+        : `ApolloLite source is incomplete or missing apollo.sh: ${status.apolloLite.root}`,
     );
     addCheck(
       'apollolite-simulation',
       status.apolloLite.simulationReady,
       'warning',
-      status.apolloLite.simulationMessage
+      status.apolloLite.simulationMessage,
     );
   }
 
@@ -8393,7 +8865,17 @@ function getDeployConfig(config) {
     dockerContainer: edge.dockerContainer || '',
     nativeMapTools: edge.nativeMapTools !== false,
     autoSwitchDreamview: edge.autoSwitchDreamview !== false,
-    coordinateValidationMaxDistanceMeters: edge.coordinateValidationMaxDistanceMeters || 5000,
+    coordinateValidationMaxDistanceMeters: edge.coordinateValidationMaxDistanceMeters || 1000,
+    vehicleLaneWarningDistanceMeters: edge.vehicleLaneWarningDistanceMeters || 0.5,
+    vehicleLaneErrorDistanceMeters: edge.vehicleLaneErrorDistanceMeters || 1.5,
+    requireLocalizationGate: edge.requireLocalizationGate !== false,
+    requireRtkFix: edge.requireRtkFix !== false,
+    localizationWarningDelaySeconds: edge.localizationWarningDelaySeconds || 0.5,
+    localizationErrorDelaySeconds: edge.localizationErrorDelaySeconds || 2,
+    headingWarningRadians: edge.headingWarningRadians || 0.05,
+    headingErrorRadians: edge.headingErrorRadians || 0.15,
+    mapBoundaryMarginMeters: edge.mapBoundaryMarginMeters || 5,
+    remoteBoundsToleranceMeters: edge.remoteBoundsToleranceMeters || 0.5,
   };
 }
 
@@ -8414,7 +8896,7 @@ async function preflightEdgeDeploy(config, params = {}) {
     'edge-mode',
     deployConfig.enabled,
     'error',
-    deployConfig.enabled ? `Edge deploy mode is ${deployConfig.mode}` : 'Edge deploy is disabled'
+    deployConfig.enabled ? `Edge deploy mode is ${deployConfig.mode}` : 'Edge deploy is disabled',
   );
   addCheck(
     'edge-target',
@@ -8422,7 +8904,7 @@ async function preflightEdgeDeploy(config, params = {}) {
     'error',
     deployConfig.host && deployConfig.user
       ? `Edge target is ${deployConfig.target}`
-      : 'MAP_EDGE_HOST and MAP_EDGE_USER are required'
+      : 'MAP_EDGE_HOST and MAP_EDGE_USER are required',
   );
 
   if (!deployConfig.enabled || !deployConfig.host || !deployConfig.user) {
@@ -8471,7 +8953,7 @@ async function preflightEdgeDeploy(config, params = {}) {
       'error',
       config.edgeDeploy.dockerContainer
         ? `Host upload root is writable: ${hostWritableDir}`
-        : `Target map root is writable: ${deployConfig.targetMapRoot}`
+        : `Target map root is writable: ${deployConfig.targetMapRoot}`,
     );
   } catch (error) {
     addCheck(
@@ -8481,7 +8963,7 @@ async function preflightEdgeDeploy(config, params = {}) {
       config.edgeDeploy.dockerContainer
         ? 'Host upload root is not writable: /tmp/mapeditor_uploads'
         : `Target map root is not writable: ${deployConfig.targetMapRoot}`,
-      error.message
+      error.message,
     );
   }
 
@@ -8491,18 +8973,18 @@ async function preflightEdgeDeploy(config, params = {}) {
         config,
         dockerExecCommand(
           config.edgeDeploy.dockerContainer,
-          `mkdir -p ${quoteShell(deployConfig.targetMapRoot)} && test -w ${quoteShell(deployConfig.targetMapRoot)}`
+          `mkdir -p ${quoteShell(deployConfig.targetMapRoot)} && test -w ${quoteShell(deployConfig.targetMapRoot)}`,
         ),
         {
           timeoutMs: 10000,
-        }
+        },
       );
       addCheck(
         'edge-docker-container',
         true,
         'warning',
         `Docker container is usable: ${config.edgeDeploy.dockerContainer}`,
-        result.stderr || null
+        result.stderr || null,
       );
     } catch (error) {
       addCheck(
@@ -8510,7 +8992,7 @@ async function preflightEdgeDeploy(config, params = {}) {
         false,
         'warning',
         `Docker container is not usable: ${config.edgeDeploy.dockerContainer}`,
-        error.message
+        error.message,
       );
     }
   }
@@ -8525,16 +9007,10 @@ async function preflightEdgeDeploy(config, params = {}) {
       runtimeOk,
       'warning',
       `Edge runtime current map: ${mapText}; Dreamview HTTP ${httpText}`,
-      edgeRuntimeCurrentMap
+      edgeRuntimeCurrentMap,
     );
   } catch (error) {
-    addCheck(
-      'edge-runtime-status',
-      false,
-      'warning',
-      'Edge runtime current map status is not readable',
-      error.message
-    );
+    addCheck('edge-runtime-status', false, 'warning', 'Edge runtime current map status is not readable', error.message);
   }
 
   if (deployConfig.autoSwitchDreamview) {
@@ -8545,14 +9021,14 @@ async function preflightEdgeDeploy(config, params = {}) {
         config.edgeDeploy.dockerContainer ? dockerExecCommand(config.edgeDeploy.dockerContainer, command) : command,
         {
           timeoutMs: 10000,
-        }
+        },
       );
       addCheck(
         'edge-dreamview-switch',
         true,
         'error',
         'Dreamview switch target is writable and restartable',
-        result.stderr || null
+        result.stderr || null,
       );
     } catch (error) {
       addCheck(
@@ -8560,7 +9036,7 @@ async function preflightEdgeDeploy(config, params = {}) {
         false,
         'error',
         'Dreamview cannot be switched automatically after deployment',
-        error.message
+        error.message,
       );
     }
     try {
@@ -8575,12 +9051,17 @@ async function preflightEdgeDeploy(config, params = {}) {
           wsUrl: hmi.wsUrl,
           currentMap: hmiCurrentMap,
           maps: getDreamviewStatusMaps(hmi.status).slice(0, 20),
-        }
+        },
       );
       if (edgeRuntimeCurrentMap) {
         const runtimeMapName =
           edgeRuntimeCurrentMap.map_name ||
-          path.posix.basename(String(edgeRuntimeCurrentMap.resolved_map_dir || edgeRuntimeCurrentMap.flag_map_dir || '').replace(/\/+$/u, ''));
+          path.posix.basename(
+            String(edgeRuntimeCurrentMap.resolved_map_dir || edgeRuntimeCurrentMap.flag_map_dir || '').replace(
+              /\/+$/u,
+              '',
+            ),
+          );
         const runtimeNormalized = normalizeDreamviewName(runtimeMapName);
         const hmiNormalized = normalizeDreamviewName(hmiCurrentMap);
         const syncOk = Boolean(runtimeNormalized && hmiNormalized && runtimeNormalized === hmiNormalized);
@@ -8597,7 +9078,7 @@ async function preflightEdgeDeploy(config, params = {}) {
             flagMapDir: edgeRuntimeCurrentMap.flag_map_dir || '',
             resolvedMapDir: edgeRuntimeCurrentMap.resolved_map_dir || '',
             wsUrl: hmi.wsUrl,
-          }
+          },
         );
       }
     } catch (error) {
@@ -8606,7 +9087,7 @@ async function preflightEdgeDeploy(config, params = {}) {
         false,
         'warning',
         'Dreamview HMI websocket is not reachable before deployment',
-        error.message
+        error.message,
       );
     }
   } else {
@@ -8615,7 +9096,9 @@ async function preflightEdgeDeploy(config, params = {}) {
 
   try {
     const selectedMapName = String(params.mapName || '').trim();
-    const selected = selectedMapName ? await requireReleasedMapReady(config, selectedMapName) : await selectLatestReadyReleasedMap(config);
+    const selected = selectedMapName
+      ? await requireReleasedMapReady(config, selectedMapName)
+      : await selectLatestReadyReleasedMap(config);
     const mapName = selectedMapName || selected.mapName;
     const sourceDir = path.join(config.releaseRoot, mapName);
     const remoteRoot = deployConfig.targetMapRoot.replace(/\/+$/, '');
@@ -8625,24 +9108,25 @@ async function preflightEdgeDeploy(config, params = {}) {
       true,
       'error',
       `Released map coordinates ok: ${mapName}; ${formatCoordinateBounds(validation.localBounds)}`,
-      validation
+      validation,
     );
     const vehiclePoseValidation = validation.vehiclePoseValidation;
     if (vehiclePoseValidation?.available) {
+      const vehiclePoseStatus = vehiclePoseValidation.status || 'warning';
       addCheck(
         'selected-map-vehicle-pose',
-        vehiclePoseValidation.status === 'ok',
-        vehiclePoseValidation.status === 'error' ? 'warning' : vehiclePoseValidation.status,
+        vehiclePoseStatus === 'ok',
+        vehiclePoseStatus === 'ok' ? 'warning' : vehiclePoseStatus,
         `${mapName}: ${vehiclePoseValidation.message}`,
-        vehiclePoseValidation
+        vehiclePoseValidation,
       );
     } else if (vehiclePoseValidation) {
       addCheck(
         'selected-map-vehicle-pose',
         false,
-        'warning',
+        vehiclePoseValidation.status === 'error' ? 'error' : 'warning',
         `${mapName}: vehicle-to-lane check skipped: ${vehiclePoseValidation.message}`,
-        vehiclePoseValidation
+        vehiclePoseValidation,
       );
     }
   } catch (error) {
@@ -8655,7 +9139,7 @@ async function preflightEdgeDeploy(config, params = {}) {
       missingRelease
         ? `No released map is available for coordinate validation: ${message}`
         : `Released map coordinate validation failed: ${message}`,
-      message
+      message,
     );
   }
 
@@ -8724,8 +9208,8 @@ function buildEdgeDreamviewSwitchCommand(mapDir) {
     'done',
     'nohup bash -lc ". \\"$SETUP\\"; \\"$LAUNCH\\" start \\"$LAUNCH_FILE\\"" > "$LOG" 2>&1 < /dev/null &',
     'for i in $(seq 1 20); do',
-      '  curl -fsS http://127.0.0.1:8888/ >/dev/null 2>&1 && break',
-      '  sleep 0.5',
+    '  curl -fsS http://127.0.0.1:8888/ >/dev/null 2>&1 && break',
+    '  sleep 0.5',
     'done',
     'curl -fsS http://127.0.0.1:8888/ >/dev/null',
     'write_map_flag',
@@ -8754,7 +9238,13 @@ async function readEdgeDreamviewFlagMapDir(config) {
   const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
     timeoutMs: 10000,
   });
-  return String(result.stdout || '').trim().split(/\r?\n/u).filter(Boolean).pop() || '';
+  return (
+    String(result.stdout || '')
+      .trim()
+      .split(/\r?\n/u)
+      .filter(Boolean)
+      .pop() || ''
+  );
 }
 
 function parseKeyValueOutput(output = '') {
@@ -8785,7 +9275,7 @@ async function readEdgeRuntimeCurrentMap(config) {
     'printf "map_name=%s\\n" "$(basename "$MAP_DIR" 2>/dev/null || true)"',
     'if [ -n "$MAP_DIR" ] && [ -d "$MAP_DIR" ]; then printf "map_exists=yes\\n"; else printf "map_exists=no\\n"; fi',
     'printf "dreamview_http=%s\\n" "$(curl -fsS http://127.0.0.1:8888/ >/dev/null 2>&1 && printf ok || printf error)"',
-    'printf "dreamview_pids=%s\\n" "$(pgrep -x dreamview 2>/dev/null | tr \'\\n\' \' \' | sed \'s/[[:space:]]*$//\')"',
+    "printf \"dreamview_pids=%s\\n\" \"$(pgrep -x dreamview 2>/dev/null | tr '\\n' ' ' | sed 's/[[:space:]]*$//')\"",
   ].join('\n');
   const container = String(config.edgeDeploy.dockerContainer || '').trim();
   const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
@@ -8826,7 +9316,7 @@ async function verifyEdgeDreamviewMap(config, mapName, mapDir, progress = async 
   }
   if (normalizedFlagDir !== normalizedExpectedDir) {
     throw new Error(
-      `Dreamview map verification failed: flag map_dir is ${flagMapDir}, expected ${normalizedExpectedDir}`
+      `Dreamview map verification failed: flag map_dir is ${flagMapDir}, expected ${normalizedExpectedDir}`,
     );
   }
 
@@ -8841,7 +9331,7 @@ async function verifyEdgeDreamviewMap(config, mapName, mapDir, progress = async 
   const hmiCurrentMap = getDreamviewCurrentMap(hmi?.status);
   if (hmiCurrentMap && normalizeDreamviewName(hmiCurrentMap) !== expectedNormalized) {
     throw new Error(
-      `Dreamview map verification failed: HMI current map is ${hmiCurrentMap}, expected ${expectedMapName}`
+      `Dreamview map verification failed: HMI current map is ${hmiCurrentMap}, expected ${expectedMapName}`,
     );
   }
   return {
@@ -9020,7 +9510,9 @@ async function deployReleasedMap(config, params = {}) {
     const remoteMapDir = `${remoteRoot}/${mapName}`;
     const backupRoot = `${remoteRoot}/.mapeditor_backups`;
     const rollbackRoot = `${remoteRoot}/.mapeditor_replaced`;
-    const uploadParent = dockerContainer ? `/tmp/mapeditor_uploads/${deploymentId}` : `${remoteRoot}/.mapeditor_uploads/${deploymentId}`;
+    const uploadParent = dockerContainer
+      ? `/tmp/mapeditor_uploads/${deploymentId}`
+      : `${remoteRoot}/.mapeditor_uploads/${deploymentId}`;
     const backupDir = `${backupRoot}/${mapName}-${deploymentId}`;
     const remoteUploadedDir = `${uploadParent}/${path.basename(sourceDir)}`;
     await progress(`Validating map coordinates against edge references: ${mapName}`);
@@ -9030,13 +9522,13 @@ async function deployReleasedMap(config, params = {}) {
       config,
       dockerContainer
         ? dockerExecCommand(dockerContainer, `[ -d ${quoteShell(remoteMapDir)} ] && echo yes || echo no`)
-        : `[ -d ${quoteShell(remoteMapDir)} ] && echo yes || echo no`
+        : `[ -d ${quoteShell(remoteMapDir)} ] && echo yes || echo no`,
     );
     const hadBackup = hadBackupResult.stdout.trim() === 'yes';
     await progress(
       dockerContainer
         ? `Preparing edge upload directory and container map root: ${dockerContainer}:${remoteRoot}`
-        : `Preparing remote deployment directories under ${remoteRoot}`
+        : `Preparing remote deployment directories under ${remoteRoot}`,
     );
     await runEdgeSshCommand(
       config,
@@ -9046,32 +9538,34 @@ async function deployReleasedMap(config, params = {}) {
             `mkdir -p ${quoteShell(uploadParent)}`,
             dockerExecCommand(
               dockerContainer,
-              `mkdir -p ${quoteShell(remoteRoot)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`
+              `mkdir -p ${quoteShell(remoteRoot)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`,
             ),
           ].join(' && ')
-        : `mkdir -p ${quoteShell(uploadParent)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`
+        : `mkdir -p ${quoteShell(uploadParent)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`,
     );
     await progress(`Copying released map to edge: ${mapName}`);
     const copyResult = await uploadDirectoryWithSftp(config, sourceDir, uploadParent);
-    await progress(dockerContainer ? `Activating map in edge container: ${remoteMapDir}` : `Activating map on edge: ${remoteMapDir}`);
+    await progress(
+      dockerContainer ? `Activating map in edge container: ${remoteMapDir}` : `Activating map on edge: ${remoteMapDir}`,
+    );
     const activateCommand = dockerContainer
       ? [
           dockerExecCommand(
             dockerContainer,
             [
               `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(backupDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
-                backupDir
+                backupDir,
               )} || true`,
               `rm -rf ${quoteShell(remoteMapDir)}`,
               `mkdir -p ${quoteShell(path.posix.dirname(remoteMapDir))}`,
-            ].join(' && ')
+            ].join(' && '),
           ),
           `docker cp ${quoteShell(remoteUploadedDir)} ${quoteShell(`${dockerContainer}:${remoteMapDir}`)}`,
           `rm -rf ${quoteShell(uploadParent)}`,
         ].join(' && ')
       : [
           `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(backupDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
-            backupDir
+            backupDir,
           )} || true`,
           `rm -rf ${quoteShell(remoteMapDir)}`,
           `mv ${quoteShell(remoteUploadedDir)} ${quoteShell(remoteMapDir)}`,
@@ -9080,6 +9574,12 @@ async function deployReleasedMap(config, params = {}) {
     const activateResult = await runEdgeSshCommand(config, activateCommand, {
       timeoutMs: 2 * 60 * 1000,
     });
+    await progress(`Verifying deployed Apollo map package on edge: ${remoteMapDir}`);
+    const remotePackageValidation = await validateRemoteMapPackageOnEdge(
+      config,
+      remoteMapDir,
+      coordinateValidation.localBounds,
+    );
     const nativeMapToolsResult = await runEdgeNativeMapTools(config, remoteMapDir, progress);
     const dreamviewSwitchResult = await switchEdgeDreamviewMap(config, remoteMapDir, progress);
     let postDeployResult = null;
@@ -9105,6 +9605,7 @@ async function deployReleasedMap(config, params = {}) {
         code: activateResult.code,
         stderr: activateResult.stderr,
       },
+      remotePackageValidation,
       nativeMapTools: nativeMapToolsResult
         ? {
             code: nativeMapToolsResult.code,
@@ -9153,7 +9654,10 @@ async function deployLatestReleasedMap(config, params = {}) {
   await progress('Selecting latest released map');
   const latest = await selectLatestReadyReleasedMap(config);
   await progress(`Latest complete released map selected: ${latest.mapName}`);
-  const result = await deployReleasedMap(config, { mapName: latest.mapName, progress });
+  const result = await deployReleasedMap(config, {
+    mapName: latest.mapName,
+    progress,
+  });
   return {
     mapName: latest.mapName,
     releasedMap: latest,
@@ -9170,10 +9674,12 @@ async function rollbackDeployment(config, params = {}) {
           record.type === 'deploy' &&
           record.status === 'succeeded' &&
           record.mapName === params.mapName &&
-          record.backupDir
+          record.backupDir,
       );
   if (!targetRecord) {
-    throw new Error(params.deploymentId ? `deployment not found: ${params.deploymentId}` : 'no rollbackable deployment found');
+    throw new Error(
+      params.deploymentId ? `deployment not found: ${params.deploymentId}` : 'no rollbackable deployment found',
+    );
   }
   if (!targetRecord.backupDir) {
     throw new Error(`deployment has no backup to rollback: ${targetRecord.id}`);
@@ -9195,11 +9701,13 @@ async function rollbackDeployment(config, params = {}) {
     `[ -d ${quoteShell(targetRecord.backupDir)} ]`,
     `mkdir -p ${quoteShell(path.posix.dirname(replacedDir))}`,
     `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(replacedDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
-      replacedDir
+      replacedDir,
     )} || true`,
     `mv ${quoteShell(targetRecord.backupDir)} ${quoteShell(remoteMapDir)}`,
   ].join(' && ');
-  const rollbackCommand = dockerContainer ? dockerExecCommand(dockerContainer, rollbackInnerCommand) : rollbackInnerCommand;
+  const rollbackCommand = dockerContainer
+    ? dockerExecCommand(dockerContainer, rollbackInnerCommand)
+    : rollbackInnerCommand;
   try {
     const rollbackResult = await runEdgeSshCommand(config, rollbackCommand, {
       timeoutMs: 2 * 60 * 1000,
@@ -9250,7 +9758,14 @@ async function rollbackDeployment(config, params = {}) {
           }
         : null,
     });
-    return { deployment: record, preflight, rollbackResult, nativeMapToolsResult, dreamviewSwitchResult, postDeployResult };
+    return {
+      deployment: record,
+      preflight,
+      rollbackResult,
+      nativeMapToolsResult,
+      dreamviewSwitchResult,
+      postDeployResult,
+    };
   } catch (error) {
     await appendDeploymentRecord(config, {
       id: rollbackId,

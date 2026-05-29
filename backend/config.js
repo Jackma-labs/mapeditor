@@ -42,10 +42,7 @@ const defaults = {
     autoMerge: process.env.MAP_INBOX_AUTO_MERGE !== 'false',
     mergedMapName: process.env.MAP_INBOX_AUTO_MERGED_MAP_NAME || 'capture_inbox_merged',
   },
-  converterBinary: path.join(
-    appRoot,
-    'runtime/bin/editor_map_converter'
-  ),
+  converterBinary: path.join(appRoot, 'runtime/bin/editor_map_converter'),
   skipValidation: process.env.MAP_SKIP_VALIDATION === 'true',
   frontendBuildRoot: path.join(appRoot, 'frontend/build/map_editor_frontend'),
   runtimeMode: process.env.MAP_RUNTIME_MODE || 'local',
@@ -75,7 +72,17 @@ const defaults = {
     dockerContainer: process.env.MAP_EDGE_DOCKER_CONTAINER || '',
     nativeMapTools: process.env.MAP_EDGE_NATIVE_MAP_TOOLS !== 'false',
     autoSwitchDreamview: process.env.MAP_EDGE_AUTO_SWITCH_DREAMVIEW !== 'false',
-    coordinateValidationMaxDistanceMeters: Number(process.env.MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS || 5000),
+    coordinateValidationMaxDistanceMeters: Number(process.env.MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS || 1000),
+    vehicleLaneWarningDistanceMeters: Number(process.env.MAP_EDGE_VEHICLE_LANE_WARNING_METERS || 0.5),
+    vehicleLaneErrorDistanceMeters: Number(process.env.MAP_EDGE_VEHICLE_LANE_ERROR_METERS || 1.5),
+    requireLocalizationGate: process.env.MAP_EDGE_REQUIRE_LOCALIZATION_GATE !== 'false',
+    requireRtkFix: process.env.MAP_EDGE_REQUIRE_RTK_FIX !== 'false',
+    localizationWarningDelaySeconds: Number(process.env.MAP_EDGE_LOCALIZATION_WARNING_DELAY_SECONDS || 0.5),
+    localizationErrorDelaySeconds: Number(process.env.MAP_EDGE_LOCALIZATION_ERROR_DELAY_SECONDS || 2),
+    headingWarningRadians: Number(process.env.MAP_EDGE_HEADING_WARNING_RADIANS || 0.05),
+    headingErrorRadians: Number(process.env.MAP_EDGE_HEADING_ERROR_RADIANS || 0.15),
+    mapBoundaryMarginMeters: Number(process.env.MAP_EDGE_MAP_BOUNDARY_MARGIN_METERS || 5),
+    remoteBoundsToleranceMeters: Number(process.env.MAP_EDGE_REMOTE_BOUNDS_TOLERANCE_METERS || 0.5),
   },
   apolloLite: {
     enabled: process.env.MAP_APOLLOLITE_ENABLED === 'true',
@@ -98,10 +105,7 @@ if (fs.existsSync(configPath)) {
     const raw = fs.readFileSync(configPath, 'utf8');
     userConfig = JSON.parse(raw);
   } catch (error) {
-    console.warn(
-      `[simple-map-backend] Failed to parse ${CONFIG_FILENAME}:`,
-      error
-    );
+    console.warn(`[simple-map-backend] Failed to parse ${CONFIG_FILENAME}:`, error);
   }
 }
 
@@ -272,6 +276,36 @@ if (process.env.MAP_EDGE_AUTO_SWITCH_DREAMVIEW) {
 }
 if (process.env.MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS) {
   merged.edgeDeploy.coordinateValidationMaxDistanceMeters = Number(process.env.MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS);
+}
+if (process.env.MAP_EDGE_VEHICLE_LANE_WARNING_METERS) {
+  merged.edgeDeploy.vehicleLaneWarningDistanceMeters = Number(process.env.MAP_EDGE_VEHICLE_LANE_WARNING_METERS);
+}
+if (process.env.MAP_EDGE_VEHICLE_LANE_ERROR_METERS) {
+  merged.edgeDeploy.vehicleLaneErrorDistanceMeters = Number(process.env.MAP_EDGE_VEHICLE_LANE_ERROR_METERS);
+}
+if (process.env.MAP_EDGE_REQUIRE_LOCALIZATION_GATE) {
+  merged.edgeDeploy.requireLocalizationGate = process.env.MAP_EDGE_REQUIRE_LOCALIZATION_GATE !== 'false';
+}
+if (process.env.MAP_EDGE_REQUIRE_RTK_FIX) {
+  merged.edgeDeploy.requireRtkFix = process.env.MAP_EDGE_REQUIRE_RTK_FIX !== 'false';
+}
+if (process.env.MAP_EDGE_LOCALIZATION_WARNING_DELAY_SECONDS) {
+  merged.edgeDeploy.localizationWarningDelaySeconds = Number(process.env.MAP_EDGE_LOCALIZATION_WARNING_DELAY_SECONDS);
+}
+if (process.env.MAP_EDGE_LOCALIZATION_ERROR_DELAY_SECONDS) {
+  merged.edgeDeploy.localizationErrorDelaySeconds = Number(process.env.MAP_EDGE_LOCALIZATION_ERROR_DELAY_SECONDS);
+}
+if (process.env.MAP_EDGE_HEADING_WARNING_RADIANS) {
+  merged.edgeDeploy.headingWarningRadians = Number(process.env.MAP_EDGE_HEADING_WARNING_RADIANS);
+}
+if (process.env.MAP_EDGE_HEADING_ERROR_RADIANS) {
+  merged.edgeDeploy.headingErrorRadians = Number(process.env.MAP_EDGE_HEADING_ERROR_RADIANS);
+}
+if (process.env.MAP_EDGE_MAP_BOUNDARY_MARGIN_METERS) {
+  merged.edgeDeploy.mapBoundaryMarginMeters = Number(process.env.MAP_EDGE_MAP_BOUNDARY_MARGIN_METERS);
+}
+if (process.env.MAP_EDGE_REMOTE_BOUNDS_TOLERANCE_METERS) {
+  merged.edgeDeploy.remoteBoundsToleranceMeters = Number(process.env.MAP_EDGE_REMOTE_BOUNDS_TOLERANCE_METERS);
 }
 if (process.env.MAP_APOLLOLITE_ENABLED) {
   merged.apolloLite.enabled = process.env.MAP_APOLLOLITE_ENABLED === 'true';
