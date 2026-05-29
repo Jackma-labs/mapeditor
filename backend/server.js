@@ -16,12 +16,68 @@ const runtime = require("./runtime");
 const aiAssistant = require("./aiAssistant");
 
 const app = express();
+
+function normalizeOrigin(value) {
+  return String(value || "").replace(/\/+$/u, "");
+}
+
+const configuredCorsOrigins = new Set(
+  (Array.isArray(config.security?.corsOrigins)
+    ? config.security.corsOrigins
+    : []
+  )
+    .map(normalizeOrigin)
+    .filter(Boolean),
+);
+
+function isAllowedCorsOrigin(origin) {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) {
+    return true;
+  }
+  return configuredCorsOrigins.has(normalized);
+}
+
 app.use(
   cors({
-    origin: true,
+    origin(origin, callback) {
+      callback(null, isAllowedCorsOrigin(origin));
+    },
     credentials: true,
   }),
 );
+
+function isTrustedRequestOrigin(req) {
+  const origin = normalizeOrigin(req.headers.origin);
+  if (!origin) {
+    return true;
+  }
+  const forwardedHost = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
+  const requestHost = forwardedHost || req.headers.host || "";
+  try {
+    const originUrl = new URL(origin);
+    if (requestHost && originUrl.host === requestHost) {
+      return true;
+    }
+  } catch (_error) {
+    return false;
+  }
+  return isAllowedCorsOrigin(origin);
+}
+
+function requireTrustedRequestOrigin(req, res, next) {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+    next();
+    return;
+  }
+  if (isTrustedRequestOrigin(req)) {
+    next();
+    return;
+  }
+  sendError(res, 403, 403, "Untrusted request origin");
+}
+
+app.use(requireTrustedRequestOrigin);
 app.use(bodyParser.json({ limit: "25mb" }));
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -102,6 +158,35 @@ function sendError(res, status, code, message, data) {
     payload.data = data;
   }
   res.status(status).json(payload);
+}
+
+function redactSecret(value) {
+  return value ? "***" : "";
+}
+
+function buildPublicConfigPayload() {
+  return {
+    port: config.port,
+    baseMapRoot: config.baseMapRoot,
+    editorMapRoot: config.editorMapRoot,
+    releaseRoot: config.releaseRoot,
+    converterBinary: config.converterBinary,
+    converterAvailable: fs.existsSync(config.converterBinary),
+    frontendBuildRoot: config.frontendBuildRoot,
+    frontendAvailable: fs.existsSync(config.frontendBuildRoot),
+    runtimeMode: config.runtimeMode,
+    runtimeDockerContainer: config.runtimeDockerContainer,
+    edgeDeploy: {
+      ...runtime.getDeployConfig(config),
+      password: redactSecret(config.edgeDeploy?.password),
+    },
+    apolloLite: {
+      ...config.apolloLite,
+    },
+    security: {
+      corsOrigins: Array.from(configuredCorsOrigins),
+    },
+  };
 }
 
 function summarizePreflightErrors(preflight) {
@@ -1796,26 +1881,13 @@ app.post("/runtime/auth/logout", (req, res) => {
   });
 });
 
-app.get("/config", (_req, res) => {
-  res.json({
-    port: config.port,
-    baseMapRoot: config.baseMapRoot,
-    editorMapRoot: config.editorMapRoot,
-    releaseRoot: config.releaseRoot,
-    converterBinary: config.converterBinary,
-    converterAvailable: fs.existsSync(config.converterBinary),
-    frontendBuildRoot: config.frontendBuildRoot,
-    frontendAvailable: fs.existsSync(config.frontendBuildRoot),
-    runtimeMode: config.runtimeMode,
-    runtimeDockerContainer: config.runtimeDockerContainer,
-    edgeDeploy: config.edgeDeploy,
-    apolloLite: config.apolloLite,
-  });
-});
-
 app.use(requireAuth);
 
-app.get("/runtime/status", async (_req, res) => {
+app.get("/config", (_req, res) => {
+  res.json(buildPublicConfigPayload());
+});
+
+app.get("/runtime/status", requirePermission("canView"), async (_req, res) => {
   try {
     sendSuccess(res, await runtime.getStatus(config));
   } catch (error) {
@@ -1823,7 +1895,7 @@ app.get("/runtime/status", async (_req, res) => {
   }
 });
 
-app.get("/runtime/doctor", async (_req, res) => {
+app.get("/runtime/doctor", requirePermission("canView"), async (_req, res) => {
   try {
     sendSuccess(res, await runtime.getRuntimeDoctor(config));
   } catch (error) {
@@ -1831,7 +1903,7 @@ app.get("/runtime/doctor", async (_req, res) => {
   }
 });
 
-app.get("/runtime/released-maps", async (_req, res) => {
+app.get("/runtime/released-maps", requirePermission("canView"), async (_req, res) => {
   try {
     sendSuccess(res, {
       maps: await runtime.listReleasedMaps(config),
@@ -1841,7 +1913,7 @@ app.get("/runtime/released-maps", async (_req, res) => {
   }
 });
 
-app.get("/runtime/ai-assistant/status", (_req, res) => {
+app.get("/runtime/ai-assistant/status", requirePermission("canView"), (_req, res) => {
   sendSuccess(res, {
     provider: process.env.OPENAI_API_KEY ? "openai" : "local",
     model: process.env.MAP_AI_MODEL || process.env.OPENAI_MODEL || "gpt-5-mini",
@@ -1849,7 +1921,7 @@ app.get("/runtime/ai-assistant/status", (_req, res) => {
   });
 });
 
-app.post("/runtime/ai-assistant", async (req, res) => {
+app.post("/runtime/ai-assistant", requirePermission("canEdit"), async (req, res) => {
   const question = aiAssistant.clipText(req.body?.question, 2000).trim();
   const context = aiAssistant.normalizeAssistantContext(req.body?.context || {});
   if (!question) {
@@ -1962,6 +2034,7 @@ app.post("/runtime/ai-assistant", async (req, res) => {
 
 app.post(
   "/runtime/import-base-map",
+  requirePermission("canEdit"),
   upload.single("file"),
   async (req, res) => {
     try {
@@ -1995,6 +2068,7 @@ app.post(
 
 app.post(
   "/runtime/import-point-cloud-base-map",
+  requirePermission("canEdit"),
   upload.any(),
   async (req, res) => {
     try {
@@ -2041,7 +2115,7 @@ app.post(
   },
 );
 
-app.post("/runtime/analyze-data-package", upload.any(), async (req, res) => {
+app.post("/runtime/analyze-data-package", requirePermission("canEdit"), upload.any(), async (req, res) => {
   try {
     const uploadedFiles = Array.isArray(req.files) ? req.files : [];
     if (uploadedFiles.length === 0) {
@@ -2078,6 +2152,7 @@ app.post("/runtime/analyze-data-package", upload.any(), async (req, res) => {
 
 app.post(
   "/runtime/analyze-data-package-job",
+  requirePermission("canEdit"),
   upload.any(),
   async (req, res) => {
     let staged = null;
@@ -2133,7 +2208,7 @@ app.post(
   },
 );
 
-app.get("/runtime/data-packages", async (req, res) => {
+app.get("/runtime/data-packages", requirePermission("canView"), async (req, res) => {
   try {
     const detail = String(req.query.detail || "").toLowerCase();
     res.json({
@@ -2154,7 +2229,7 @@ app.get("/runtime/data-packages", async (req, res) => {
   }
 });
 
-app.get("/runtime/capture-source-packages", async (_req, res) => {
+app.get("/runtime/capture-source-packages", requirePermission("canView"), async (_req, res) => {
   try {
     res.json({
       code: 0,
@@ -2169,7 +2244,7 @@ app.get("/runtime/capture-source-packages", async (_req, res) => {
   }
 });
 
-app.post("/runtime/sync-capture-source-package-job", async (req, res) => {
+app.post("/runtime/sync-capture-source-package-job", requirePermission("canEdit"), async (req, res) => {
   try {
     const body = req.body || {};
     const activeJob = findActiveHeavyRuntimeJob();
@@ -2195,7 +2270,7 @@ app.post("/runtime/sync-capture-source-package-job", async (req, res) => {
   }
 });
 
-app.post("/runtime/sync-capture-source-packages-job", async (req, res) => {
+app.post("/runtime/sync-capture-source-packages-job", requirePermission("canEdit"), async (req, res) => {
   try {
     const body = req.body || {};
     const activeJob = findActiveHeavyRuntimeJob();
@@ -2222,7 +2297,7 @@ app.post("/runtime/sync-capture-source-packages-job", async (req, res) => {
   }
 });
 
-app.post("/runtime/prebuild-data-package-base-maps-job", async (req, res) => {
+app.post("/runtime/prebuild-data-package-base-maps-job", requirePermission("canEdit"), async (req, res) => {
   try {
     const activeJob = findActiveHeavyRuntimeJob();
     if (activeJob) {
@@ -2250,7 +2325,7 @@ app.post("/runtime/prebuild-data-package-base-maps-job", async (req, res) => {
   }
 });
 
-app.patch("/runtime/data-packages/:packageId", async (req, res) => {
+app.patch("/runtime/data-packages/:packageId", requirePermission("canEdit"), async (req, res) => {
   try {
     const result = await runtime.updateDataPackage(config, {
       ...(req.body || {}),
@@ -2270,7 +2345,7 @@ app.patch("/runtime/data-packages/:packageId", async (req, res) => {
   }
 });
 
-app.delete("/runtime/data-packages/:packageId", async (req, res) => {
+app.delete("/runtime/data-packages/:packageId", requirePermission("canEdit"), async (req, res) => {
   try {
     const result = await runtime.deleteDataPackage(config, {
       packageId: req.params.packageId,
@@ -2289,7 +2364,7 @@ app.delete("/runtime/data-packages/:packageId", async (req, res) => {
   }
 });
 
-app.post("/runtime/refresh-data-package-analysis-job", async (req, res) => {
+app.post("/runtime/refresh-data-package-analysis-job", requirePermission("canEdit"), async (req, res) => {
   try {
     const body = req.body || {};
     const job = startRuntimeJob(
@@ -2306,7 +2381,7 @@ app.post("/runtime/refresh-data-package-analysis-job", async (req, res) => {
   }
 });
 
-app.post("/runtime/refresh-all-data-package-analysis-job", async (req, res) => {
+app.post("/runtime/refresh-all-data-package-analysis-job", requirePermission("canEdit"), async (req, res) => {
   try {
     const body = req.body || {};
     const onlyMissing = body.onlyMissing !== false;
@@ -2354,7 +2429,7 @@ app.post("/runtime/refresh-all-data-package-analysis-job", async (req, res) => {
   }
 });
 
-app.post("/runtime/data-package-stitch-plan", async (req, res) => {
+app.post("/runtime/data-package-stitch-plan", requirePermission("canView"), async (req, res) => {
   try {
     const body = req.body || {};
     const packageIds = Array.isArray(body.packageIds) ? body.packageIds : [];
@@ -2375,7 +2450,7 @@ app.post("/runtime/data-package-stitch-plan", async (req, res) => {
   }
 });
 
-app.post("/runtime/import-data-package-base-map", async (req, res) => {
+app.post("/runtime/import-data-package-base-map", requirePermission("canEdit"), async (req, res) => {
   try {
     const result = await runtime.importDataPackageBaseMap(
       config,
@@ -2395,7 +2470,7 @@ app.post("/runtime/import-data-package-base-map", async (req, res) => {
   }
 });
 
-app.post("/runtime/import-data-package-base-map-job", async (req, res) => {
+app.post("/runtime/import-data-package-base-map-job", requirePermission("canEdit"), async (req, res) => {
   try {
     const body = req.body || {};
     const activeJob = findActiveHeavyRuntimeJob();
@@ -2425,6 +2500,7 @@ app.post("/runtime/import-data-package-base-map-job", async (req, res) => {
 
 app.post(
   "/runtime/import-data-packages-merged-base-map-job",
+  requirePermission("canEdit"),
   async (req, res) => {
     try {
       const body = req.body || {};
@@ -2456,7 +2532,7 @@ app.post(
   },
 );
 
-app.get("/runtime/assist-drawing-candidates/:mapName", async (req, res) => {
+app.get("/runtime/assist-drawing-candidates/:mapName", requirePermission("canView"), async (req, res) => {
   try {
     const result = await runtime.generateAssistDrawingCandidates(config, {
       mapName: req.params.mapName,
@@ -2482,14 +2558,14 @@ app.get("/runtime/assist-drawing-candidates/:mapName", async (req, res) => {
   }
 });
 
-app.get("/runtime/jobs", (req, res) => {
+app.get("/runtime/jobs", requirePermission("canView"), (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
   sendSuccess(res, {
     jobs: listRuntimeJobs().slice(0, limit),
   });
 });
 
-app.get("/runtime/jobs/:jobId", (req, res) => {
+app.get("/runtime/jobs/:jobId", requirePermission("canView"), (req, res) => {
   const job = runtimeJobs.get(req.params.jobId);
   if (!job) {
     sendRuntimeJobNotFound(res, req.params.jobId);
@@ -2503,7 +2579,7 @@ app.get("/runtime/jobs/:jobId", (req, res) => {
   });
 });
 
-app.get("/runtime/jobs/:jobId/logs", (req, res) => {
+app.get("/runtime/jobs/:jobId/logs", requirePermission("canView"), (req, res) => {
   if (!runtimeJobs.has(req.params.jobId)) {
     sendRuntimeJobNotFound(res, req.params.jobId);
     return;
@@ -2543,6 +2619,7 @@ app.get(
 
 app.post(
   "/runtime/import-map-package",
+  requirePermission("canDeploy"),
   upload.single("file"),
   async (req, res) => {
     try {
@@ -2574,7 +2651,7 @@ app.post(
   },
 );
 
-app.get("/runtime/deploy-config", (_req, res) => {
+app.get("/runtime/deploy-config", requirePermission("canDeploy"), (_req, res) => {
   res.json({
     code: 0,
     message: "Success",
@@ -2629,7 +2706,7 @@ app.post(
   },
 );
 
-app.get("/runtime/deployments", async (_req, res) => {
+app.get("/runtime/deployments", requirePermission("canDeploy"), async (_req, res) => {
   try {
     res.json({
       code: 0,
@@ -2646,7 +2723,7 @@ app.get("/runtime/deployments", async (_req, res) => {
   }
 });
 
-app.get("/runtime/apollolite/status", async (_req, res) => {
+app.get("/runtime/apollolite/status", requirePermission("canView"), async (_req, res) => {
   try {
     res.json({
       code: 0,
@@ -2661,7 +2738,7 @@ app.get("/runtime/apollolite/status", async (_req, res) => {
   }
 });
 
-app.get("/runtime/apollolite/diagnose", async (_req, res) => {
+app.get("/runtime/apollolite/diagnose", requirePermission("canView"), async (_req, res) => {
   try {
     const result = await runtime.diagnoseApolloLiteRuntime(config);
     res.status(result.ready ? 200 : 500).json({
@@ -2674,7 +2751,7 @@ app.get("/runtime/apollolite/diagnose", async (_req, res) => {
   }
 });
 
-app.get("/runtime/apollolite/workflow", async (_req, res) => {
+app.get("/runtime/apollolite/workflow", requirePermission("canView"), async (_req, res) => {
   try {
     const result = await runtime.getApolloLiteWorkflow(config);
     res.status(result.ready ? 200 : 500).json({
@@ -2732,7 +2809,7 @@ app.post(
   },
 );
 
-app.get("/runtime/apollolite/traffic-light-sim", async (_req, res) => {
+app.get("/runtime/apollolite/traffic-light-sim", requirePermission("canView"), async (_req, res) => {
   try {
     const result =
       await runtime.getApolloLiteTrafficLightSimulationStatus(config);
@@ -2896,7 +2973,7 @@ app.post(
   },
 );
 
-app.post("/runtime/create-base-map", async (req, res) => {
+app.post("/runtime/create-base-map", requirePermission("canEdit"), async (req, res) => {
   try {
     const result = await runtime.createBaseMap(config, req.body || {});
     res.json({

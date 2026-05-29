@@ -2431,9 +2431,8 @@ function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateM
   const captureDistance = coordinateMetadata.captureTrajectoryCenter?.distanceToMapCenterMeters;
   if (Number.isFinite(captureDistance)) {
     const captureCenterCheck = coordinateMetadata.captureTrajectoryCenter;
-    const strictCaptureCenter = captureCenterCheck?.enforce === true;
     const captureDistanceStatus =
-      captureDistance <= 100 ? 'ok' : captureDistance <= 5000 ? 'warning' : strictCaptureCenter ? 'error' : 'warning';
+      captureDistance <= 100 ? 'ok' : captureDistance <= 5000 ? 'warning' : 'error';
     addCheck(
       'capture-center-distance',
       captureDistanceStatus,

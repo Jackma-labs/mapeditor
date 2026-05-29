@@ -34,6 +34,12 @@ const defaults = {
     role: process.env.MAP_AUTH_ROLE || 'admin',
     sessionTtlHours: Number(process.env.MAP_AUTH_SESSION_TTL_HOURS || 12),
   },
+  security: {
+    corsOrigins: (process.env.MAP_CORS_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean),
+  },
   inboxAutoPrebuild: {
     enabled: process.env.MAP_INBOX_AUTO_PREBUILD === 'true',
     intervalMinutes: Number(process.env.MAP_INBOX_AUTO_PREBUILD_INTERVAL_MINUTES || 10),
@@ -73,6 +79,7 @@ const defaults = {
     nativeMapTools: process.env.MAP_EDGE_NATIVE_MAP_TOOLS !== 'false',
     autoSwitchDreamview: process.env.MAP_EDGE_AUTO_SWITCH_DREAMVIEW !== 'false',
     coordinateValidationMaxDistanceMeters: Number(process.env.MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS || 1000),
+    captureCenterMaxDistanceMeters: Number(process.env.MAP_EDGE_CAPTURE_CENTER_MAX_DISTANCE_METERS || 5000),
     vehicleLaneWarningDistanceMeters: Number(process.env.MAP_EDGE_VEHICLE_LANE_WARNING_METERS || 0.5),
     vehicleLaneErrorDistanceMeters: Number(process.env.MAP_EDGE_VEHICLE_LANE_ERROR_METERS || 1.5),
     requireLocalizationGate: process.env.MAP_EDGE_REQUIRE_LOCALIZATION_GATE !== 'false',
@@ -117,6 +124,10 @@ merged.edgeDeploy = {
 merged.apolloLite = {
   ...defaults.apolloLite,
   ...(userConfig.apolloLite || {}),
+};
+merged.security = {
+  ...defaults.security,
+  ...(userConfig.security || {}),
 };
 
 if (process.env.MAP_BACKEND_PORT || process.env.PORT) {
@@ -186,6 +197,11 @@ if (process.env.MAP_AUTH_ROLE) {
 }
 if (process.env.MAP_AUTH_SESSION_TTL_HOURS) {
   merged.auth.sessionTtlHours = Number(process.env.MAP_AUTH_SESSION_TTL_HOURS);
+}
+if (process.env.MAP_CORS_ORIGINS) {
+  merged.security.corsOrigins = process.env.MAP_CORS_ORIGINS.split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 if (process.env.MAP_INBOX_AUTO_PREBUILD) {
   merged.inboxAutoPrebuild.enabled = process.env.MAP_INBOX_AUTO_PREBUILD === 'true';
@@ -276,6 +292,9 @@ if (process.env.MAP_EDGE_AUTO_SWITCH_DREAMVIEW) {
 }
 if (process.env.MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS) {
   merged.edgeDeploy.coordinateValidationMaxDistanceMeters = Number(process.env.MAP_EDGE_COORDINATE_MAX_DISTANCE_METERS);
+}
+if (process.env.MAP_EDGE_CAPTURE_CENTER_MAX_DISTANCE_METERS) {
+  merged.edgeDeploy.captureCenterMaxDistanceMeters = Number(process.env.MAP_EDGE_CAPTURE_CENTER_MAX_DISTANCE_METERS);
 }
 if (process.env.MAP_EDGE_VEHICLE_LANE_WARNING_METERS) {
   merged.edgeDeploy.vehicleLaneWarningDistanceMeters = Number(process.env.MAP_EDGE_VEHICLE_LANE_WARNING_METERS);

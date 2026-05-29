@@ -749,7 +749,7 @@ async function readJsonFileIfExists(filePath) {
   return JSON.parse((await fsp.readFile(filePath, 'utf8')).replace(/^\uFEFF/, ''));
 }
 
-async function validateReleasedMapApolloMetadata(sourceDir, localBounds) {
+async function validateReleasedMapApolloMetadata(config, sourceDir, localBounds) {
   const errors = [];
   const warnings = [];
   const checks = [];
@@ -819,6 +819,31 @@ async function validateReleasedMapApolloMetadata(sourceDir, localBounds) {
         : 'coordinate transform source is not recorded; traceability is limited',
       { sourceCrs: coordinateMetadata.sourceCrs, transform },
     );
+    const captureDistance = Number(coordinateMetadata.captureTrajectoryCenter?.distanceToMapCenterMeters);
+    if (Number.isFinite(captureDistance)) {
+      const warningDistanceMeters = 100;
+      const maxDistanceMeters = Number(config.edgeDeploy.captureCenterMaxDistanceMeters || 5000);
+      addCheck(
+        'capture-center-distance',
+        captureDistance <= warningDistanceMeters ? 'ok' : captureDistance <= maxDistanceMeters ? 'warning' : 'error',
+        captureDistance <= warningDistanceMeters
+          ? `capture trajectory center matches map center within ${captureDistance.toFixed(2)}m`
+          : captureDistance <= maxDistanceMeters
+            ? `capture trajectory center is ${captureDistance.toFixed(2)}m from map center; verify map origin before deployment`
+            : `capture trajectory center is ${captureDistance.toFixed(2)}m from map center, exceeding ${maxDistanceMeters}m`,
+        {
+          warningDistanceMeters,
+          maxDistanceMeters,
+          captureTrajectoryCenter: coordinateMetadata.captureTrajectoryCenter,
+        },
+      );
+    } else {
+      addCheck(
+        'capture-center-distance',
+        'warning',
+        'capture trajectory center distance is missing; deployment will rely on reference-map coordinate checks',
+      );
+    }
   }
 
   const qualityGate = await readJsonFileIfExists(path.join(sourceDir, 'quality_gate.json'));
@@ -1234,7 +1259,7 @@ async function validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir,
       )}); configure apolloOrigin/utmOrigin before edge deployment`,
     );
   }
-  const apolloMetadataValidation = await validateReleasedMapApolloMetadata(sourceDir, localBounds);
+  const apolloMetadataValidation = await validateReleasedMapApolloMetadata(config, sourceDir, localBounds);
   if (!apolloMetadataValidation.ready) {
     throw new Error(
       `released map Apollo metadata validation failed: ${apolloMetadataValidation.errors.slice(0, 4).join('; ')}`,
@@ -8999,6 +9024,7 @@ function getDeployConfig(config) {
     nativeMapTools: edge.nativeMapTools !== false,
     autoSwitchDreamview: edge.autoSwitchDreamview !== false,
     coordinateValidationMaxDistanceMeters: edge.coordinateValidationMaxDistanceMeters || 1000,
+    captureCenterMaxDistanceMeters: edge.captureCenterMaxDistanceMeters || 5000,
     vehicleLaneWarningDistanceMeters: edge.vehicleLaneWarningDistanceMeters || 0.5,
     vehicleLaneErrorDistanceMeters: edge.vehicleLaneErrorDistanceMeters || 1.5,
     requireLocalizationGate: edge.requireLocalizationGate !== false,
@@ -9302,6 +9328,38 @@ async function preflightEdgeDeploy(config, params = {}) {
 
 function dockerExecCommand(container, command) {
   return `docker exec ${quoteShell(container)} bash -lc ${quoteShell(command)}`;
+}
+
+function buildAtomicMapActivationCommand({ remoteMapDir, remoteStagingMapDir, backupRoot, backupDir, rollbackRoot, cleanupDir }) {
+  const lines = [
+    'set -e',
+    `REMOTE_MAP=${quoteShell(remoteMapDir)}`,
+    `STAGING_MAP=${quoteShell(remoteStagingMapDir)}`,
+    `BACKUP_ROOT=${quoteShell(backupRoot)}`,
+    `BACKUP_DIR=${quoteShell(backupDir)}`,
+    `ROLLBACK_ROOT=${quoteShell(rollbackRoot)}`,
+    `MAP_PARENT=${quoteShell(path.posix.dirname(remoteMapDir))}`,
+    'if [ ! -d "$STAGING_MAP" ]; then',
+    '  echo "staged map directory does not exist: $STAGING_MAP" >&2',
+    '  exit 1',
+    'fi',
+    'mkdir -p "$MAP_PARENT" "$BACKUP_ROOT" "$ROLLBACK_ROOT"',
+    'rm -rf "$BACKUP_DIR"',
+    'if [ -d "$REMOTE_MAP" ]; then',
+    '  mv "$REMOTE_MAP" "$BACKUP_DIR"',
+    'fi',
+    'if ! mv "$STAGING_MAP" "$REMOTE_MAP"; then',
+    '  rm -rf "$REMOTE_MAP"',
+    '  if [ -d "$BACKUP_DIR" ]; then',
+    '    mv "$BACKUP_DIR" "$REMOTE_MAP"',
+    '  fi',
+    '  exit 1',
+    'fi',
+  ];
+  if (cleanupDir) {
+    lines.push(`rm -rf ${quoteShell(cleanupDir)}`);
+  }
+  return lines.join('\n');
 }
 
 function buildEdgeDreamviewPreflightCommand() {
@@ -9659,11 +9717,13 @@ async function deployReleasedMap(config, params = {}) {
     const remoteMapDir = `${remoteRoot}/${mapName}`;
     const backupRoot = `${remoteRoot}/.mapeditor_backups`;
     const rollbackRoot = `${remoteRoot}/.mapeditor_replaced`;
+    const stagingRoot = `${remoteRoot}/.mapeditor_staging`;
     const uploadParent = dockerContainer
       ? `/tmp/mapeditor_uploads/${deploymentId}`
       : `${remoteRoot}/.mapeditor_uploads/${deploymentId}`;
     const backupDir = `${backupRoot}/${mapName}-${deploymentId}`;
     const remoteUploadedDir = `${uploadParent}/${path.basename(sourceDir)}`;
+    const remoteStagingMapDir = dockerContainer ? `${stagingRoot}/${mapName}-${deploymentId}` : remoteUploadedDir;
     await progress(`Validating map coordinates against edge references: ${mapName}`);
     const coordinateValidation = await validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir, remoteRoot);
     await progress(`Checking existing map on edge: ${remoteMapDir}`);
@@ -9687,39 +9747,70 @@ async function deployReleasedMap(config, params = {}) {
             `mkdir -p ${quoteShell(uploadParent)}`,
             dockerExecCommand(
               dockerContainer,
-              `mkdir -p ${quoteShell(remoteRoot)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`,
+              [
+                `rm -rf ${quoteShell(remoteStagingMapDir)}`,
+                `mkdir -p ${quoteShell(remoteRoot)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)} ${quoteShell(
+                  stagingRoot,
+                )}`,
+              ].join(' && '),
             ),
           ].join(' && ')
-        : `mkdir -p ${quoteShell(uploadParent)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)}`,
+        : [
+            `rm -rf ${quoteShell(uploadParent)}`,
+            `mkdir -p ${quoteShell(uploadParent)} ${quoteShell(backupRoot)} ${quoteShell(rollbackRoot)} ${quoteShell(
+              stagingRoot,
+            )}`,
+          ].join(' && '),
     );
     await progress(`Copying released map to edge: ${mapName}`);
     const copyResult = await uploadDirectoryWithSftp(config, sourceDir, uploadParent);
+    let stageResult = null;
+    if (dockerContainer) {
+      await progress(`Staging map in edge container: ${remoteStagingMapDir}`);
+      stageResult = await runEdgeSshCommand(
+        config,
+        [
+          dockerExecCommand(
+            dockerContainer,
+            `rm -rf ${quoteShell(remoteStagingMapDir)} && mkdir -p ${quoteShell(stagingRoot)}`,
+          ),
+          `docker cp ${quoteShell(remoteUploadedDir)} ${quoteShell(`${dockerContainer}:${remoteStagingMapDir}`)}`,
+          `rm -rf ${quoteShell(uploadParent)}`,
+        ].join(' && '),
+        {
+          timeoutMs: 2 * 60 * 1000,
+        },
+      );
+    }
+    await progress(`Validating staged Apollo map package on edge: ${remoteStagingMapDir}`);
+    const stagedPackageValidation = await validateRemoteMapPackageOnEdge(
+      config,
+      remoteStagingMapDir,
+      coordinateValidation.localBounds,
+    );
     await progress(
       dockerContainer ? `Activating map in edge container: ${remoteMapDir}` : `Activating map on edge: ${remoteMapDir}`,
     );
     const activateCommand = dockerContainer
-      ? [
-          dockerExecCommand(
-            dockerContainer,
-            [
-              `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(backupDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
-                backupDir,
-              )} || true`,
-              `rm -rf ${quoteShell(remoteMapDir)}`,
-              `mkdir -p ${quoteShell(path.posix.dirname(remoteMapDir))}`,
-            ].join(' && '),
-          ),
-          `docker cp ${quoteShell(remoteUploadedDir)} ${quoteShell(`${dockerContainer}:${remoteMapDir}`)}`,
-          `rm -rf ${quoteShell(uploadParent)}`,
-        ].join(' && ')
-      : [
-          `[ -d ${quoteShell(remoteMapDir)} ] && rm -rf ${quoteShell(backupDir)} && mv ${quoteShell(remoteMapDir)} ${quoteShell(
+      ? dockerExecCommand(
+          dockerContainer,
+          buildAtomicMapActivationCommand({
+            remoteMapDir,
+            remoteStagingMapDir,
+            backupRoot,
             backupDir,
-          )} || true`,
-          `rm -rf ${quoteShell(remoteMapDir)}`,
-          `mv ${quoteShell(remoteUploadedDir)} ${quoteShell(remoteMapDir)}`,
-          `rm -rf ${quoteShell(uploadParent)}`,
-        ].join(' && ');
+            rollbackRoot,
+            cleanupDir: null,
+          }),
+        )
+      : buildAtomicMapActivationCommand({
+          remoteMapDir,
+          remoteStagingMapDir,
+          backupRoot,
+          backupDir,
+          rollbackRoot,
+          cleanupDir: uploadParent,
+        });
     const activateResult = await runEdgeSshCommand(config, activateCommand, {
       timeoutMs: 2 * 60 * 1000,
     });
@@ -9750,6 +9841,13 @@ async function deployReleasedMap(config, params = {}) {
         code: copyResult.code,
         stderr: copyResult.stderr,
       },
+      stage: stageResult
+        ? {
+            code: stageResult.code,
+            stderr: stageResult.stderr,
+          }
+        : null,
+      stagedPackageValidation,
       activate: {
         code: activateResult.code,
         stderr: activateResult.stderr,
@@ -9783,6 +9881,8 @@ async function deployReleasedMap(config, params = {}) {
       deployment: record,
       preflight,
       copyResult,
+      stageResult,
+      stagedPackageValidation,
       activateResult,
       nativeMapToolsResult,
       dreamviewSwitchResult,
