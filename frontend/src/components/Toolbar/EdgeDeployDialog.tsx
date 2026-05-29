@@ -453,7 +453,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             title="边缘设备部署"
             open={open}
             onCancel={onCancel}
-            width={1080}
+            width={960}
             footer={footer}
             centered
             className="edge-deploy-dialog"
