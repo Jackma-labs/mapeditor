@@ -22,6 +22,30 @@ import * as THREE from 'three';
 
 const DEFAULT_IMPORTED_LANE_WIDTH = 4;
 
+function finiteNumber(value: unknown) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getLaneSpeedKph(item: any) {
+    const explicitKph = finiteNumber(item.attr?.speedKph ?? item.speedKph ?? item.speed_kph ?? item.speed_limit_kph);
+    if (explicitKph !== null) {
+        return explicitKph;
+    }
+
+    const editorSpeedKph = finiteNumber(item.attr?.speed);
+    if (editorSpeedKph !== null) {
+        return editorSpeedKph;
+    }
+
+    const apolloSpeedMps = finiteNumber(item.speed_limit ?? item.speedLimit ?? item.speed);
+    if (apolloSpeedMps !== null) {
+        return Number((apolloSpeedMps * 3.6).toFixed(2));
+    }
+
+    return 40;
+}
+
 function getStringId(value: any) {
     if (value === undefined || value === null || value === '') {
         return '';
@@ -302,10 +326,12 @@ function loadCenterlineLaneMap(data: any) {
             relativeLaneBoundaryIds: [],
         };
 
+        const speedKph = getLaneSpeedKph(item);
         lanes[item.id] = {
             id: item.id,
             attr: {
-                speed: Number(item.speed_limit || item.speed || 40),
+                speed: speedKph,
+                speedKph,
                 direction: LaneDireaciotn.STRAIGHT,
                 prossibleDrivingDirection: ProssibleDrivingDirection.FORWARD,
                 laneType: LaneType.CityDriving,
@@ -425,8 +451,16 @@ export function loadHdmp(data: any): any {
     });
 
     lane?.forEach((item: Lane) => {
+        const speedKph = getLaneSpeedKph(item);
         lanes[item.id] = {
             ...item,
+            attr: {
+                speed: speedKph,
+                speedKph,
+                direction: item.attr?.direction ?? LaneDireaciotn.STRAIGHT,
+                prossibleDrivingDirection: item.attr?.prossibleDrivingDirection ?? ProssibleDrivingDirection.FORWARD,
+                laneType: item.attr?.laneType ?? LaneType.CityDriving,
+            },
             leftBoundaryId: (item as any).leftBoundaryId || (item as any).left_boundary_id,
             rightBoundaryId: (item as any).rightBoundaryId || (item as any).right_boundary_id,
             leftBoundaryReverse: (item as any).leftBoundaryReverse ?? (item as any).left_boundary_reverse ?? false,

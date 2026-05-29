@@ -325,6 +325,55 @@ export class ChangeLaneBoundary {
     }
 }
 
+export class UpdateLaneAttrCommand {
+    private laneId: string;
+
+    private patch: Partial<LaneAttr>;
+
+    private originAttr: LaneAttr;
+
+    constructor(laneId: string, patch: Partial<LaneAttr>) {
+        this.laneId = laneId;
+        this.patch = { ...patch };
+    }
+
+    execute() {
+        const state = useManagerStore.getState().mapState;
+        const lane = state.lanes[this.laneId];
+        if (!lane) {
+            console.warn(`UpdateLaneAttrCommand execute时没有找到id为${this.laneId}的lane`);
+            return;
+        }
+        this.originAttr = { ...lane.attr };
+        const nextAttr = {
+            ...lane.attr,
+            ...this.patch,
+        };
+        if (this.patch.speed !== undefined && this.patch.speedKph === undefined) {
+            nextAttr.speedKph = this.patch.speed;
+        }
+        state.lanes[this.laneId].attr = nextAttr;
+        state.currentDrawData = { ...state.currentDrawData };
+        state.currentPickElement = [...state.currentPickElement];
+        state.onsave = true;
+        useManagerStore.getState().setMapState(state);
+    }
+
+    undo() {
+        const state = useManagerStore.getState().mapState;
+        const lane = state.lanes[this.laneId];
+        if (!lane) {
+            console.warn(`UpdateLaneAttrCommand undo时没有找到id为${this.laneId}的lane`);
+            return;
+        }
+        state.lanes[this.laneId].attr = { ...this.originAttr };
+        state.currentDrawData = { ...state.currentDrawData };
+        state.currentPickElement = [...state.currentPickElement];
+        state.onsave = true;
+        useManagerStore.getState().setMapState(state);
+    }
+}
+
 function reverseBoundary(laneId: string) {
     const { mapState } = useManagerStore.getState();
     const lane = mapState.lanes[laneId];
@@ -374,6 +423,7 @@ export class ChangeLaneProssibleDrivingDirectionCommand {
         mapState.lanes[this.laneId].attr.prossibleDrivingDirection = this.prossibleDrivingDirection;
         mapState.currentDrawData = { ...mapState.currentDrawData };
         mapState.currentPickElement = [...mapState.currentPickElement];
+        mapState.onsave = true;
         useManagerStore.getState().setMapState(mapState);
     }
 
@@ -394,6 +444,7 @@ export class ChangeLaneProssibleDrivingDirectionCommand {
         mapState.lanes[this.laneId].attr.prossibleDrivingDirection = this.originProssibleDrivingDirection;
         mapState.currentDrawData = { ...mapState.currentDrawData };
         mapState.currentPickElement = [...mapState.currentPickElement];
+        mapState.onsave = true;
         useManagerStore.getState().setMapState(mapState);
     }
 }

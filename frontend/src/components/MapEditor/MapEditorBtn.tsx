@@ -34,6 +34,59 @@ const isJunctionLaneSelection = (items: PickElementInfo[] = []) =>
     items.filter((item) => item.type === ThreeElementType.JunctionGroud).length === 1 &&
     items.some((item) => isLaneGroudType(item.type));
 
+const pickTypeLabels: Partial<Record<ThreeElementType, string>> = {
+    [ThreeElementType.LaneGroud]: '车道',
+    [ThreeElementType.LaneCurveGroud]: '弯道',
+    [ThreeElementType.LaneBoundary]: '车道线',
+    [ThreeElementType.LaneCurveBoundary]: '弯道线',
+    [ThreeElementType.JunctionGroud]: '路口',
+    [ThreeElementType.ParkingSpaceGroud]: '停车位',
+    [ThreeElementType.RoadBoundary]: '路沿',
+};
+
+function formatPickElement(item: PickElementInfo) {
+    return `${pickTypeLabels[item.type] || '对象'} ${item.id}`;
+}
+
+function getSelectionGuide(
+    currentPickElement: PickElementInfo[],
+    actionNames: string[],
+    splitLaneInVerticalDisable: boolean,
+) {
+    if (currentPickElement.length === 0) {
+        return null;
+    }
+    const selectedText = currentPickElement.map(formatPickElement).join('、');
+    if (actionNames.length > 0) {
+        return {
+            title: `已选中 ${selectedText}`,
+            detail: `可执行：${actionNames.join('、')}。`,
+        };
+    }
+    if (splitLaneInVerticalDisable) {
+        return {
+            title: `已选中 ${selectedText}`,
+            detail: '垂直拆分需要同时选中本车道和所有相邻车道。',
+        };
+    }
+    if (currentPickElement.length === 1) {
+        return {
+            title: `已选中 ${selectedText}`,
+            detail: '继续选中相邻车道、边界或路口后，会出现连接、合并、关联等可用操作。',
+        };
+    }
+    if (currentPickElement.length === 2 && currentPickElement.every((item) => isLaneGroudType(item.type))) {
+        return {
+            title: `已选中 ${selectedText}`,
+            detail: '当前两条车道可能已连接、端点重合或方向不满足连接条件；可先查看右侧拓扑关系或运行质检。',
+        };
+    }
+    return {
+        title: `已选中 ${selectedText}`,
+        detail: '当前组合没有可直接执行的快捷操作，请调整选择对象或切换左侧标注工具。',
+    };
+}
+
 export default function Index() {
     const [canInsertPointToBoundary, setCanInsertPointToBoundary] = useState(false);
     const [canStragihtConnect, setCanStragihtConnect] = useState(false);
@@ -425,8 +478,35 @@ export default function Index() {
         }
         PubSub.publish('render');
     }, [mapState.currentPickElement, mapState.currentPickElement.length]);
+    const actionNames = [
+        canStragihtConnect && '直道连接',
+        canCurveConnect && '弯道连接',
+        canMerge && '合并车道',
+        canMergeJunctionLane && '路口吸附车道',
+        canModifyLane && '增加车道',
+        canModifyLane && '沿车道方向拆分',
+        canSplitLaneInVertical && !splitLaneInVerticalDisable && '垂直拆分',
+        canCombineLane && '生成车道',
+        canChangeBoundaryType && '切换实/虚线',
+        canInsertPointToBoundary && '添加点',
+        canMergeRoadBoundary && '合并路沿',
+        canConnectRoadBoundary && '连接路沿',
+        canCopyParkingSpace && '增加车位',
+        canHandleRoadBoundaryRelations && (roadBoundaryAndLaneBoundaryRelatived ? '解除路沿关联' : '关联路沿'),
+    ].filter(Boolean) as string[];
+    const selectionGuide = getSelectionGuide(
+        mapState.currentPickElement,
+        actionNames,
+        canSplitLaneInVertical && splitLaneInVerticalDisable,
+    );
     return (
         <div className="lane-handle-container">
+            {selectionGuide && (
+                <div className="lane-handle-guide">
+                    <strong>{selectionGuide.title}</strong>
+                    <span>{selectionGuide.detail}</span>
+                </div>
+            )}
             {canStragihtConnect && (
                 <div className="lane-handle-btn" onClick={() => handleLaneConnect()}>
                     直道连接

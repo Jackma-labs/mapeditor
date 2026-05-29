@@ -28,6 +28,7 @@ export const initialMapState: MapState = {
         baseLaneIsRightBoundary: true,
         laneAttr: {
             speed: 40,
+            speedKph: 40,
             direction: LaneDireaciotn.STRAIGHT,
             prossibleDrivingDirection: ProssibleDrivingDirection.FORWARD,
             laneType: LaneType.CityDriving,

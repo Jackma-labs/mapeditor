@@ -113,6 +113,41 @@
         justify-content: flex-end;
         max-width: calc(100% - 140px);
         gap: 10px;
+        .lane-handle-guide {
+            display: flex;
+            flex: 1 0 100%;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 2px;
+            min-width: 260px;
+            max-width: 620px;
+            margin-left: auto;
+            padding: 10px 12px;
+            border: 1px solid rgba(88, 112, 150, 0.74);
+            border-radius: 8px;
+            background: rgba(15, 20, 29, 0.94);
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+            color: #dbe7f7;
+            text-align: right;
+            strong,
+            span {
+                max-width: 100%;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            strong {
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: 650;
+                line-height: 18px;
+            }
+            span {
+                color: #9fb0c7;
+                font-size: 12px;
+                line-height: 18px;
+            }
+        }
         .lane-handle-btn {
             width: 146px;
             height: 32px;

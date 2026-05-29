@@ -102,6 +102,32 @@ const formatBoundsCenter = (bounds: any) => {
     return `${Number(bounds.centerX).toFixed(3)}, ${Number(bounds.centerY).toFixed(3)}`;
 };
 
+const getOverviewStatusText = (status: string, hasPreflight: boolean) => {
+    if (!hasPreflight) {
+        return '待预检';
+    }
+    if (status === 'ok') {
+        return '可部署';
+    }
+    if (status === 'warning') {
+        return '有警告';
+    }
+    return '需处理';
+};
+
+const getOverviewStatusTagColor = (status: string) => {
+    if (status === 'ok') {
+        return 'green';
+    }
+    if (status === 'warning') {
+        return 'gold';
+    }
+    if (status === 'error') {
+        return 'red';
+    }
+    return 'default';
+};
+
 const checkTitleMap: Record<string, string> = {
     'edge-mode': '部署模式',
     'edge-target': '目标设备',
@@ -150,6 +176,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     } else if (preflight) {
         overviewStatus = 'ok';
     }
+    const overviewStatusText = getOverviewStatusText(overviewStatus, Boolean(preflight));
 
     const loadDeployments = useCallback(async () => {
         const response = await FileService.getDeployments();
@@ -407,7 +434,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     };
 
     const footer = (
-        <Space className="edge-deploy-footer">
+        <Space className="edge-deploy-footer" wrap>
             <Button onClick={onCancel}>关闭</Button>
             <Button icon={<SaveOutlined />} onClick={saveAndPreflight} loading={loading}>
                 保存并预检
@@ -426,11 +453,22 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             title="边缘设备部署"
             open={open}
             onCancel={onCancel}
-            width={980}
+            width={1080}
             footer={footer}
+            centered
             className="edge-deploy-dialog"
         >
             <Form form={form} layout="vertical" className="edge-deploy-form">
+                <div className={`edge-deploy-intro ${overviewStatus}`}>
+                    <div className="edge-deploy-intro-main">
+                        <span>部署流程</span>
+                        <strong>{selectedMap?.mapName || '选择发布包后开始预检'}</strong>
+                    </div>
+                    <div className="edge-deploy-intro-desc">
+                        保存并预检后，再执行地图部署；预检会覆盖 SSH、容器、Dreamview 和坐标一致性。
+                    </div>
+                    <Tag color={getOverviewStatusTagColor(overviewStatus)}>{overviewStatusText}</Tag>
+                </div>
                 <div className="edge-deploy-overview">
                     <div className={`edge-deploy-metric ${runtimeCheck?.status || 'idle'}`}>
                         <span>边缘实际加载</span>
@@ -458,8 +496,9 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                     </div>
                 </div>
                 <div className="edge-deploy-grid">
-                    <section className="edge-deploy-section">
+                    <section className="edge-deploy-section edge-deploy-section-device">
                         <div className="edge-deploy-section-title">目标设备</div>
+                        <div className="edge-deploy-section-desc">边缘设备 SSH 连接信息。</div>
                         <div className="edge-deploy-field-grid compact">
                             <Form.Item
                                 label="边缘设备 IP"
@@ -488,8 +527,9 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                         </div>
                     </section>
 
-                    <section className="edge-deploy-section">
+                    <section className="edge-deploy-section edge-deploy-section-apollo">
                         <div className="edge-deploy-section-title">Apollo 目标</div>
+                        <div className="edge-deploy-section-desc">地图目录、容器和部署后动作。</div>
                         <Form.Item label="地图目录" required>
                             <Space.Compact style={{ width: '100%' }}>
                                 <Form.Item name="targetMapRoot" noStyle>
@@ -516,8 +556,9 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                         </Form.Item>
                     </section>
 
-                    <section className="edge-deploy-section">
+                    <section className="edge-deploy-section edge-deploy-section-package">
                         <div className="edge-deploy-section-title">发布包</div>
+                        <div className="edge-deploy-section-desc">选择已发布且可部署的地图包。</div>
                         <Form.Item label="选择发布包" required>
                             <Space.Compact style={{ width: '100%' }}>
                                 <Form.Item
@@ -582,7 +623,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                         )}
                     </section>
 
-                    <section className="edge-deploy-section">
+                    <section className="edge-deploy-section edge-deploy-section-history">
                         <div className="edge-deploy-section-heading">
                             <div className="edge-deploy-section-title">最近部署</div>
                             <Button
@@ -630,7 +671,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                         )}
                     </section>
 
-                    <section className="edge-deploy-section">
+                    <section className="edge-deploy-section edge-deploy-section-status">
                         <div className="edge-deploy-section-title">执行状态</div>
                         {jobText ? <div className="edge-deploy-job">{jobText}</div> : null}
                         {runtimeDetails ? (

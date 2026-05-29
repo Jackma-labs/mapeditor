@@ -84,7 +84,8 @@ const LANE_NARROW_WIDTH_WARNING_METERS = 2.6;
 const LANE_HARD_TURN_RADIUS_ERROR_METERS = 2.0;
 const LANE_STRICT_TURN_RADIUS_ERROR_METERS = 3.0;
 const LANE_MIN_TURN_RADIUS_WARNING_METERS = 4.5;
-const LANE_LOW_SPEED_TURN_VALUE = 10;
+const LANE_LOW_SPEED_TURN_KPH = 10;
+const LANE_MAX_SPEED_WARNING_KPH = 120;
 const LANE_RECOVERABLE_TURN_WIDTH_METERS = 2.6;
 const LANE_SUCCESSOR_SHARP_ANGLE_ERROR_DEGREES = 100;
 const LANE_SUCCESSOR_SHARP_ANGLE_WARNING_DEGREES = 65;
@@ -274,7 +275,7 @@ function auditLaneGeometry(mapState: MapState, lane: Lane): LaneGeometryAudit | 
 function isRecoverableLowSpeedTurn(lane: Lane, laneGeometryAudit: LaneGeometryAudit) {
     const laneDirection = Number(lane.attr?.direction);
     const laneSpeed = Number(lane.attr?.speed);
-    const isLowSpeedSetting = Number.isFinite(laneSpeed) && laneSpeed <= LANE_LOW_SPEED_TURN_VALUE;
+    const isLowSpeedSetting = Number.isFinite(laneSpeed) && laneSpeed <= LANE_LOW_SPEED_TURN_KPH;
     const isTurnGeometry =
         lane.type === LaneTrend.Curve ||
         laneDirection === LaneDireaciotn.TURN_LEFT ||
@@ -655,6 +656,30 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 description: '相邻车道关系缺少同向、反向或双向语义，后续自动连接可能误判。',
                 suggestion: '选中该车道，在属性面板确认相对方向。',
                 details: buildLaneRelationDetails(relation, laneComponentIndex),
+                target,
+            });
+        }
+        const laneSpeedKph = Number(lane.attr?.speed);
+        if (!Number.isFinite(laneSpeedKph) || laneSpeedKph < 1) {
+            buildIssue(issues, {
+                severity: 'error',
+                title: `车道 ${lane.id} 限速无效`,
+                description: '限速必须是大于 0 的 km/h 数值，否则导出 Apollo 时无法生成可靠速度限制。',
+                suggestion: '选中该车道，在属性面板重新输入 km/h 限速。',
+                details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                    `当前限速：${lane.attr?.speed ?? '未设置'} km/h`,
+                ]),
+                target,
+            });
+        } else if (laneSpeedKph > LANE_MAX_SPEED_WARNING_KPH) {
+            buildIssue(issues, {
+                severity: 'warning',
+                title: `车道 ${lane.id} 限速过高`,
+                description: `当前限速为 ${laneSpeedKph} km/h，园区或低速车场景下通常需要复核。`,
+                suggestion: '确认这里不是把 m/s 当成 km/h 输入；发布后 Apollo 会按 km/h 换算成 m/s。',
+                details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                    `Apollo 写入约 ${(laneSpeedKph / 3.6).toFixed(2)} m/s`,
+                ]),
                 target,
             });
         }

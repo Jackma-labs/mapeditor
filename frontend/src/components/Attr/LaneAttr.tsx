@@ -1,19 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import { Input, Select } from 'antd';
-import { LaneBoundaryType, LaneDireaciotn, LaneType, ProssibleDrivingDirection } from 'src/interface/laneInterFace';
+import {
+    LaneBoundaryType,
+    LaneDireaciotn,
+    LaneTrend,
+    LaneType,
+    ProssibleDrivingDirection,
+} from 'src/interface/laneInterFace';
+import { MapState } from 'src/interface/mapStateInterface';
 import { useManagerStore } from 'src/store';
 import { getLaneRelations } from 'src/utils/geometryUtil';
 import { searchLaneBoundaries, searchLaneFromGroudId } from 'src/utils/search/laneSearch';
-import { MapElementType, ThreeElementType } from 'src/interface/commonInterFace';
+import { MapElementType, ThreeElementType, ThreeObject } from 'src/interface/commonInterFace';
 import PubSub from 'pubsub-js';
 import { ChangeBoundaryTypeCommand } from 'src/command/BoundaryCommand';
-import { ChangeLaneProssibleDrivingDirectionCommand } from 'src/command/LaneCommand';
+import { ChangeLaneProssibleDrivingDirectionCommand, UpdateLaneAttrCommand } from 'src/command/LaneCommand';
 import { UpdateArrowCommand } from 'src/command/ArrowCommand';
 import { initLaneAttrData } from './constData';
 
 interface AttrData {
     id: string;
-    speed: number;
+    speed: number | string;
     direction: LaneDireaciotn;
     prossibleDrivingDirection: ProssibleDrivingDirection;
     leftBoundaryType: LaneBoundaryType;
@@ -23,6 +30,95 @@ interface AttrData {
     leftNeighbors: string[];
     rightNeighbors: string[];
     laneType: LaneType;
+}
+
+const formatSpeedMps = (speed: number | string | undefined) => {
+    const speedKph = Number(speed);
+    if (!Number.isFinite(speedKph) || speedKph <= 0) {
+        return '-';
+    }
+    return (speedKph / 3.6).toFixed(2);
+};
+
+const getRequiredStatusClass = (pass: boolean) => (pass ? 'is-pass' : 'is-warn');
+
+const isValidSpeedValue = (value: number | string) =>
+    /^(([1-9][0-9]*(\.)?[0-9]*)|(0(\.)([0-9]*))|(0))$/.test(`${value}`) && Number(value) <= 999 && Number(value) >= 1;
+
+const normalizeSpeedKph = (value: number | string) => Number(Number(value).toFixed(2));
+
+function getBoundaryCoordinates(mapState: MapState, boundaryId: string) {
+    const boundary = mapState.boundarys[boundaryId];
+    if (!boundary) {
+        return [];
+    }
+    return (boundary.pointIds || []).flatMap((pointId) => {
+        const point = mapState.points[pointId]?.position;
+        return point ? [[point.x, point.y]] : [];
+    });
+}
+
+function fitLaneInView(mapState: MapState, laneId: string) {
+    const lane = mapState.lanes[laneId];
+    if (!lane) {
+        return;
+    }
+    const coordinates = [
+        ...getBoundaryCoordinates(mapState, lane.leftBoundaryId),
+        ...getBoundaryCoordinates(mapState, lane.rightBoundaryId),
+    ];
+    if (coordinates.length < 2) {
+        return;
+    }
+    PubSub.publishSync('cameraMove', {
+        coordinates,
+        minExtent: 30,
+        padding: {
+            top: 104,
+            right: 430,
+            bottom: 44,
+            left: 132,
+        },
+    });
+}
+
+function RelationChips({
+    ids,
+    emptyText,
+    onLocate,
+}: {
+    ids: string[];
+    emptyText: string;
+    onLocate?: (id: string) => void;
+}) {
+    if (!ids || ids.length === 0) {
+        return <span className="relation-empty">{emptyText}</span>;
+    }
+    return (
+        <span className="relation-chip-list">
+            {ids.map((id) => {
+                if (onLocate) {
+                    return (
+                        <button
+                            type="button"
+                            className="relation-chip"
+                            key={id}
+                            title="点击定位车道"
+                            aria-label={`定位车道 ${id}`}
+                            onClick={() => onLocate(id)}
+                        >
+                            {id}
+                        </button>
+                    );
+                }
+                return (
+                    <span className="relation-chip" key={id}>
+                        {id}
+                    </span>
+                );
+            })}
+        </span>
+    );
 }
 /**
  *attrData回显的逻辑如下
@@ -44,6 +140,33 @@ export default function Index() {
     const [attrData, setAttrData] = useState<AttrData>(null);
     const [disableChange, setDisableChange] = useState(false);
     const [errorShow, setErrorShow] = useState(false);
+
+    const locateLane = (laneId: string) => {
+        const currentMapState = useManagerStore.getState().mapState;
+        const lane = currentMapState.lanes[laneId];
+        if (!lane) {
+            return;
+        }
+        fitLaneInView(currentMapState, laneId);
+        if (!lane.groudId) {
+            PubSub.publish('render');
+            return;
+        }
+        const laneGroudType =
+            lane.type === LaneTrend.Curve ? ThreeElementType.LaneCurveGroud : ThreeElementType.LaneGroud;
+        setMapState({
+            ...currentMapState,
+            currentPickElement: [
+                {
+                    id: lane.groudId,
+                    type: laneGroudType,
+                    threeObject: ThreeObject.Groud,
+                },
+            ],
+            needRender: true,
+        });
+        PubSub.publish('render');
+    };
 
     const changeLaneBoundary = (boundaryType: LaneBoundaryType, isLeftBoundary: boolean) => {
         if (isLeftBoundary) {
@@ -85,36 +208,34 @@ export default function Index() {
     };
     const checkSpeed = (e: any) => {
         const value = e.target.value;
-        // 符合要求了之后再更新高度数据
-        const isError =
-            !/^(([1-9][0-9]*(\.)?[0-9]*)|(0(\.)([0-9]*))|(0))$/.test(`${value}`) ||
-            Number(value) > 999 ||
-            Number(value) < 1;
-        setErrorShow(isError);
+        setErrorShow(!isValidSpeedValue(value));
         setAttrData({
             ...attrData,
             speed: value,
         });
     };
     const changeSpeed = (e: any) => {
-        let value = e.target.value;
-        value = Number(Number(value).toFixed(2));
+        const value = e.target.value;
         const { currentDrawData, currentPickElement } = mapState;
         const { currentDrawingElementId } = currentDrawData;
         const lane = mapState.lanes[currentDrawingElementId] || searchLaneFromGroudId(currentPickElement[0]?.id);
-        setAttrData({ ...attrData, speed: value });
+        if (!isValidSpeedValue(value)) {
+            const fallbackSpeed = lane?.attr.speed ?? currentDrawData.laneAttr.speed;
+            setAttrData({ ...attrData, speed: fallbackSpeed });
+            setErrorShow(false);
+            return;
+        }
+        const speedKph = normalizeSpeedKph(value);
+        setAttrData({ ...attrData, speed: speedKph });
         if (lane) {
-            if (errorShow) {
-                setAttrData({ ...attrData, speed: lane.attr.speed });
-            } else {
-                mapState.lanes[lane.id].attr = {
-                    ...mapState.lanes[lane.id].attr,
-                    speed: value,
-                };
-                setMapState(mapState);
-            }
-        } else if (errorShow) {
-            setAttrData({ ...attrData, speed: currentDrawData.laneAttr.speed });
+            useManagerStore.getState().addCommand([new UpdateLaneAttrCommand(lane.id, { speed: speedKph, speedKph })]);
+        } else {
+            mapState.currentDrawData.laneAttr.speed = speedKph;
+            mapState.currentDrawData.laneAttr.speedKph = speedKph;
+            setMapState({
+                ...mapState,
+                currentDrawData: { ...mapState.currentDrawData },
+            });
         }
         setErrorShow(false);
     };
@@ -133,12 +254,15 @@ export default function Index() {
             if (!lane) {
                 return;
             }
-            mapState.lanes[lane.id].attr.direction = direction;
+            useManagerStore.getState().addCommand([new UpdateLaneAttrCommand(lane.id, { direction })]);
         } else {
             mapState.currentDrawData.laneAttr.direction = direction;
+            mapState.onsave = true;
+            setMapState({
+                ...mapState,
+                currentDrawData: { ...mapState.currentDrawData },
+            });
         }
-        mapState.onsave = true;
-        setMapState(mapState);
     };
 
     const changeProssibleDrivingDirection = (prossibleDrivingDirection: ProssibleDrivingDirection) => {
@@ -178,12 +302,13 @@ export default function Index() {
         const lane = mapState.lanes[currentDrawingElementId] || searchLaneFromGroudId(currentPickElement[0]?.id);
         setAttrData({ ...attrData, laneType });
         if (lane) {
-            setAttrData({ ...attrData, speed: lane.attr.speed });
-            mapState.lanes[lane.id].attr = {
-                ...mapState.lanes[lane.id].attr,
-                laneType,
-            };
-            setMapState(mapState);
+            useManagerStore.getState().addCommand([new UpdateLaneAttrCommand(lane.id, { laneType })]);
+        } else {
+            mapState.currentDrawData.laneAttr.laneType = laneType;
+            setMapState({
+                ...mapState,
+                currentDrawData: { ...mapState.currentDrawData },
+            });
         }
     };
 
@@ -291,6 +416,7 @@ export default function Index() {
                     ...mapState.currentDrawData,
                     laneAttr: {
                         speed: initLaneAttrData.speed,
+                        speedKph: initLaneAttrData.speedKph,
                         direction: initLaneAttrData.direction,
                         prossibleDrivingDirection: initLaneAttrData.prossibleDrivingDirection,
                         laneType: initLaneAttrData.laneType,
@@ -313,6 +439,26 @@ export default function Index() {
                 <div className="type">
                     <span className="line" />
                     <span className="text">{`Lane ${attrData?.id || ''}`}</span>
+                </div>
+                <div className="lane-attr-guide">
+                    <div className="lane-attr-guide-title">发布必填</div>
+                    <div className="lane-required-grid">
+                        <span className={getRequiredStatusClass(Number(attrData?.speed) >= 1)}>
+                            {`限速 ${attrData?.speed || '-'} km/h`}
+                        </span>
+                        <span className={getRequiredStatusClass(Boolean(attrData?.direction))}>方向已设置</span>
+                        <span className={getRequiredStatusClass(Boolean(attrData?.laneType))}>类型已设置</span>
+                        <span
+                            className={getRequiredStatusClass(
+                                Boolean(attrData?.leftBoundaryType && attrData?.rightBoundaryType),
+                            )}
+                        >
+                            边界已设置
+                        </span>
+                    </div>
+                    <div className="lane-attr-guide-note">
+                        {`限速输入固定按 km/h 处理，导出 Apollo 时写入 ${formatSpeedMps(attrData?.speed)} m/s。`}
+                    </div>
                 </div>
                 <div className="attr-item">
                     <span className="text">车道编号：</span>
@@ -398,38 +544,52 @@ export default function Index() {
                 </div>
                 <div className="attr-item">
                     <span className="text">限速：</span>
-                    <Input
-                        className="attr-input"
-                        suffix="km/h"
-                        style={{ width: 180 }}
-                        defaultValue={attrData?.speed}
-                        value={attrData?.speed}
-                        disabled={disableChange}
-                        onChange={(e) => checkSpeed(e)}
-                        onBlur={(e) => {
-                            changeSpeed(e);
-                            window.getSelection().empty();
-                        }}
-                    />
+                    <span className="attr-input-wrap">
+                        <Input
+                            className="attr-input"
+                            suffix="km/h"
+                            defaultValue={attrData?.speed}
+                            value={attrData?.speed}
+                            disabled={disableChange}
+                            onChange={(e) => checkSpeed(e)}
+                            onBlur={(e) => {
+                                changeSpeed(e);
+                                window.getSelection()?.empty?.();
+                            }}
+                        />
+                        <span className="attr-input-help">{`Apollo ${formatSpeedMps(attrData?.speed)} m/s`}</span>
+                    </span>
                     <br />
                 </div>
                 {errorShow && <span className="error-text">请输入1-999数字</span>}
 
                 {attrData?.prossibleDrivingDirection !== ProssibleDrivingDirection.RELATIVEDIRECTION && (
                     <>
-                        <div className="attr-item">
+                        <div className="attr-section-title">拓扑关系</div>
+                        <div className="attr-item attr-relation-item">
                             <span className="text">前驱车道编号：</span>
-                            {attrData?.preLaneIds?.join('，')}
+                            <RelationChips
+                                ids={attrData?.preLaneIds}
+                                emptyText="暂无，若不是入口请连接上一段车道"
+                                onLocate={locateLane}
+                            />
                         </div>
-                        <div className="attr-item">
+                        <div className="attr-item attr-relation-item">
                             <span className="text">后继车道编号：</span>
-                            {attrData?.sucLaneIds?.join('，')}
+                            <RelationChips
+                                ids={attrData?.sucLaneIds}
+                                emptyText="暂无，若不是出口请连接下一段车道"
+                                onLocate={locateLane}
+                            />
                         </div>
-                        <div className="attr-item">
+                        <div className="attr-item attr-relation-item">
                             <span className="text">相邻车道编号：</span>
-                            {`左${attrData?.leftNeighbors?.join('，') || '-'}，右${
-                                attrData?.rightNeighbors?.join('，') || '-'
-                            } `}
+                            <span className="relation-neighbor">
+                                左
+                                <RelationChips ids={attrData?.leftNeighbors} emptyText="-" onLocate={locateLane} />
+                                右
+                                <RelationChips ids={attrData?.rightNeighbors} emptyText="-" onLocate={locateLane} />
+                            </span>
                         </div>
                     </>
                 )}

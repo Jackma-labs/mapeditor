@@ -539,6 +539,55 @@ function formatIssueReport(report: MapQualityReport, issues: MapQualityIssue[]) 
     return lines.join('\n');
 }
 
+function getIssueTargetIds(issue: MapQualityIssue) {
+    const targetIds: string[] = [];
+    if (issue.target.id) {
+        targetIds.push(`${issue.target.type}:${issue.target.id}`);
+    }
+    if (issue.target.groudId) {
+        targetIds.push(`groud:${issue.target.groudId}`);
+    }
+    (issue.target.boundaryIds || []).forEach((boundaryId) => targetIds.push(`boundary:${boundaryId}`));
+    (issue.target.pointIds || []).forEach((pointId) => targetIds.push(`point:${pointId}`));
+    return targetIds;
+}
+
+function getRepairActionTargetIds(action: ReturnType<typeof buildMapQualityRepairActions>[number]) {
+    switch (action.kind) {
+        case 'removeMissingBoundaryPoints':
+            return [`boundary:${action.targetId}`];
+        case 'restoreTrafficSignalStopLine': {
+            const targetIds = [`trafficSignal:${action.targetId}`];
+            if (action.stopLineId) {
+                targetIds.push(`stopLine:${action.stopLineId}`);
+            }
+            if (action.boundaryId) {
+                targetIds.push(`boundary:${action.boundaryId}`);
+            }
+            return targetIds;
+        }
+        case 'snapLaneSuccessorStart': {
+            const targetIds = [`lane:${action.targetId}`];
+            if (action.targetLaneId) {
+                targetIds.push(`lane:${action.targetLaneId}`);
+            }
+            return targetIds;
+        }
+        default:
+            return [`lane:${action.targetId}`];
+    }
+}
+
+function getIssuePriority(issue: MapQualityIssue) {
+    if (issue.severity === 'error') {
+        return 0;
+    }
+    if (isTopologyIssue(issue)) {
+        return 1;
+    }
+    return 2;
+}
+
 interface MapQualityPanelProps {
     embedded?: boolean;
 }
@@ -555,6 +604,10 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
     ]);
     const report = useMemo(() => inspectMapQuality(mapState), [mapState]);
     const repairActions = useMemo(() => buildMapQualityRepairActions(mapState), [mapState]);
+    const repairableTargetIds = useMemo(
+        () => new Set(repairActions.flatMap((action) => getRepairActionTargetIds(action).filter(Boolean))),
+        [repairActions],
+    );
     const hasMapData = Object.keys(mapState.lanes).length > 0 || Object.keys(mapState.boundarys).length > 0;
     const issues = report.issues;
 
@@ -696,15 +749,17 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
         });
     };
 
-    const filteredIssues = issues.filter((issue) => {
-        if (issueFilter === 'all') {
-            return true;
-        }
-        if (issueFilter === 'topology') {
-            return isTopologyIssue(issue);
-        }
-        return issue.severity === issueFilter;
-    });
+    const filteredIssues = issues
+        .filter((issue) => {
+            if (issueFilter === 'all') {
+                return true;
+            }
+            if (issueFilter === 'topology') {
+                return isTopologyIssue(issue);
+            }
+            return issue.severity === issueFilter;
+        })
+        .sort((left, right) => getIssuePriority(left) - getIssuePriority(right));
     const topIssues = filteredIssues.slice(0, 18);
     const remainingIssueCount = filteredIssues.length - topIssues.length;
     const statusClass = getStatusClass(report.summary.errors, report.summary.warnings);
@@ -732,6 +787,15 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
         },
     ];
 
+    const handleLocateNextIssue = () => {
+        if (filteredIssues.length === 0) {
+            return;
+        }
+        const currentIndex = filteredIssues.findIndex((issue) => issue.id === selectedIssueId);
+        const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % filteredIssues.length : 0;
+        handleLocateIssue(filteredIssues[nextIndex]);
+    };
+
     return (
         <div
             className={`quality-panel ${embedded ? 'quality-panel-docked' : ''} ${statusClass} ${collapsed ? 'is-collapsed' : ''}`}
@@ -754,6 +818,9 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
                         onClick={handleToggleTopologyOverlay}
                     >
                         {topologyOverlayEnabled ? '隐藏拓扑' : '显示拓扑'}
+                    </Button>
+                    <Button size="small" disabled={filteredIssues.length === 0} onClick={handleLocateNextIssue}>
+                        定位下一项
                     </Button>
                     {issues.length > 0 && (
                         <Button size="small" onClick={handleCopyReport}>
@@ -790,6 +857,12 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
                                 </button>
                             ))}
                         </div>
+                        {filteredIssues.length > 0 && (
+                            <div className="quality-queue-hint">
+                                <strong>问题队列</strong>
+                                <span>先处理红色错误；点击问题展开说明，点“定位到地图”会选中对象并移动视角。</span>
+                            </div>
+                        )}
                         {filteredIssues.length === 0 && (
                             <div className="quality-panel-empty">
                                 {issues.length === 0 ? '当前未发现阻塞发布的问题。' : '当前筛选下没有问题。'}
@@ -797,6 +870,9 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
                         )}
                         {topIssues.map((issue) => {
                             const issueGuide = getIssueGuide(issue);
+                            const autoRepairable = getIssueTargetIds(issue).some((targetId) =>
+                                repairableTargetIds.has(targetId),
+                            );
                             return (
                                 <div
                                     role="button"
@@ -819,6 +895,10 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
                                     <span className="quality-issue-main">
                                         <strong>{issue.title}</strong>
                                         <span>{issue.suggestion}</span>
+                                        <span className="quality-issue-meta">
+                                            <em>{isTopologyIssue(issue) ? '拓扑/连接' : '对象属性'}</em>
+                                            <em>{autoRepairable ? '可智能修复' : '需人工确认'}</em>
+                                        </span>
                                         {selectedIssueId === issue.id && (
                                             <>
                                                 {issue.details && issue.details.length > 0 && (

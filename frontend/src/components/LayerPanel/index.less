@@ -72,7 +72,7 @@
 
 .editor-layer-presets {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
 
     button {
@@ -207,6 +207,30 @@
     line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.editor-layer-state {
+    flex: 0 0 auto;
+    padding: 2px 6px;
+    border: 1px solid #3a4659;
+    border-radius: 999px;
+    color: #8fa0ba;
+    font-size: 11px;
+    line-height: 15px;
+
+    &.editable {
+        border-color: rgba(31, 204, 77, 0.4);
+        color: #bdf4cb;
+    }
+
+    &.readonly {
+        border-color: rgba(255, 176, 32, 0.42);
+        color: #ffd48a;
+    }
+
+    &.hidden {
+        color: #7b8799;
+    }
 }
 
 .editor-layer-description {

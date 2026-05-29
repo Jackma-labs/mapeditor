@@ -276,6 +276,70 @@
     }
 }
 
+.ant-modal-confirm {
+    .ant-modal-content {
+        overflow: hidden;
+        border: 1px solid #3a4354;
+        border-radius: 10px;
+        background: #252b36;
+        box-shadow: 0 24px 72px rgba(0, 0, 0, 0.48);
+    }
+
+    .ant-modal-confirm-body-wrapper {
+        color: #a6b5cc;
+    }
+
+    .ant-modal-confirm-title {
+        color: #ffffff;
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 24px;
+    }
+
+    .ant-modal-confirm-content {
+        max-height: 58vh;
+        margin-top: 10px;
+        color: #c9d6eb;
+        overflow: auto;
+        line-height: 22px;
+    }
+
+    .ant-modal-confirm-btns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 18px;
+
+        .ant-btn {
+            margin-inline-start: 0 !important;
+            border-color: #53627a;
+            border-radius: 6px;
+            background: #263142;
+            color: #d7e2f2;
+            font-weight: 500;
+        }
+
+        .ant-btn-primary {
+            border-color: #3288fa;
+            background: #3288fa;
+            color: #ffffff;
+        }
+
+        .ant-btn-dangerous {
+            border-color: #ff5b66;
+            background: #3a2730;
+            color: #ff9da5;
+        }
+
+        .ant-btn-primary.ant-btn-dangerous {
+            border-color: #ff4d4f;
+            background: #ff4d4f;
+            color: #ffffff;
+        }
+    }
+}
+
 .workflow-modal {
     .workflow-step-list {
         display: flex;
@@ -817,7 +881,7 @@
 }
 
 .runtime-status-modal {
-    color: #1f2329;
+    color: #c9d6eb;
     line-height: 22px;
 
     p {
@@ -1186,10 +1250,89 @@
     word-break: break-word;
 }
 
+.file-model-dialog,
+.asset-manager-dialog,
+.edge-deploy-dialog {
+    .ant-modal-content {
+        overflow: hidden;
+        padding: 0;
+        border: 1px solid #3a4354;
+        border-radius: 10px;
+        background: #252b36;
+        box-shadow: 0 24px 72px rgba(0, 0, 0, 0.48);
+        color: #a6b5cc;
+    }
+
+    .ant-modal-header {
+        margin: 0;
+        padding: 18px 22px 14px;
+        border-bottom: 1px solid #343c4d;
+        background: #252b36;
+    }
+
+    .ant-modal-title {
+        color: #ffffff;
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 24px;
+    }
+
+    .ant-modal-close {
+        top: 14px;
+        right: 16px;
+        color: #8290a8;
+    }
+
+    .ant-modal-body {
+        max-height: calc(100vh - 168px);
+        padding: 16px 22px 18px;
+        overflow-y: auto;
+        color: #a6b5cc;
+    }
+
+    .ant-modal-footer {
+        margin: 0;
+        padding: 14px 22px;
+        border-top: 1px solid #343c4d;
+        background: #222832;
+    }
+
+    .ant-btn {
+        border-radius: 6px;
+        font-weight: 500;
+    }
+
+    .ant-input,
+    .ant-input-number,
+    .ant-input-affix-wrapper,
+    .ant-select-selector {
+        min-width: 0;
+        border-radius: 6px;
+    }
+}
+
+.file-model-dialog {
+    &::before {
+        display: none;
+    }
+
+    .ant-modal-content .ant-modal-title {
+        background: transparent;
+        font-size: 18px;
+        font-weight: 700;
+    }
+
+    .ant-modal-content .ant-modal-body {
+        max-height: calc(100vh - 168px);
+        margin-top: 0;
+        padding: 16px 22px 18px;
+    }
+}
+
 .edge-deploy-dialog {
     .ant-modal-content,
     .ant-modal-header {
-        background: #282b36;
+        background: #252b36;
     }
 
     .ant-modal-title {
@@ -1197,8 +1340,8 @@
     }
 
     .ant-modal-body {
-        max-height: 72vh;
-        padding-top: 12px;
+        max-height: calc(100vh - 172px);
+        padding: 16px 22px 18px;
         overflow-y: auto;
         color: #a6b5cc;
     }
@@ -1218,11 +1361,17 @@
     }
 
     .ant-input,
+    .ant-input-affix-wrapper,
     .ant-input-number,
     .ant-select-selector {
         background: #343c4d !important;
         border-color: #465066 !important;
         color: #ffffff !important;
+    }
+
+    .ant-input-affix-wrapper .ant-input {
+        background: transparent !important;
+        border-color: transparent !important;
     }
 
     .ant-input::placeholder,
@@ -1242,19 +1391,76 @@
         width: 100%;
     }
 
+    .edge-deploy-intro {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.9fr) auto;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 12px;
+        padding: 12px 14px;
+        border: 1px solid #3c4353;
+        border-radius: 6px;
+        background: #1f2632;
+
+        &.ok {
+            border-color: rgba(70, 190, 130, 0.56);
+        }
+
+        &.warning {
+            border-color: rgba(255, 176, 32, 0.68);
+        }
+
+        &.error {
+            border-color: rgba(255, 77, 88, 0.68);
+        }
+    }
+
+    .edge-deploy-intro-main {
+        min-width: 0;
+
+        span,
+        strong {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        span {
+            margin-bottom: 3px;
+            color: #8f9db3;
+            font-size: 12px;
+            line-height: 16px;
+        }
+
+        strong {
+            color: #f3f7ff;
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 20px;
+        }
+    }
+
+    .edge-deploy-intro-desc {
+        min-width: 0;
+        color: #aebbd0;
+        font-size: 12px;
+        line-height: 18px;
+    }
+
     .edge-deploy-overview {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 10px;
-        margin-bottom: 16px;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 14px;
     }
 
     .edge-deploy-metric {
         min-width: 0;
-        padding: 10px 12px;
+        padding: 9px 10px;
         border: 1px solid #3c4353;
         border-radius: 6px;
-        background: #222837;
+        background: #202734;
 
         span,
         strong {
@@ -1293,24 +1499,56 @@
 
     .edge-deploy-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
-        gap: 16px 22px;
+        grid-template-areas:
+            'device apollo'
+            'package status'
+            'history status';
+        grid-template-columns: minmax(0, 0.98fr) minmax(0, 1.02fr);
+        gap: 14px;
+        align-items: start;
     }
 
     .edge-deploy-section {
         min-width: 0;
-        padding: 14px 14px 2px;
+        padding: 14px 14px 12px;
         border: 1px solid #3c4353;
         border-radius: 6px;
-        background: rgba(31, 38, 51, 0.68);
+        background: rgba(31, 38, 51, 0.58);
+    }
+
+    .edge-deploy-section-device {
+        grid-area: device;
+    }
+
+    .edge-deploy-section-apollo {
+        grid-area: apollo;
+    }
+
+    .edge-deploy-section-package {
+        grid-area: package;
+    }
+
+    .edge-deploy-section-history {
+        grid-area: history;
+    }
+
+    .edge-deploy-section-status {
+        grid-area: status;
     }
 
     .edge-deploy-section-title {
-        margin-bottom: 10px;
+        margin-bottom: 4px;
         color: #ffffff;
         font-size: 15px;
         font-weight: 600;
         line-height: 20px;
+    }
+
+    .edge-deploy-section-desc {
+        margin-bottom: 12px;
+        color: #8f9db3;
+        font-size: 12px;
+        line-height: 18px;
     }
 
     .edge-deploy-section-heading {
@@ -1328,11 +1566,27 @@
     .edge-deploy-field-grid {
         display: grid;
         grid-template-columns: minmax(0, 1fr) 160px;
-        gap: 0 12px;
+        gap: 0 14px;
     }
 
     .edge-deploy-field-grid.compact {
-        grid-template-columns: minmax(0, 1fr) 120px;
+        grid-template-columns: minmax(0, 1fr) 132px;
+    }
+
+    .ant-space-compact {
+        display: flex;
+        width: 100%;
+        min-width: 0;
+
+        .ant-select,
+        .ant-input,
+        .ant-input-affix-wrapper {
+            min-width: 0;
+        }
+
+        > .ant-btn {
+            flex: 0 0 auto;
+        }
     }
 
     .edge-deploy-map-summary {
@@ -1390,7 +1644,7 @@
     }
 
     .edge-deploy-checks {
-        max-height: 300px;
+        max-height: 360px;
         overflow-y: auto;
     }
 
@@ -1541,7 +1795,22 @@
 
     .edge-deploy-footer {
         width: 100%;
+        row-gap: 8px;
         justify-content: flex-end;
+    }
+
+    @media (max-width: 1120px) {
+        .edge-deploy-intro {
+            grid-template-columns: minmax(0, 1fr) auto;
+        }
+
+        .edge-deploy-intro-desc {
+            grid-column: 1 / -1;
+        }
+
+        .edge-deploy-overview {
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        }
     }
 
     @media (max-width: 900px) {
@@ -1550,6 +1819,15 @@
         .edge-deploy-field-grid,
         .edge-deploy-field-grid.compact {
             grid-template-columns: minmax(0, 1fr);
+        }
+
+        .edge-deploy-grid {
+            grid-template-areas:
+                'device'
+                'apollo'
+                'package'
+                'status'
+                'history';
         }
 
         .edge-deploy-map-summary {
@@ -1569,7 +1847,7 @@
 }
 
 .edge-deploy-confirm {
-    color: #3c4658;
+    color: #c9d6eb;
 
     p {
         margin: 0 0 8px;
@@ -1734,6 +2012,35 @@
     font-size: 13px;
 }
 
+.quality-queue-hint {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+    padding: 8px 9px;
+    border: 1px solid #343c4d;
+    border-radius: 6px;
+    background: #171d28;
+
+    strong {
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 650;
+        line-height: 17px;
+    }
+
+    span {
+        min-width: 0;
+        overflow: hidden;
+        color: #8fa0ba;
+        font-size: 12px;
+        line-height: 17px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+}
+
 .quality-issue {
     display: grid;
     grid-template-columns: 42px minmax(0, 1fr);
@@ -1798,6 +2105,23 @@
         color: #9eadc5;
         font-size: 12px;
         line-height: 17px;
+    }
+
+    .quality-issue-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+
+        em {
+            padding: 2px 6px;
+            border: 1px solid #3a4659;
+            border-radius: 999px;
+            color: #aebbd1;
+            background: #202838;
+            font-size: 11px;
+            font-style: normal;
+            line-height: 15px;
+        }
     }
 
     .quality-issue-details,

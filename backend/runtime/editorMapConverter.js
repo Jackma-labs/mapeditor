@@ -1335,8 +1335,15 @@ function widthSamplesFromGeometry(center, boundaryPoints, fallbackWidth, spacing
 }
 
 function baseSpeedLimitFromEditor(lane) {
-  const raw = number(lane.speed_limit ?? lane.attr?.speed, 40);
-  return raw > 25 ? raw / 3.6 : raw;
+  const speedKph = lane.speed_limit_kph ?? lane.attr?.speedKph ?? lane.attr?.speed;
+  if (Number.isFinite(Number(speedKph))) {
+    return number(speedKph, 40) / 3.6;
+  }
+  const speedMps = lane.speed_limit_mps ?? lane.speedLimitMps ?? lane.speed_limit ?? lane.speedLimit;
+  if (Number.isFinite(Number(speedMps))) {
+    return number(speedMps, 40 / 3.6);
+  }
+  return 40 / 3.6;
 }
 
 function turnSpeedLimitForApollo(baseSpeedLimit, lane, center, conversionWarnings) {

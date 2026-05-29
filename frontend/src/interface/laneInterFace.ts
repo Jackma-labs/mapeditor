@@ -46,7 +46,8 @@ export enum LaneType {
 }
 // 车道属性
 export interface LaneAttr {
-    speed: number; // 速度
+    speed: number; // UI 限速，单位 km/h
+    speedKph?: number; // 明确的 km/h 限速，避免和 Apollo m/s 字段混淆
     direction: LaneDireaciotn; // 方向
     prossibleDrivingDirection: ProssibleDrivingDirection; // 相对方向
     laneType: LaneType; // 车道类型
