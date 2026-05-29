@@ -143,6 +143,79 @@ const checkTitleMap: Record<string, string> = {
     'selected-map-vehicle-pose': '车辆位置',
 };
 
+const getLocalizationIssueText = (item: any) => {
+    const issueMessage = String(item?.message || '');
+    if (item?.id === 'rtk-fix') {
+        return issueMessage.includes('not available') ? 'RTK / INS fix 状态未读到' : issueMessage;
+    }
+    if (item?.id === 'pose-delay') {
+        const rawDelay = item?.details?.sampleTimeSec
+            ? Number(item?.details?.sampleTimeSec) - Number(item?.details?.measurementTimeSec)
+            : null;
+        const delayMatch = issueMessage.match(/([0-9.]+)s/);
+        const delayText = delayMatch?.[1] || (Number.isFinite(rawDelay) ? rawDelay?.toFixed(3) : '');
+        return delayText ? `定位延迟 ${delayText}s` : issueMessage;
+    }
+    if (item?.id === 'map-boundary') {
+        return issueMessage.includes('outside') ? '当前车辆定位不在所选地图边界内' : issueMessage;
+    }
+    if (item?.id === 'nearest-lane-distance') {
+        const distance = item?.details?.nearest?.distanceMeters;
+        return `车辆离最近车道中心线 ${formatMeters(distance)}`;
+    }
+    if (item?.id === 'heading-stability') {
+        return issueMessage.includes('drift')
+            ? issueMessage.replace('Heading drift over recent localization samples is', '航向角抖动')
+            : issueMessage;
+    }
+    return issueMessage || item?.id || '';
+};
+
+const getCheckDisplayMessage = (item: any) => {
+    if (item?.name === 'selected-map-vehicle-pose') {
+        const details = item?.details || {};
+        const distance = details?.nearest?.distanceMeters;
+        const distanceText = Number.isFinite(Number(distance))
+            ? `当前车辆离所选地图最近车道中心线 ${formatMeters(distance)}`
+            : '';
+        const gateChecks = Array.isArray(details?.localizationGate?.checks)
+            ? details.localizationGate.checks.filter((check: any) => check.status !== 'ok')
+            : [];
+        const gateText = gateChecks.slice(0, 4).map(getLocalizationIssueText).filter(Boolean).join('；');
+        const advisory =
+            details.deploymentAdvisory || item.status === 'warning'
+                ? '这不会阻断地图下发，但实车启用前必须确认定位链路正常。'
+                : '';
+        return [distanceText || item.message, gateText, advisory].filter(Boolean).join('；');
+    }
+    if (typeof item?.details === 'string' && item.details && !String(item.message || '').includes(item.details)) {
+        return `${item.message}：${item.details}`;
+    }
+    return item?.message || item?.name || '';
+};
+
+const getPreflightIssues = (preflight: any, statuses: string[]) =>
+    getChecks(preflight).filter((item: any) => statuses.includes(item.status));
+
+const renderPreflightIssues = (preflight: any, fallback: string, statuses: string[] = ['error']) => {
+    const issues = getPreflightIssues(preflight, statuses);
+    if (issues.length === 0) {
+        return <div className="edge-deploy-issue-list">{fallback}</div>;
+    }
+    return (
+        <div className="edge-deploy-issue-list">
+            <ul>
+                {issues.map((item: any) => (
+                    <li key={`${item.name}-${item.status}`}>
+                        <strong>{checkTitleMap[item.name] || item.name}</strong>
+                        <span>{getCheckDisplayMessage(item)}</span>
+                    </li>
+                ))}
+            </ul>
+        </div>
+    );
+};
+
 export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogProps) {
     const [form] = Form.useForm();
     const [loading, setLoading] = useState(false);
@@ -297,19 +370,18 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             const result = response?.data;
             setPreflight(result?.preflight || null);
             if (response?.code === 0) {
-                message.success('边缘设备配置已保存，预检通过');
+                const warnings = getPreflightIssues(result?.preflight, ['warning']);
+                if (warnings.length > 0) {
+                    message.warning('边缘设备配置已保存，预检通过但存在上线前警告');
+                } else {
+                    message.success('边缘设备配置已保存，预检通过');
+                }
                 return;
             }
             Modal.warning({
                 title: '配置已保存，但预检未通过',
                 width: 680,
-                content: (
-                    <pre className="edge-deploy-detail">
-                        {(result?.preflight?.checks || [])
-                            .map((item: any) => `[${item.status}] ${item.message}`)
-                            .join('\n')}
-                    </pre>
-                ),
+                content: renderPreflightIssues(result?.preflight, response?.message || '预检未通过'),
             });
         } catch (error: any) {
             Modal.error({
@@ -335,7 +407,15 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             });
             setPreflight(configResponse?.data?.preflight || null);
             if (configResponse?.code !== 0) {
-                throw new Error(configResponse?.message || '预检未通过，已停止部署');
+                Modal.error({
+                    title: '部署失败：预检未通过',
+                    width: 720,
+                    content: renderPreflightIssues(
+                        configResponse?.data?.preflight,
+                        configResponse?.message || '预检未通过，已停止部署',
+                    ),
+                });
+                return;
             }
             setJobText(`正在提交部署任务：${mapName}`);
             const response = await FileService.startDeployReleasedMapJob(mapName);

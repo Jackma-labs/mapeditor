@@ -9246,20 +9246,36 @@ async function preflightEdgeDeploy(config, params = {}) {
     const vehiclePoseValidation = validation.vehiclePoseValidation;
     if (vehiclePoseValidation?.available) {
       const vehiclePoseStatus = vehiclePoseValidation.status || 'warning';
+      const vehiclePoseBlocksDeploy = false;
       addCheck(
         'selected-map-vehicle-pose',
         vehiclePoseStatus === 'ok',
-        vehiclePoseStatus === 'ok' ? 'warning' : vehiclePoseStatus,
-        `${mapName}: ${vehiclePoseValidation.message}`,
-        vehiclePoseValidation,
+        vehiclePoseStatus === 'ok' ? 'warning' : 'warning',
+        vehiclePoseStatus === 'ok'
+          ? `${mapName}: ${vehiclePoseValidation.message}`
+          : `${mapName}: ${vehiclePoseValidation.message}; deployment allowed, verify localization before driving`,
+        {
+          ...vehiclePoseValidation,
+          deploymentBlocking: vehiclePoseBlocksDeploy,
+          deploymentAdvisory: true,
+        },
       );
     } else if (vehiclePoseValidation) {
+      const missingLaneCenterline = /no lane central_curve|nearest lane centerline could not be computed/i.test(
+        vehiclePoseValidation.message || '',
+      );
       addCheck(
         'selected-map-vehicle-pose',
         false,
-        vehiclePoseValidation.status === 'error' ? 'error' : 'warning',
-        `${mapName}: vehicle-to-lane check skipped: ${vehiclePoseValidation.message}`,
-        vehiclePoseValidation,
+        missingLaneCenterline ? 'error' : 'warning',
+        missingLaneCenterline
+          ? `${mapName}: vehicle-to-lane check skipped: ${vehiclePoseValidation.message}`
+          : `${mapName}: vehicle-to-lane check skipped: ${vehiclePoseValidation.message}; deployment allowed, verify localization before driving`,
+        {
+          ...vehiclePoseValidation,
+          deploymentBlocking: missingLaneCenterline,
+          deploymentAdvisory: !missingLaneCenterline,
+        },
       );
     }
   } catch (error) {

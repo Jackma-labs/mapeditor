@@ -104,6 +104,20 @@ function sendError(res, status, code, message, data) {
   res.status(status).json(payload);
 }
 
+function summarizePreflightErrors(preflight) {
+  const errors = Array.isArray(preflight?.checks)
+    ? preflight.checks.filter((check) => check.status === "error")
+    : [];
+  if (errors.length === 0) {
+    return "";
+  }
+  const summary = errors
+    .slice(0, 3)
+    .map((check) => `${check.name}: ${check.message}`)
+    .join("; ");
+  return errors.length > 3 ? `${summary}; +${errors.length - 3} more` : summary;
+}
+
 function clipText(value, maxLength = 4000) {
   return String(value || "").slice(0, maxLength);
 }
@@ -2595,11 +2609,12 @@ app.post(
     try {
       const result = await runtime.configureEdgeDeploy(config, req.body || {});
       const preflight = await runtime.preflightEdgeDeploy(config, req.body || {});
+      const preflightErrors = summarizePreflightErrors(preflight);
       res.status(preflight.ready ? 200 : 409).json({
         code: preflight.ready ? 0 : 15065,
         message: preflight.ready
           ? "Success"
-          : "Edge deploy config saved, but preflight failed",
+          : `Edge deploy config saved, but preflight failed${preflightErrors ? `: ${preflightErrors}` : ""}`,
         data: {
           ...result,
           preflight,
@@ -2863,9 +2878,12 @@ app.post(
   async (req, res) => {
     try {
       const result = await runtime.preflightEdgeDeploy(config, req.body || {});
+      const preflightErrors = summarizePreflightErrors(result);
       res.status(result.ready ? 200 : 500).json({
         code: result.ready ? 0 : 15042,
-        message: result.ready ? "Success" : "Preflight failed",
+        message: result.ready
+          ? "Success"
+          : `Preflight failed${preflightErrors ? `: ${preflightErrors}` : ""}`,
         data: result,
       });
     } catch (error) {
