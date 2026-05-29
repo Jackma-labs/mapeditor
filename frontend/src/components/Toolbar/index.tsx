@@ -192,6 +192,7 @@ export default function Index(prop: ToolbarProps) {
     const [mapDialogMode, setMapDialogMode] = useState<MapDialogMode>('baseMap');
     const [curHoverTool, setCurHoverTool] = useState<HoverTool>(null);
     const [showSaveDataRemind, changeShowSaveDataRemind] = useState(false);
+    const [openMenuKey, setOpenMenuKey] = useState<string | null>(null);
 
     const startDrawMapElement = (type: MapElementType) => {
         PubSub.publish('closeRemind');
@@ -748,6 +749,7 @@ export default function Index(prop: ToolbarProps) {
     };
 
     const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
+        setOpenMenuKey(null);
         switch (key) {
             case '1':
                 setDialogTitle('新建标注任务');
@@ -1115,7 +1117,12 @@ export default function Index(prop: ToolbarProps) {
                             menu={{ items: menu.items, onClick: handleMenuClick }}
                             placement="bottomLeft"
                             overlayClassName="file-select"
-                            onOpenChange={() => PubSub.publish('closeRemind')}
+                            open={openMenuKey === menu.key}
+                            trigger={['click']}
+                            onOpenChange={(open) => {
+                                setOpenMenuKey(open ? menu.key : null);
+                                PubSub.publish('closeRemind');
+                            }}
                         >
                             <button type="button" className="production-menu-trigger">
                                 {menu.label}

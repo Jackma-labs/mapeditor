@@ -2290,3 +2290,211 @@
         font-size: 12px;
     }
 }
+
+/* Product UI polish: normalize the production dialogs and menu surfaces. */
+.file-select.ant-dropdown {
+    .ant-dropdown-menu {
+        overflow: hidden;
+        border: 1px solid #3b4659;
+        border-radius: 8px;
+        background: #252d3a;
+        box-shadow: 0 18px 46px rgba(0, 0, 0, 0.44);
+    }
+
+    .ant-dropdown-menu-item {
+        transition:
+            background 0.16s ease,
+            color 0.16s ease;
+    }
+
+    .ant-dropdown-menu-item:hover,
+    .ant-dropdown-menu-item-active {
+        background: #303b4f !important;
+    }
+
+    .file-menu-label-title {
+        color: #edf4ff;
+        font-weight: 650;
+    }
+
+    .file-menu-label-desc {
+        color: #93a3ba;
+    }
+}
+
+.file-model-dialog,
+.asset-manager-dialog,
+.edge-deploy-dialog {
+    .ant-modal-content {
+        background: #252d3a !important;
+    }
+
+    .ant-modal-header {
+        background: linear-gradient(180deg, #273140 0%, #242c39 100%) !important;
+    }
+
+    .ant-modal-body {
+        background: #252d3a;
+    }
+
+    .ant-modal-footer {
+        background: #202837 !important;
+    }
+
+    .ant-btn {
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+    }
+}
+
+.file-model-dialog {
+    .dialog-body-title {
+        margin: 0 0 12px;
+        overflow: hidden;
+        color: #91a0b8 !important;
+        font-size: 12px !important;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .file-dialog-overview {
+        align-items: center;
+        border-color: #43516a !important;
+        background: #1c2533 !important;
+    }
+
+    .file-dialog-overview-title {
+        color: #f3f8ff !important;
+        font-weight: 700 !important;
+    }
+
+    .file-dialog-overview-desc {
+        color: #aebbd0 !important;
+    }
+
+    .file-dialog-overview-stats {
+        grid-template-columns: 112px minmax(160px, 220px) !important;
+    }
+
+    .base-map-import {
+        flex-wrap: wrap;
+        padding: 10px 12px;
+        border: 1px solid #374457;
+        border-radius: 7px;
+        background: #1b2330;
+
+        span {
+            min-width: 260px;
+            flex: 1 1 260px;
+            color: #94a4ba;
+            line-height: 20px;
+        }
+    }
+
+    .dialog-body-list,
+    .dialog-body-empty,
+    .dialog-body-doing {
+        min-height: 206px;
+        height: auto !important;
+        max-height: min(320px, calc(100vh - 470px));
+        border: 1px solid #303b4d;
+        background:
+            linear-gradient(180deg, rgba(36, 45, 60, 0.72), rgba(20, 27, 38, 0.92)),
+            #151b24 !important;
+    }
+
+    .dialog-body-empty {
+        padding: 24px;
+        color: #aebbd0 !important;
+        text-align: center;
+    }
+
+    .dialog-body-list {
+        border-radius: 8px;
+        overflow-y: auto;
+
+        .ant-menu {
+            min-height: 100%;
+            background: transparent !important;
+        }
+
+        .ant-menu-item {
+            height: 40px;
+            margin: 4px 8px;
+            border-radius: 6px;
+            color: #c2cee0;
+        }
+
+        .ant-menu-item:hover {
+            background: #263247 !important;
+        }
+
+        .ant-menu-item-selected {
+            background: #1f3a5e !important;
+        }
+    }
+}
+
+.asset-manager-dialog {
+    .asset-production-panel,
+    .asset-selection-panel,
+    .asset-manager-jobs {
+        border-color: #43516a;
+        background: #1b2330;
+    }
+
+    .asset-workflow-card {
+        border-color: #39475d;
+        background: #182131;
+    }
+
+    .asset-manager-table {
+        border-color: #39475d;
+        border-radius: 8px;
+        background: #151b24;
+    }
+}
+
+.edge-deploy-dialog {
+    .edge-deploy-intro,
+    .edge-deploy-section,
+    .edge-deploy-metric {
+        border-color: #43516a;
+        background: #1b2330;
+    }
+
+    .edge-deploy-section-title {
+        color: #f3f8ff;
+        font-weight: 750;
+    }
+
+    .edge-deploy-section-desc {
+        color: #98a8bd;
+    }
+
+    .edge-deploy-runtime-summary,
+    .edge-deploy-history-row,
+    .edge-deploy-job {
+        border-color: #3d4d66;
+        background: #182131;
+    }
+
+    .edge-deploy-footer {
+        .ant-btn-primary {
+            min-width: 136px;
+        }
+    }
+}
+
+.runtime-status-modal,
+.workflow-modal {
+    color: #c2cee0;
+
+    h3,
+    strong {
+        color: #f3f8ff;
+    }
+}
