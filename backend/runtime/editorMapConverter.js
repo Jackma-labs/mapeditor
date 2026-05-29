@@ -30,13 +30,16 @@ const EDITOR_AREA_TYPE = {
   UNDRIVEABLE: 2,
   CUSTOM: 3,
 };
-const APOLLO_SIM_MIN_TURN_RADIUS = 4.5;
-const APOLLO_SIM_TURN_SPEED_LAT_ACCEL = 1.05;
+const EDGE_VEHICLE_WIDTH_METERS = 1.4;
+const EDGE_VEHICLE_LENGTH_METERS = 3.7;
+const APOLLO_SIM_MIN_TURN_RADIUS = Math.max(4.5, EDGE_VEHICLE_LENGTH_METERS * 1.2);
+const APOLLO_SIM_TURN_SPEED_LAT_ACCEL = 2.0;
 const APOLLO_SIM_TURN_SPEED_MIN_MPS = 1.8;
+const APOLLO_SIM_DEFAULT_TURN_SPEED_MAX_MPS = 15 / 3.6;
 const APOLLO_SIM_U_TURN_SPEED_MAX_MPS = 2.4;
-const APOLLO_SIM_SHARP_TURN_SPEED_MAX_MPS = 3.2;
-const APOLLO_SIM_MEDIUM_TURN_SPEED_MAX_MPS = 4.2;
-const APOLLO_SIM_SOFT_TURN_SPEED_MAX_MPS = 5.2;
+const APOLLO_SIM_SHARP_TURN_SPEED_MAX_MPS = APOLLO_SIM_DEFAULT_TURN_SPEED_MAX_MPS;
+const APOLLO_SIM_MEDIUM_TURN_SPEED_MAX_MPS = APOLLO_SIM_DEFAULT_TURN_SPEED_MAX_MPS;
+const APOLLO_SIM_SOFT_TURN_SPEED_MAX_MPS = APOLLO_SIM_DEFAULT_TURN_SPEED_MAX_MPS;
 const APOLLO_SIM_CENTER_SMOOTH_MIN_LENGTH = 5;
 const APOLLO_SIM_CENTER_SMOOTH_MAX_DEVIATION = 3.5;
 const APOLLO_SIM_CENTER_SMOOTH_SAMPLE_COUNT = 17;
@@ -1393,6 +1396,9 @@ function turnSpeedLimitForApollo(baseSpeedLimit, lane, center, conversionWarning
         limitedSpeedMps: Number(limitedSpeed.toFixed(2)),
         turnAngleDegrees: Number(((turnAngle * 180) / Math.PI).toFixed(1)),
         minRadius: Number.isFinite(metrics.minRadius) ? Number(metrics.minRadius.toFixed(2)) : null,
+        vehicleWidthMeters: EDGE_VEHICLE_WIDTH_METERS,
+        vehicleLengthMeters: EDGE_VEHICLE_LENGTH_METERS,
+        defaultTurnSpeedKph: 15,
       },
     });
   }

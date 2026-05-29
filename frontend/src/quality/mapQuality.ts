@@ -1,5 +1,5 @@
 import { MapState } from 'src/interface/mapStateInterface';
-import { Lane, LaneDireaciotn, LaneTrend, ProssibleDrivingDirection } from 'src/interface/laneInterFace';
+import { Lane, LaneDireaciotn, ProssibleDrivingDirection } from 'src/interface/laneInterFace';
 import { ThreeElementType, ThreeObject } from 'src/interface/commonInterFace';
 
 export type MapQualitySeverity = 'error' | 'warning';
@@ -79,14 +79,17 @@ const validPossibleDirections = new Set<number>([
     ProssibleDrivingDirection.RELATIVEDIRECTION,
 ]);
 
-const LANE_MIN_USABLE_WIDTH_METERS = 1.8;
-const LANE_NARROW_WIDTH_WARNING_METERS = 2.6;
+const EDGE_VEHICLE_WIDTH_METERS = 1.4;
+const EDGE_VEHICLE_LENGTH_METERS = 3.7;
+const LANE_MIN_USABLE_WIDTH_METERS = EDGE_VEHICLE_WIDTH_METERS + 0.4;
+const LANE_NARROW_WIDTH_WARNING_METERS = EDGE_VEHICLE_WIDTH_METERS + 1.2;
 const LANE_HARD_TURN_RADIUS_ERROR_METERS = 2.0;
-const LANE_STRICT_TURN_RADIUS_ERROR_METERS = 3.0;
 const LANE_MIN_TURN_RADIUS_WARNING_METERS = 4.5;
-const LANE_LOW_SPEED_TURN_KPH = 10;
+const LANE_TIGHT_TURN_RADIUS_WARNING_METERS = Math.max(3.0, EDGE_VEHICLE_LENGTH_METERS * 0.8);
+const LANE_DEFAULT_TURN_SPEED_KPH = 15;
+const LANE_TURN_SPEED_LAT_ACCEL_MPS2 = 2.0;
+const LANE_TURN_SPEED_TOLERANCE_KPH = 2;
 const LANE_MAX_SPEED_WARNING_KPH = 120;
-const LANE_RECOVERABLE_TURN_WIDTH_METERS = 2.6;
 const LANE_SUCCESSOR_SHARP_ANGLE_ERROR_DEGREES = 100;
 const LANE_SUCCESSOR_SHARP_ANGLE_WARNING_DEGREES = 65;
 const CURVE_SAMPLE_COUNT = 17;
@@ -247,6 +250,23 @@ function getPolylineMinRadius(points: Point2D[]) {
     return minRadius;
 }
 
+function isLaneTurn(lane: Lane, minTurnRadius: number) {
+    const direction = Number(lane.attr?.direction);
+    return (
+        direction === LaneDireaciotn.TURN_LEFT ||
+        direction === LaneDireaciotn.TURN_RIGHT ||
+        direction === LaneDireaciotn.TURN_AROUND ||
+        (Number.isFinite(minTurnRadius) && minTurnRadius < 30)
+    );
+}
+
+function getRecommendedTurnSpeedKph(radiusMeters: number, isTurningLane: boolean) {
+    if (!Number.isFinite(radiusMeters) || radiusMeters <= 0) {
+        return isTurningLane ? LANE_DEFAULT_TURN_SPEED_KPH : null;
+    }
+    return Math.min(LANE_DEFAULT_TURN_SPEED_KPH, Math.sqrt(radiusMeters * LANE_TURN_SPEED_LAT_ACCEL_MPS2) * 3.6);
+}
+
 function auditLaneGeometry(mapState: MapState, lane: Lane): LaneGeometryAudit | null {
     const leftPoints = getBoundaryGeometryPoints(mapState, lane.leftBoundaryId, lane.leftBoundaryReverse);
     const rightPoints = getBoundaryGeometryPoints(mapState, lane.rightBoundaryId, lane.rightBoundaryReverse);
@@ -270,23 +290,6 @@ function auditLaneGeometry(mapState: MapState, lane: Lane): LaneGeometryAudit | 
         minTurnRadius: getPolylineMinRadius(centerPoints),
         boundaryIntersects: polylinesIntersect(leftPoints, rightPoints),
     };
-}
-
-function isRecoverableLowSpeedTurn(lane: Lane, laneGeometryAudit: LaneGeometryAudit) {
-    const laneDirection = Number(lane.attr?.direction);
-    const laneSpeed = Number(lane.attr?.speed);
-    const isLowSpeedSetting = Number.isFinite(laneSpeed) && laneSpeed <= LANE_LOW_SPEED_TURN_KPH;
-    const isTurnGeometry =
-        lane.type === LaneTrend.Curve ||
-        laneDirection === LaneDireaciotn.TURN_LEFT ||
-        laneDirection === LaneDireaciotn.TURN_RIGHT ||
-        laneDirection === LaneDireaciotn.TURN_AROUND;
-    return (
-        isLowSpeedSetting &&
-        isTurnGeometry &&
-        laneGeometryAudit.minWidth >= LANE_RECOVERABLE_TURN_WIDTH_METERS &&
-        laneGeometryAudit.minTurnRadius >= LANE_HARD_TURN_RADIUS_ERROR_METERS
-    );
 }
 
 function getLaneEndpointDirection(mapState: MapState, lane: Lane, endpoint: 'start' | 'end') {
@@ -725,11 +728,8 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                     target,
                 });
             }
-            const recoverableLowSpeedTurn = isRecoverableLowSpeedTurn(lane, laneGeometryAudit);
-            if (
-                laneGeometryAudit.minTurnRadius < LANE_HARD_TURN_RADIUS_ERROR_METERS ||
-                (laneGeometryAudit.minTurnRadius < LANE_STRICT_TURN_RADIUS_ERROR_METERS && !recoverableLowSpeedTurn)
-            ) {
+            const laneIsTurn = isLaneTurn(lane, laneGeometryAudit.minTurnRadius);
+            if (laneGeometryAudit.minTurnRadius < LANE_HARD_TURN_RADIUS_ERROR_METERS) {
                 buildIssue(issues, {
                     severity: 'error',
                     title: `车道 ${lane.id} 转弯半径过小`,
@@ -742,19 +742,49 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                     ]),
                     target,
                 });
-            } else if (laneGeometryAudit.minTurnRadius < LANE_MIN_TURN_RADIUS_WARNING_METERS) {
-                buildIssue(issues, {
-                    severity: 'warning',
-                    title: `车道 ${lane.id} 转弯半径偏小`,
-                    description: `中心线最小半径为 ${laneGeometryAudit.minTurnRadius.toFixed(
-                        2,
-                    )}m，车辆可能需要更低速度或更平顺的连接段。`,
-                    suggestion: '在 Dreamview 中检查该转弯；如果车辆犹豫或压线，需要拉开端点并重建连接。',
-                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
-                        `最小半径：${laneGeometryAudit.minTurnRadius.toFixed(2)}m`,
-                    ]),
-                    target,
-                });
+            } else {
+                const recommendedTurnSpeedKph = getRecommendedTurnSpeedKph(laneGeometryAudit.minTurnRadius, laneIsTurn);
+                if (
+                    laneIsTurn &&
+                    recommendedTurnSpeedKph !== null &&
+                    Number.isFinite(laneSpeedKph) &&
+                    laneSpeedKph > recommendedTurnSpeedKph + LANE_TURN_SPEED_TOLERANCE_KPH
+                ) {
+                    buildIssue(issues, {
+                        severity: 'warning',
+                        title: `车道 ${lane.id} 转弯限速偏高`,
+                        description: `中心线最小半径为 ${laneGeometryAudit.minTurnRadius.toFixed(
+                            2,
+                        )}m，按当前弯道建议限速约 ${recommendedTurnSpeedKph.toFixed(
+                            1,
+                        )} km/h，当前设置 ${laneSpeedKph} km/h。`,
+                        suggestion:
+                            '弯道默认上限按 15 km/h 处理；如果半径不足以支撑 15 km/h，就按建议值降低限速，或拉大弯道半径。',
+                        details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                            `最小半径：${laneGeometryAudit.minTurnRadius.toFixed(2)}m`,
+                            `当前限速：${laneSpeedKph} km/h`,
+                            `建议限速：${recommendedTurnSpeedKph.toFixed(1)} km/h`,
+                            `车辆参数：宽 ${EDGE_VEHICLE_WIDTH_METERS}m，长 ${EDGE_VEHICLE_LENGTH_METERS}m`,
+                        ]),
+                        target,
+                    });
+                } else if (
+                    laneGeometryAudit.minTurnRadius < LANE_MIN_TURN_RADIUS_WARNING_METERS &&
+                    laneGeometryAudit.minTurnRadius < LANE_TIGHT_TURN_RADIUS_WARNING_METERS
+                ) {
+                    buildIssue(issues, {
+                        severity: 'warning',
+                        title: `车道 ${lane.id} 低速急弯`,
+                        description: `中心线最小半径为 ${laneGeometryAudit.minTurnRadius.toFixed(
+                            2,
+                        )}m，半径低于 3.0m，只适合低速通过。`,
+                        suggestion: '在 Dreamview 中低速验证；如果车辆压线或抖动，需要拉开端点并重建连接。',
+                        details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                            `最小半径：${laneGeometryAudit.minTurnRadius.toFixed(2)}m`,
+                        ]),
+                        target,
+                    });
+                }
             }
         }
         if (

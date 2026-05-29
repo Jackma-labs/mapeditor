@@ -149,12 +149,13 @@ function getIssueGuide(issue: MapQualityIssue): IssueGuide {
             ],
         };
     }
-    if (text.includes('转弯半径')) {
+    if (text.includes('转弯半径') || text.includes('转弯限速') || text.includes('低速急弯')) {
         return {
-            title: '转弯半径小怎么处理',
+            title: '转弯半径/限速怎么处理',
             steps: [
                 '半径低于 2m 按硬错误处理，需要拉开端点或重建弯道。',
-                '2m 到 4.5m 属于低速风险段，先降低限速，再在 Dreamview 里确认车辆不压线、不抖动。',
+                '普通弯道先按 15 km/h 上限处理；如果中心线半径太小，按质检给出的建议限速继续降低。',
+                '3m 左右的中心线半径属于低速急弯，不适合直接用 15 km/h 跑；15 km/h 通常需要更大的弯道半径。',
                 '优先用弯道连接重建，少用手动拖控制点硬拐；重建后检查最小宽度和左右边界是否交叉。',
             ],
         };
