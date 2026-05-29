@@ -1,5 +1,5 @@
 import { ThreeElementType, ThreeObject } from 'src/interface/commonInterFace';
-import { LaneDireaciotn, LaneTrend, LaneType, ProssibleDrivingDirection } from 'src/interface/laneInterFace';
+import { Lane, LaneDireaciotn, LaneTrend, LaneType, ProssibleDrivingDirection } from 'src/interface/laneInterFace';
 import { MapState } from 'src/interface/mapStateInterface';
 import { StopLineOrigin } from 'src/interface/stopLineInterFace';
 import { buildLaneRelations } from 'src/quality/mapQuality';
@@ -14,7 +14,8 @@ type RepairKind =
     | 'restoreLaneGroud'
     | 'restoreLaneArrow'
     | 'restoreTrafficSignalStopLine'
-    | 'snapLaneSuccessorStart';
+    | 'snapLaneSuccessorStart'
+    | 'setLaneTurnSpeed';
 
 interface BoundaryPointPatch {
     boundaryId: string;
@@ -74,6 +75,17 @@ const validLaneTypes = new Set<number>([LaneType.CityDriving, LaneType.Biking, L
 const MAX_TOPOLOGY_REPAIR_CANDIDATES = 12;
 const MAX_ENDPOINT_PAIR_DISTANCE = 4;
 const MAX_ENDPOINT_ANGLE_DEGREES = 35;
+const TURN_LANE_RADIUS_DETECT_METERS = 30;
+const TURN_SPEED_LAT_ACCEL_MPS2 = 2.0;
+const TURN_SPEED_DEFAULT_MAX_KPH = 15;
+const TURN_SPEED_AUTO_REPAIR_MAX_KPH = 9;
+const TURN_SPEED_WARNING_TOLERANCE_KPH = 2;
+
+interface Point2D {
+    x: number;
+    y: number;
+    z?: number;
+}
 
 function getNextNumericId(usedIds: Set<string>) {
     let maxId = 0;
@@ -90,6 +102,149 @@ function getNextNumericId(usedIds: Set<string>) {
 
 function getLaneGroudType(laneType: LaneTrend) {
     return laneType === LaneTrend.Curve ? ThreeElementType.LaneCurveGroud : ThreeElementType.LaneGroud;
+}
+
+function vectorToPoint2D(value: any): Point2D | null {
+    if (!value || !Number.isFinite(Number(value.x)) || !Number.isFinite(Number(value.y))) {
+        return null;
+    }
+    return {
+        x: Number(value.x),
+        y: Number(value.y),
+        z: Number(value.z || 0),
+    };
+}
+
+function distance2D(left: Point2D, right: Point2D) {
+    return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function cubicBezier(p0: Point2D, p1: Point2D, p2: Point2D, p3: Point2D, t: number): Point2D {
+    const u = 1 - t;
+    return {
+        x: u ** 3 * p0.x + 3 * u ** 2 * t * p1.x + 3 * u * t ** 2 * p2.x + t ** 3 * p3.x,
+        y: u ** 3 * p0.y + 3 * u ** 2 * t * p1.y + 3 * u * t ** 2 * p2.y + t ** 3 * p3.y,
+        z: (p0.z || 0) * u ** 3 + 3 * (p1.z || 0) * u ** 2 * t + 3 * (p2.z || 0) * u * t ** 2 + (p3.z || 0) * t ** 3,
+    };
+}
+
+function polylineLength(points: Point2D[]) {
+    let total = 0;
+    for (let index = 1; index < points.length; index += 1) {
+        total += distance2D(points[index - 1], points[index]);
+    }
+    return total;
+}
+
+function interpolatePolyline(points: Point2D[], ratio: number): Point2D {
+    if (points.length === 0) {
+        return { x: 0, y: 0, z: 0 };
+    }
+    if (points.length === 1) {
+        return points[0];
+    }
+    const total = polylineLength(points);
+    if (total <= 0) {
+        return points[0];
+    }
+    const target = Math.max(0, Math.min(1, ratio)) * total;
+    let walked = 0;
+    for (let index = 1; index < points.length; index += 1) {
+        const start = points[index - 1];
+        const end = points[index];
+        const segmentLength = distance2D(start, end);
+        if (walked + segmentLength >= target) {
+            const localRatio = segmentLength > 0 ? (target - walked) / segmentLength : 0;
+            return {
+                x: start.x + (end.x - start.x) * localRatio,
+                y: start.y + (end.y - start.y) * localRatio,
+                z: (start.z || 0) + ((end.z || 0) - (start.z || 0)) * localRatio,
+            };
+        }
+        walked += segmentLength;
+    }
+    return points[points.length - 1];
+}
+
+function getBoundaryGeometryPoints(mapState: MapState, boundaryId: string, reverse: boolean): Point2D[] {
+    const boundary = mapState.boundarys[boundaryId];
+    if (!boundary) {
+        return [];
+    }
+    const orderedPointIds = reverse ? [...boundary.pointIds].reverse() : [...boundary.pointIds];
+    const points = orderedPointIds
+        .map((pointId) => vectorToPoint2D(mapState.points[pointId]?.position))
+        .filter((point): point is Point2D => Boolean(point));
+    const controls = (boundary.controlsPosition || [])
+        .map((point) => vectorToPoint2D(point))
+        .filter((point): point is Point2D => Boolean(point));
+    if (points.length >= 2 && controls.length >= 2) {
+        return Array.from({ length: 17 }, (_unused, index) =>
+            cubicBezier(points[0], controls[0], controls[1], points[points.length - 1], index / 16),
+        );
+    }
+    return points;
+}
+
+function getPolylineMinRadius(points: Point2D[]) {
+    let minRadius = Infinity;
+    for (let index = 1; index < points.length - 1; index += 1) {
+        const a = points[index - 1];
+        const b = points[index];
+        const c = points[index + 1];
+        const ab = distance2D(a, b);
+        const bc = distance2D(b, c);
+        const ac = distance2D(a, c);
+        const area = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) / 2;
+        if (area >= 0.000001 && ab * bc * ac !== 0) {
+            minRadius = Math.min(minRadius, (ab * bc * ac) / (4 * area));
+        }
+    }
+    return minRadius;
+}
+
+function getLaneMinTurnRadius(mapState: MapState, lane: Lane) {
+    const leftPoints = getBoundaryGeometryPoints(mapState, lane.leftBoundaryId, lane.leftBoundaryReverse);
+    const rightPoints = getBoundaryGeometryPoints(mapState, lane.rightBoundaryId, lane.rightBoundaryReverse);
+    if (leftPoints.length < 2 || rightPoints.length < 2) {
+        return Infinity;
+    }
+    const sampleCount = Math.max(leftPoints.length, rightPoints.length, 3);
+    const leftSamples = Array.from({ length: sampleCount }, (_unused, index) =>
+        interpolatePolyline(leftPoints, sampleCount === 1 ? 0 : index / (sampleCount - 1)),
+    );
+    const rightSamples = Array.from({ length: sampleCount }, (_unused, index) =>
+        interpolatePolyline(rightPoints, sampleCount === 1 ? 0 : index / (sampleCount - 1)),
+    );
+    const centerPoints = leftSamples.map((leftPoint, index) => ({
+        x: (leftPoint.x + rightSamples[index].x) / 2,
+        y: (leftPoint.y + rightSamples[index].y) / 2,
+        z: ((leftPoint.z || 0) + (rightSamples[index].z || 0)) / 2,
+    }));
+    return getPolylineMinRadius(centerPoints);
+}
+
+function isTurnLane(lane: Lane, minTurnRadius: number) {
+    const direction = Number(lane.attr?.direction);
+    return (
+        lane.type === LaneTrend.Curve ||
+        direction === LaneDireaciotn.TURN_LEFT ||
+        direction === LaneDireaciotn.TURN_RIGHT ||
+        direction === LaneDireaciotn.TURN_AROUND ||
+        (Number.isFinite(minTurnRadius) && minTurnRadius < TURN_LANE_RADIUS_DETECT_METERS)
+    );
+}
+
+function getRecommendedTurnSpeedKph(radiusMeters: number) {
+    if (!Number.isFinite(radiusMeters) || radiusMeters <= 0) {
+        return TURN_SPEED_DEFAULT_MAX_KPH;
+    }
+    return Math.min(TURN_SPEED_DEFAULT_MAX_KPH, Math.sqrt(radiusMeters * TURN_SPEED_LAT_ACCEL_MPS2) * 3.6);
+}
+
+function getAutoRepairTurnSpeedKph(radiusMeters: number) {
+    const recommendedSpeed = getRecommendedTurnSpeedKph(radiusMeters);
+    return Number(Math.min(TURN_SPEED_AUTO_REPAIR_MAX_KPH, recommendedSpeed).toFixed(1));
 }
 
 function getBoundaryPointIndex(mapState: MapState, laneId: string, side: 'left' | 'right', endpoint: 'start' | 'end') {
@@ -364,6 +519,25 @@ export function buildMapQualityRepairActions(mapState: MapState): MapQualityRepa
                 nextValue: LaneType.CityDriving,
             });
         }
+        const minTurnRadius = getLaneMinTurnRadius(mapState, lane);
+        const laneSpeedKph = Number(lane.attr?.speed);
+        const recommendedTurnSpeedKph = getRecommendedTurnSpeedKph(minTurnRadius);
+        if (
+            isTurnLane(lane, minTurnRadius) &&
+            Number.isFinite(laneSpeedKph) &&
+            laneSpeedKph > recommendedTurnSpeedKph + TURN_SPEED_WARNING_TOLERANCE_KPH
+        ) {
+            const nextSpeedKph = getAutoRepairTurnSpeedKph(minTurnRadius);
+            actions.push({
+                kind: 'setLaneTurnSpeed',
+                targetId: lane.id,
+                title: `降低车道 ${lane.id} 的弯道限速`,
+                description: `当前 ${laneSpeedKph} km/h，中心线半径 ${
+                    Number.isFinite(minTurnRadius) ? `${minTurnRadius.toFixed(2)}m` : '未知'
+                }，自动降到 ${nextSpeedKph} km/h。`,
+                nextValue: nextSpeedKph,
+            });
+        }
 
         if (!lane.groudId || !mapState.grouds[lane.groudId]) {
             const groudId = lane.groudId || getNextNumericId(usedGroudIds);
@@ -494,6 +668,17 @@ export function applyMapQualityRepairs(mapState: MapState, actions: MapQualityRe
                 attr: {
                     ...lane.attr,
                     laneType: action.nextValue,
+                },
+            };
+            return;
+        }
+        if (action.kind === 'setLaneTurnSpeed' && action.nextValue) {
+            nextMapState.lanes[lane.id] = {
+                ...lane,
+                attr: {
+                    ...lane.attr,
+                    speed: action.nextValue,
+                    speedKph: action.nextValue,
                 },
             };
             return;
