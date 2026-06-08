@@ -15,6 +15,41 @@ export interface TileItem {
     offset_y: string;
 }
 
+interface PointCloudBlock {
+    id: string;
+    file: string;
+    level: number;
+    pointCount: number;
+    bounds: {
+        minX: number;
+        minY: number;
+        minZ?: number;
+        maxX: number;
+        maxY: number;
+        maxZ?: number;
+    };
+}
+
+interface PointCloudLevel {
+    level: number;
+    cellSizeMeters: number;
+    blocks: PointCloudBlock[];
+}
+
+interface PointCloudIndex {
+    type: 'point_cloud';
+    center: { x: number; y: number; z?: number };
+    bounds: {
+        minX: number;
+        minY: number;
+        minZ?: number;
+        maxX: number;
+        maxY: number;
+        maxZ?: number;
+    };
+    levels: PointCloudLevel[];
+}
+
 interface CameraMovePadding {
     top?: number;
     right?: number;
@@ -70,6 +105,14 @@ export default class BaseMap {
 
     private currentMapExtent: number = 0;
 
+    private pointCloudIndex: PointCloudIndex | null = null;
+
+    private pointCloudLoading: boolean = false;
+
+    private pointCloudActiveLevel: number | null = null;
+
+    private pointCloudRequestSeq: number = 0;
+
     /**
      * @class RenderHelper
      * @description 渲染辅助类，主要用于实现地图和相机之间的同步操作
@@ -90,6 +133,10 @@ export default class BaseMap {
             'update',
             throttle(() => {
                 PubSub.publish('closeRemind');
+                if (this.pointCloudIndex) {
+                    this.updatePointCloudBlocks().catch((error) => console.error(error));
+                    return;
+                }
                 if (!this.dir || Object.keys(this.tiles).length === 0 || this.loading) {
                     return;
                 }
@@ -197,9 +244,10 @@ export default class BaseMap {
         this.deleteTile();
         this.activeLayerId = json.layerId || options.layerId || 'enhanced';
         if (json.type === 'point_cloud') {
-            this.renderPointCloudMap(dir, json);
+            await this.renderPointCloudMap(dir, json, options);
             return;
         }
+        this.pointCloudIndex = null;
         const tiles = json.tiles[this.scale];
         const { points: allPoints, imageBasemapCenter, hdBasemapCenter } = useManagerStore.getState().mapState;
         useManagerStore.getState().setMapState({
@@ -263,9 +311,8 @@ export default class BaseMap {
         this.loading = false;
     }
 
-    private renderPointCloudMap(dir: string, json: any) {
-        const cloudPoints = Array.isArray(json.points) ? json.points : [];
-        if (cloudPoints.length === 0) {
+    private async renderPointCloudMap(dir: string, json: PointCloudIndex, options: any = {}) {
+        if (!Array.isArray(json.levels) || json.levels.length === 0) {
             this.loading = false;
             return;
         }
@@ -283,24 +330,163 @@ export default class BaseMap {
                 (!hdBasemapCenter && Object.keys(allPoints).length !== 0));
         this.dir = dir;
         this.tiles = {};
+        this.pointCloudIndex = json;
+        this.pointCloudActiveLevel = null;
 
-        const positions = new Float32Array(cloudPoints.length * 3);
-        const colors = new Float32Array(cloudPoints.length * 3);
-        const bounds = json.bounds || { minZ: 0, maxZ: 0 };
-        const zRange = Math.max(0.0001, Number(bounds.maxZ || 0) - Number(bounds.minZ || 0));
-        cloudPoints.forEach((point: number[], index: number) => {
-            const x = Number(point[0]);
-            const y = Number(point[1]);
-            const z = Number(point[2] || 0);
-            positions[index * 3] = x - center.x;
-            positions[index * 3 + 1] = y - center.y;
-            positions[index * 3 + 2] = 0;
-            const heightWeight = Math.max(0, Math.min(1, (z - Number(bounds.minZ || 0)) / zRange));
-            colors[index * 3] = 0.45 + heightWeight * 0.45;
-            colors[index * 3 + 1] = 0.65 + heightWeight * 0.3;
-            colors[index * 3 + 2] = 0.75 + heightWeight * 0.25;
+        const { bounds: mapBounds } = json;
+        if (mapBounds) {
+            const width = Number(mapBounds.maxX) - Number(mapBounds.minX);
+            const height = Number(mapBounds.maxY) - Number(mapBounds.minY);
+            this.currentMapExtent = Math.max(width, height, 20);
+            if (!options.keepCamera) {
+                this.control.adapter(this.currentMapExtent);
+                this.control.cameraControls.moveTo(0, 0, 0, false);
+            }
+        }
+        this.position.copy(this.camera.position);
+        await this.updatePointCloudBlocks(true);
+        if (needOffset) {
+            this.allElementsToOffset();
+        }
+        if (!options.preserveCommands) {
+            useManagerStore.getState().resetCommand();
+        }
+        applyEditorLayerVisibility(useManagerStore.getState().mapState);
+        this.renderer();
+        this.loading = false;
+    }
+
+    private getPointCloudVisibleHeight() {
+        const vFOV = THREE.MathUtils.degToRad(this.camera.fov);
+        return Math.max(1, 2 * Math.tan(vFOV / 2) * Math.max(1, this.camera.position.z));
+    }
+
+    private selectPointCloudLevel() {
+        const levels = (this.pointCloudIndex?.levels || [])
+            .filter((level) => Array.isArray(level.blocks) && level.blocks.length > 0)
+            .sort((left, right) => left.cellSizeMeters - right.cellSizeMeters);
+        if (levels.length === 0) {
+            return null;
+        }
+        const visibleHeight = this.getPointCloudVisibleHeight();
+        const desiredCellSize = visibleHeight / 3;
+        return levels.find((level) => level.cellSizeMeters >= desiredCellSize) || levels[levels.length - 1];
+    }
+
+    private getPointCloudVisibleBounds() {
+        const visibleHeight = this.getPointCloudVisibleHeight();
+        const aspect = Math.max(0.1, this.camera.aspect || 1);
+        const visibleWidth = visibleHeight * aspect;
+        const padding = 1.35;
+        return {
+            minX: this.camera.position.x - (visibleWidth * padding) / 2,
+            maxX: this.camera.position.x + (visibleWidth * padding) / 2,
+            minY: this.camera.position.y - (visibleHeight * padding) / 2,
+            maxY: this.camera.position.y + (visibleHeight * padding) / 2,
+        };
+    }
+
+    private isPointCloudBlockVisible(
+        block: PointCloudBlock,
+        viewBounds: { minX: number; minY: number; maxX: number; maxY: number },
+    ) {
+        const center = this.pointCloudIndex?.center || { x: 0, y: 0 };
+        const minX = Number(block.bounds.minX) - Number(center.x);
+        const maxX = Number(block.bounds.maxX) - Number(center.x);
+        const minY = Number(block.bounds.minY) - Number(center.y);
+        const maxY = Number(block.bounds.maxY) - Number(center.y);
+        return maxX >= viewBounds.minX && minX <= viewBounds.maxX && maxY >= viewBounds.minY && minY <= viewBounds.maxY;
+    }
+
+    private getVisiblePointCloudBlocks(level: PointCloudLevel) {
+        const viewBounds = this.getPointCloudVisibleBounds();
+        return level.blocks.filter((block) => this.isPointCloudBlockVisible(block, viewBounds));
+    }
+
+    private async updatePointCloudBlocks(force: boolean = false) {
+        if (!this.pointCloudIndex || this.pointCloudLoading) {
+            return;
+        }
+        let level = this.selectPointCloudLevel();
+        if (!level) {
+            return;
+        }
+        let visibleBlocks = this.getVisiblePointCloudBlocks(level);
+        const levelsByCoarseness = [...this.pointCloudIndex.levels]
+            .filter((item) => Array.isArray(item.blocks) && item.blocks.length > 0)
+            .sort((left, right) => right.cellSizeMeters - left.cellSizeMeters);
+        while (visibleBlocks.length > 96) {
+            const currentLevel = level.level;
+            const currentIndex = levelsByCoarseness.findIndex((item) => item.level === currentLevel);
+            const coarser = currentIndex > 0 ? levelsByCoarseness[currentIndex - 1] : null;
+            if (!coarser) {
+                break;
+            }
+            level = coarser;
+            visibleBlocks = this.getVisiblePointCloudBlocks(level);
+        }
+        if (!force && visibleBlocks.length === 0) {
+            return;
+        }
+
+        this.pointCloudLoading = true;
+        this.pointCloudRequestSeq += 1;
+        const requestSeq = this.pointCloudRequestSeq;
+        const visibleIds = new Set(visibleBlocks.map((block) => this.getPointCloudMeshId(block)));
+        try {
+            await Promise.all(
+                visibleBlocks.map(async (block) => {
+                    const meshId = this.getPointCloudMeshId(block);
+                    if (this.meshs[meshId]) {
+                        this.meshs[meshId].visible = true;
+                        return;
+                    }
+                    const mesh = await this.loadPointCloudBlock(block);
+                    if (requestSeq !== this.pointCloudRequestSeq || !this.pointCloudIndex) {
+                        this.removeMesh(mesh);
+                        return;
+                    }
+                    this.meshs[meshId] = mesh;
+                    this.addMesh(mesh);
+                }),
+            );
+            Object.keys(this.meshs).forEach((id) => {
+                const mesh = this.meshs[id];
+                if (mesh instanceof THREE.Points && mesh.userData?.source === 'point_cloud') {
+                    mesh.visible = visibleIds.has(id);
+                }
+            });
+            this.pointCloudActiveLevel = level.level;
+            applyEditorLayerVisibility(useManagerStore.getState().mapState);
+            this.renderer();
+        } finally {
+            this.pointCloudLoading = false;
+        }
+    }
+
+    private getPointCloudMeshId(block: PointCloudBlock) {
+        return `point_cloud_${block.id}`;
+    }
+
+    private async loadPointCloudBlock(block: PointCloudBlock) {
+        const response = await fetch(`${baseApiURL}/mapcreator/${this.dir}/point_cloud/${block.file}`, {
+            credentials: 'include',
         });
-
+        if (!response.ok) {
+            throw new Error(`load point-cloud block failed: ${block.file}`);
+        }
+        const buffer = await response.arrayBuffer();
+        const pointCount = Number(block.pointCount) || 0;
+        const positionBytes = pointCount * 3 * 4;
+        const positions = new Float32Array(buffer, 0, pointCount * 3);
+        for (let index = 0; index < pointCount; index += 1) {
+            positions[index * 3 + 2] = 0;
+        }
+        const rawColors = new Uint8Array(buffer, positionBytes, pointCount * 3);
+        const colors = new Float32Array(pointCount * 3);
+        for (let index = 0; index < rawColors.length; index += 1) {
+            colors[index] = rawColors[index] / 255;
+        }
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -311,33 +497,18 @@ export default class BaseMap {
             transparent: true,
             opacity: this.opacity,
             depthWrite: false,
+            depthTest: false,
         });
         const pointCloud = new THREE.Points(geometry, material);
         pointCloud.name = 'tile';
         pointCloud.userData = {
-            id: 'point_cloud',
+            id: this.getPointCloudMeshId(block),
             type: ThreeElementType.Tile,
+            source: 'point_cloud',
+            level: block.level,
         };
         pointCloud.renderOrder = 0;
-        this.meshs.point_cloud = pointCloud;
-        this.addMesh(pointCloud);
-
-        const { bounds: mapBounds } = json;
-        if (mapBounds) {
-            const width = Number(mapBounds.maxX) - Number(mapBounds.minX);
-            const height = Number(mapBounds.maxY) - Number(mapBounds.minY);
-            this.currentMapExtent = Math.max(width, height, 20);
-            this.control.adapter(this.currentMapExtent);
-            this.control.cameraControls.moveTo(0, 0, 0, false);
-        }
-        this.position.copy(this.camera.position);
-        if (needOffset) {
-            this.allElementsToOffset();
-        }
-        useManagerStore.getState().resetCommand();
-        applyEditorLayerVisibility(useManagerStore.getState().mapState);
-        this.renderer();
-        this.loading = false;
+        return pointCloud;
     }
 
     private isSameVec(vec1: THREE.Vector3 | THREE.Vector2, vec2: THREE.Vector3 | THREE.Vector2) {
@@ -454,6 +625,10 @@ export default class BaseMap {
     }
 
     private deleteTile() {
+        this.pointCloudIndex = null;
+        this.pointCloudLoading = false;
+        this.pointCloudActiveLevel = null;
+        this.pointCloudRequestSeq += 1;
         Object.keys(this.meshs).forEach((id: string) => {
             this.removeMesh(this.meshs[id]);
             delete this.meshs[id];

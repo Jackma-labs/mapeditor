@@ -24,6 +24,27 @@ const MAX_POINT_CLOUD_RENDER_POINTS = Number.isFinite(configuredPointCloudRender
   : DEFAULT_POINT_CLOUD_RENDER_POINTS;
 const POINT_CLOUD_TILE_SIZE = 1024;
 const POINT_CLOUD_TILE_LEVELS = [0, 1, 2, 3, 4];
+const DEFAULT_POINT_CLOUD_BLOCK_POINTS = Number(process.env.POINT_CLOUD_BLOCK_POINTS || 60000);
+const POINT_CLOUD_BLOCK_POINTS = Number.isFinite(DEFAULT_POINT_CLOUD_BLOCK_POINTS)
+  ? Math.max(5000, DEFAULT_POINT_CLOUD_BLOCK_POINTS)
+  : 60000;
+const POINT_CLOUD_STREAM_LEVELS = [
+  {
+    level: 0,
+    cellSizeMeters: Number(process.env.POINT_CLOUD_LEVEL0_CELL_METERS || 512),
+    maxPointsPerBlock: Math.max(5000, Math.round(POINT_CLOUD_BLOCK_POINTS * 0.35)),
+  },
+  {
+    level: 1,
+    cellSizeMeters: Number(process.env.POINT_CLOUD_LEVEL1_CELL_METERS || 256),
+    maxPointsPerBlock: Math.max(10000, Math.round(POINT_CLOUD_BLOCK_POINTS * 0.55)),
+  },
+  {
+    level: 2,
+    cellSizeMeters: Number(process.env.POINT_CLOUD_LEVEL2_CELL_METERS || 128),
+    maxPointsPerBlock: POINT_CLOUD_BLOCK_POINTS,
+  },
+];
 const GROUND_GRID_SIZE_METERS = 0.5;
 const GROUND_MIN_RELATIVE_Z = -0.2;
 const GROUND_MAX_RELATIVE_Z = 0.35;
@@ -5191,6 +5212,9 @@ async function parsePlyPointCloud(filePath) {
   const xIndex = properties.indexOf('x');
   const yIndex = properties.indexOf('y');
   const zIndex = properties.indexOf('z');
+  const redIndex = properties.indexOf('red');
+  const greenIndex = properties.indexOf('green');
+  const blueIndex = properties.indexOf('blue');
   if (xIndex < 0 || yIndex < 0) {
     throw new Error('PLY 文件必须包含 x/y 字段');
   }
@@ -5204,7 +5228,19 @@ async function parsePlyPointCloud(filePath) {
     if (values.length <= Math.max(xIndex, yIndex) || values.some((value) => Number.isNaN(value))) {
       return;
     }
-    accumulator.addPoint(values[xIndex], values[yIndex], zIndex >= 0 ? values[zIndex] : 0);
+    accumulator.addPoint(
+      values[xIndex],
+      values[yIndex],
+      zIndex >= 0 ? values[zIndex] : 0,
+      null,
+      redIndex >= 0 && greenIndex >= 0 && blueIndex >= 0
+        ? {
+            r: values[redIndex],
+            g: values[greenIndex],
+            b: values[blueIndex],
+          }
+        : null,
+    );
   });
   return accumulator.finalize();
 }
@@ -5222,7 +5258,7 @@ async function parseLasPointCloud(filePath) {
       throw new Error('LAS 文件签名无效');
     }
     const offsetToPointData = headerBuffer.readUInt32LE(96);
-    const pointFormat = headerBuffer.readUInt8(104);
+    const pointFormat = headerBuffer.readUInt8(104) & 0x3f;
     const pointRecordLength = headerBuffer.readUInt16LE(105);
     if (pointFormat > 10 || pointRecordLength < 12) {
       throw new Error(`暂不支持 LAS 点格式 ${pointFormat}`);
@@ -5241,6 +5277,7 @@ async function parseLasPointCloud(filePath) {
     const offsetX = headerBuffer.readDoubleLE(155);
     const offsetY = headerBuffer.readDoubleLE(163);
     const offsetZ = headerBuffer.readDoubleLE(171);
+    const rgbOffset = getLasRgbOffset(pointFormat);
 
     const accumulator = createPointCloudAccumulator();
     const maxRecordsPerRead = Math.max(1, Math.floor((4 * 1024 * 1024) / pointRecordLength));
@@ -5266,7 +5303,7 @@ async function parseLasPointCloud(filePath) {
         const y = chunk.readInt32LE(base + 4) * scaleY + offsetY;
         const z = chunk.readInt32LE(base + 8) * scaleZ + offsetZ;
         const intensity = pointRecordLength >= 14 ? chunk.readUInt16LE(base + 12) : null;
-        accumulator.addPoint(x, y, z, intensity);
+        accumulator.addPoint(x, y, z, intensity, readLasRgbColor(chunk, base, pointRecordLength, rgbOffset));
       }
       readPointCount += actualRecords;
       if (actualRecords < recordsToRead) {
@@ -5397,6 +5434,63 @@ async function parsePointCloudZip(filePath) {
 
 function getPointCloudTileResolution(level) {
   return 0.5 / 2 ** level;
+}
+
+function getLasRgbOffset(pointFormat) {
+  const normalizedFormat = Number(pointFormat) & 0x3f;
+  if ([2, 3, 5].includes(normalizedFormat)) {
+    return normalizedFormat === 2 ? 20 : 28;
+  }
+  if ([7, 8, 10].includes(normalizedFormat)) {
+    return 30;
+  }
+  return -1;
+}
+
+function normalizeColorChannel(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value <= 255) {
+    return Math.max(0, Math.min(255, Math.round(value)));
+  }
+  return Math.max(0, Math.min(255, Math.round(value / 256)));
+}
+
+function readLasRgbColor(buffer, base, pointRecordLength, rgbOffset) {
+  if (rgbOffset < 0 || rgbOffset + 6 > pointRecordLength) {
+    return null;
+  }
+  const offset = base + rgbOffset;
+  const r = buffer.readUInt16LE(offset);
+  const g = buffer.readUInt16LE(offset + 2);
+  const b = buffer.readUInt16LE(offset + 4);
+  if (r === 0 && g === 0 && b === 0) {
+    return null;
+  }
+  return {
+    r: normalizeColorChannel(r),
+    g: normalizeColorChannel(g),
+    b: normalizeColorChannel(b),
+  };
+}
+
+function normalizePointColor(color, intensity = null) {
+  if (color && [color.r, color.g, color.b].every(Number.isFinite)) {
+    return {
+      r: normalizeColorChannel(color.r),
+      g: normalizeColorChannel(color.g),
+      b: normalizeColorChannel(color.b),
+      source: 'rgb',
+    };
+  }
+  const value = normalizePointIntensity(intensity);
+  return {
+    r: value,
+    g: value,
+    b: value,
+    source: 'intensity',
+  };
 }
 
 function normalizePointIntensity(intensity) {
@@ -5614,6 +5708,207 @@ function createRasterTileAccumulator(options = {}) {
     addImageFiles,
     getPointCount,
     writeTiles,
+  };
+}
+
+function createPointCloudStreamAccumulator(options = {}) {
+  const bounds = options.bounds || {};
+  const center = options.center || {
+    x: roundPointValue((Number(bounds.minX) + Number(bounds.maxX)) / 2),
+    y: roundPointValue((Number(bounds.minY) + Number(bounds.maxY)) / 2),
+    z: roundPointValue((Number(bounds.minZ) + Number(bounds.maxZ)) / 2),
+  };
+  const levels = (options.levels || POINT_CLOUD_STREAM_LEVELS)
+    .map((level) => ({
+      level: Number(level.level),
+      cellSizeMeters: Math.max(1, Number(level.cellSizeMeters) || 128),
+      maxPointsPerBlock: Math.max(1000, Number(level.maxPointsPerBlock) || POINT_CLOUD_BLOCK_POINTS),
+    }))
+    .filter((level) => Number.isFinite(level.level))
+    .sort((left, right) => left.level - right.level);
+  const blocksByLevel = new Map(levels.map((level) => [level.level, new Map()]));
+  const result = {
+    totalPointCount: 0,
+    rgbPointCount: 0,
+    intensityColorPointCount: 0,
+  };
+
+  const blockKey = (x, y) => `${x},${y}`;
+
+  const createBlock = (levelConfig, tileX, tileY) => ({
+    id: `l${levelConfig.level}_${tileX}_${tileY}`,
+    level: levelConfig.level,
+    x: tileX,
+    y: tileY,
+    cellSizeMeters: levelConfig.cellSizeMeters,
+    maxPointsPerBlock: levelConfig.maxPointsPerBlock,
+    seenPointCount: 0,
+    pointCount: 0,
+    positions: Buffer.alloc(levelConfig.maxPointsPerBlock * 3 * 4),
+    colors: Buffer.alloc(levelConfig.maxPointsPerBlock * 3),
+    bounds: {
+      minX: Infinity,
+      minY: Infinity,
+      minZ: Infinity,
+      maxX: -Infinity,
+      maxY: -Infinity,
+      maxZ: -Infinity,
+    },
+  });
+
+  const getBlock = (levelConfig, x, y) => {
+    const blocks = blocksByLevel.get(levelConfig.level);
+    const key = blockKey(x, y);
+    let block = blocks.get(key);
+    if (!block) {
+      block = createBlock(levelConfig, x, y);
+      blocks.set(key, block);
+    }
+    return block;
+  };
+
+  const writeBlockPoint = (block, index, x, y, z, color) => {
+    const positionOffset = index * 3 * 4;
+    block.positions.writeFloatLE(x - center.x, positionOffset);
+    block.positions.writeFloatLE(y - center.y, positionOffset + 4);
+    block.positions.writeFloatLE(z - center.z, positionOffset + 8);
+    const colorOffset = index * 3;
+    block.colors[colorOffset] = color.r;
+    block.colors[colorOffset + 1] = color.g;
+    block.colors[colorOffset + 2] = color.b;
+  };
+
+  const updateBlockBounds = (block, x, y, z) => {
+    block.bounds.minX = Math.min(block.bounds.minX, x);
+    block.bounds.minY = Math.min(block.bounds.minY, y);
+    block.bounds.minZ = Math.min(block.bounds.minZ, z);
+    block.bounds.maxX = Math.max(block.bounds.maxX, x);
+    block.bounds.maxY = Math.max(block.bounds.maxY, y);
+    block.bounds.maxZ = Math.max(block.bounds.maxZ, z);
+  };
+
+  const addPointToBlock = (levelConfig, x, y, z, color) => {
+    const tileX = Math.floor(x / levelConfig.cellSizeMeters);
+    const tileY = Math.floor(y / levelConfig.cellSizeMeters);
+    const block = getBlock(levelConfig, tileX, tileY);
+    block.seenPointCount += 1;
+    updateBlockBounds(block, x, y, z);
+
+    if (block.pointCount < levelConfig.maxPointsPerBlock) {
+      writeBlockPoint(block, block.pointCount, x, y, z, color);
+      block.pointCount += 1;
+      return;
+    }
+    const replaceIndex = Math.floor(Math.random() * block.seenPointCount);
+    if (replaceIndex < levelConfig.maxPointsPerBlock) {
+      writeBlockPoint(block, replaceIndex, x, y, z, color);
+    }
+  };
+
+  const addPoint = (x, y, z = 0, intensity = null, color = null) => {
+    if (![x, y, z].every(Number.isFinite)) {
+      return;
+    }
+    const normalizedColor = normalizePointColor(color, intensity);
+    result.totalPointCount += 1;
+    if (normalizedColor.source === 'rgb') {
+      result.rgbPointCount += 1;
+    } else {
+      result.intensityColorPointCount += 1;
+    }
+    for (const levelConfig of levels) {
+      addPointToBlock(levelConfig, x, y, z, normalizedColor);
+    }
+  };
+
+  const writeIndex = async (pointCloudDir, metadata = {}) => {
+    await fsp.mkdir(path.join(pointCloudDir, 'blocks'), { recursive: true });
+    const payload = {
+      version: 1,
+      type: 'point_cloud',
+      sourceType: 'point_cloud_stream',
+      format: 'mapeditor-point-cloud-blocks-v1',
+      binaryLayout: {
+        position: 'float32_xyz',
+        color: 'uint8_rgb',
+        order: 'positions_then_colors',
+        flattenedByDefault: true,
+      },
+      pointCount: metadata.pointCount || result.totalPointCount,
+      streamedPointCount: result.totalPointCount,
+      rgbPointCount: result.rgbPointCount,
+      intensityColorPointCount: result.intensityColorPointCount,
+      center,
+      bounds: metadata.bounds || bounds,
+      coordinate: metadata.coordinate || null,
+      sourceFiles: metadata.sourceFiles || [],
+      imageFileCount: metadata.imageFileCount || 0,
+      imageOverlay: metadata.imageOverlay || null,
+      stitchPlan: metadata.stitchPlan || null,
+      sourceAsset: metadata.sourceAsset || null,
+      processing: {
+        ...(metadata.processing || {}),
+        pointCloudMode: 'streamed_blocks',
+        levels: levels.map((level) => ({
+          level: level.level,
+          cellSizeMeters: level.cellSizeMeters,
+          maxPointsPerBlock: level.maxPointsPerBlock,
+        })),
+      },
+      levels: [],
+    };
+    let blockCount = 0;
+    let renderedPointCount = 0;
+    for (const levelConfig of levels) {
+      const blocks = Array.from(blocksByLevel.get(levelConfig.level).values())
+        .filter((block) => block.pointCount > 0)
+        .sort((left, right) => left.y - right.y || left.x - right.x);
+      const levelPayload = {
+        level: levelConfig.level,
+        cellSizeMeters: levelConfig.cellSizeMeters,
+        maxPointsPerBlock: levelConfig.maxPointsPerBlock,
+        blocks: [],
+      };
+      for (const block of blocks) {
+        const fileName = `${block.id}.bin`;
+        const file = `blocks/${fileName}`;
+        const positionBytes = block.pointCount * 3 * 4;
+        const colorBytes = block.pointCount * 3;
+        await fsp.writeFile(
+          path.join(pointCloudDir, file),
+          Buffer.concat([block.positions.subarray(0, positionBytes), block.colors.subarray(0, colorBytes)]),
+        );
+        levelPayload.blocks.push({
+          id: block.id,
+          file,
+          level: block.level,
+          x: block.x,
+          y: block.y,
+          cellSizeMeters: block.cellSizeMeters,
+          pointCount: block.pointCount,
+          seenPointCount: block.seenPointCount,
+          bounds: block.bounds,
+        });
+        blockCount += 1;
+        renderedPointCount += block.pointCount;
+      }
+      payload.levels.push(levelPayload);
+    }
+    payload.blockCount = blockCount;
+    payload.renderedPointCount = renderedPointCount;
+    await fsp.writeFile(path.join(pointCloudDir, 'index.json'), JSON.stringify(payload), 'utf8');
+    return {
+      blockCount,
+      renderedPointCount,
+      rgbPointCount: result.rgbPointCount,
+      intensityColorPointCount: result.intensityColorPointCount,
+      center,
+    };
+  };
+
+  return {
+    addPoint,
+    writeIndex,
   };
 }
 
@@ -8534,6 +8829,9 @@ async function scanPlyPointCloud(filePath, onPoint) {
   const xIndex = properties.indexOf('x');
   const yIndex = properties.indexOf('y');
   const zIndex = properties.indexOf('z');
+  const redIndex = properties.indexOf('red');
+  const greenIndex = properties.indexOf('green');
+  const blueIndex = properties.indexOf('blue');
   if (xIndex < 0 || yIndex < 0) {
     throw new Error('PLY 文件必须包含 x/y 字段');
   }
@@ -8546,7 +8844,19 @@ async function scanPlyPointCloud(filePath, onPoint) {
     if (values.length <= Math.max(xIndex, yIndex) || values.some((value) => Number.isNaN(value))) {
       return;
     }
-    onPoint(values[xIndex], values[yIndex], zIndex >= 0 ? values[zIndex] : 0, null);
+    onPoint(
+      values[xIndex],
+      values[yIndex],
+      zIndex >= 0 ? values[zIndex] : 0,
+      null,
+      redIndex >= 0 && greenIndex >= 0 && blueIndex >= 0
+        ? {
+            r: values[redIndex],
+            g: values[greenIndex],
+            b: values[blueIndex],
+          }
+        : null,
+    );
   });
 }
 
@@ -8563,7 +8873,7 @@ async function scanLasPointCloud(filePath, onPoint) {
       throw new Error('LAS 文件签名无效');
     }
     const offsetToPointData = headerBuffer.readUInt32LE(96);
-    const pointFormat = headerBuffer.readUInt8(104);
+    const pointFormat = headerBuffer.readUInt8(104) & 0x3f;
     const pointRecordLength = headerBuffer.readUInt16LE(105);
     if (pointFormat > 10 || pointRecordLength < 12) {
       throw new Error(`暂不支持 LAS 点格式 ${pointFormat}`);
@@ -8582,6 +8892,7 @@ async function scanLasPointCloud(filePath, onPoint) {
     const offsetX = headerBuffer.readDoubleLE(155);
     const offsetY = headerBuffer.readDoubleLE(163);
     const offsetZ = headerBuffer.readDoubleLE(171);
+    const rgbOffset = getLasRgbOffset(pointFormat);
     const maxRecordsPerRead = Math.max(1, Math.floor((4 * 1024 * 1024) / pointRecordLength));
     const chunk = Buffer.alloc(maxRecordsPerRead * pointRecordLength);
     let readPointCount = 0;
@@ -8605,7 +8916,7 @@ async function scanLasPointCloud(filePath, onPoint) {
         const y = chunk.readInt32LE(base + 4) * scaleY + offsetY;
         const z = chunk.readInt32LE(base + 8) * scaleZ + offsetZ;
         const intensity = pointRecordLength >= 14 ? chunk.readUInt16LE(base + 12) : null;
-        onPoint(x, y, z, intensity);
+        onPoint(x, y, z, intensity, readLasRgbColor(chunk, base, pointRecordLength, rgbOffset));
       }
       readPointCount += actualRecords;
       if (actualRecords < recordsToRead) {
@@ -8754,8 +9065,17 @@ async function importPointCloudFilesBaseMap(config, params) {
       await progress(`Statistics ready: ${stats.totalPointCount} points; rendering raster layers`);
     }
     const coordinate = classifyCoordinateSystem(stats.bounds);
+    const pointCloudCenter = {
+      x: roundPointValue((stats.bounds.minX + stats.bounds.maxX) / 2),
+      y: roundPointValue((stats.bounds.minY + stats.bounds.maxY) / 2),
+      z: roundPointValue((stats.bounds.minZ + stats.bounds.maxZ) / 2),
+    };
     const imageIndex = await buildImageOverlayIndex(files, stagingDir);
     const imageOverlay = getImageOverlayMetadataFromIndex(imageFileCount, imageIndex);
+    const pointCloudStream = createPointCloudStreamAccumulator({
+      bounds: stats.bounds,
+      center: pointCloudCenter,
+    });
     const layers = {
       enhanced: createRasterTileAccumulator({
         sourceType: 'point_cloud_enhanced',
@@ -8771,10 +9091,11 @@ async function importPointCloudFilesBaseMap(config, params) {
       }),
     };
 
-    const renderEnhancedPoint = (x, y, z = 0, intensity = null) => {
+    const renderEnhancedPoint = (x, y, z = 0, intensity = null, color = null) => {
       if (![x, y, z].every(Number.isFinite)) {
         return;
       }
+      pointCloudStream.addPoint(x, y, z, intensity, color);
       const value = stats.normalizeIntensityForRaster(intensity);
       const groundZ = stats.getGroundZ(x, y);
       const relativeZ = Number.isFinite(groundZ) ? z - groundZ : 0;
@@ -8836,7 +9157,7 @@ async function importPointCloudFilesBaseMap(config, params) {
         tileResolutionMetersPerPixel: getPointCloudTileResolution(Math.max(...POINT_CLOUD_TILE_LEVELS)),
         groundGrid: stats.groundGrid,
         intensity: stats.intensity,
-        outputs: layerDescriptors.map((layer) => layer.id),
+        outputs: [...layerDescriptors.map((layer) => layer.id), 'point_cloud'],
       },
     };
     if (progress) {
@@ -8856,6 +9177,10 @@ async function importPointCloudFilesBaseMap(config, params) {
         allowEmpty: true,
       });
     }
+    if (progress) {
+      await progress('Writing high-definition point-cloud blocks');
+    }
+    const pointCloudIndex = await pointCloudStream.writeIndex(path.join(stagingDir, 'point_cloud'), metadata);
     if (progress) {
       await progress('Copying source files into base map package');
     }
@@ -8877,6 +9202,7 @@ async function importPointCloudFilesBaseMap(config, params) {
       path: targetDir,
       pointCount: parsed.totalPointCount,
       tileCount: parsed.tileCount,
+      pointCloud: pointCloudIndex,
       layers: layerDescriptors.map((layer) => layer.id),
       coordinate,
       imageOverlay,

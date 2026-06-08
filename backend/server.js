@@ -1200,7 +1200,13 @@ async function listBaseMaps() {
         "map_images",
         "tiles.json",
       );
-      if (await pathExists(tileJson)) {
+      const pointCloudIndex = path.join(
+        config.baseMapRoot,
+        mapName,
+        "point_cloud",
+        "index.json",
+      );
+      if ((await pathExists(pointCloudIndex)) || (await pathExists(tileJson))) {
         results.push(mapName);
       }
     }
@@ -2991,6 +2997,54 @@ app.post("/runtime/create-base-map", requirePermission("canEdit"), async (req, r
       data: error.result || null,
     });
   }
+});
+
+app.get("/mapcreator/:mapName/point_cloud/index.json", async (req, res) => {
+  const { mapName } = req.params;
+  const indexPath = path.join(
+    config.baseMapRoot,
+    mapName,
+    "point_cloud",
+    "index.json",
+  );
+  if (!(await pathExists(indexPath))) {
+    res
+      .status(404)
+      .json({ code: 404, message: `point_cloud/index.json not found for ${mapName}` });
+    return;
+  }
+  try {
+    const content = await fsp.readFile(indexPath, "utf8");
+    lastAccessedBaseMapDir = path.join(config.baseMapRoot, mapName);
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Cache-Control", "public, max-age=300");
+    res.type("application/json").send(content);
+  } catch (error) {
+    res.status(500).json({ code: 500, message: error.message });
+  }
+});
+
+app.get("/mapcreator/:mapName/point_cloud/blocks/:file", async (req, res) => {
+  const { mapName, file } = req.params;
+  const safeFile = path.basename(file);
+  if (safeFile !== file || !safeFile.endsWith(".bin")) {
+    res.status(404).send("Not Found");
+    return;
+  }
+  const blockPath = path.join(
+    config.baseMapRoot,
+    mapName,
+    "point_cloud",
+    "blocks",
+    safeFile,
+  );
+  if (!(await pathExists(blockPath))) {
+    res.status(404).send("Not Found");
+    return;
+  }
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Cache-Control", "public, max-age=300");
+  res.type("application/octet-stream").sendFile(blockPath);
 });
 
 app.post(

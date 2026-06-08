@@ -509,7 +509,24 @@ class FileService {
         });
     }
 
-    getBaseMapInfo(dir: string, layerId: string = 'enhanced') {
+    async getBaseMapInfo(dir: string, layerId: string = 'enhanced') {
+        if (!layerId || layerId === 'enhanced') {
+            try {
+                const response = await fetch(`${baseApiURL}/mapcreator/${dir}/point_cloud/index.json`, {
+                    credentials: 'include',
+                });
+                if (response.ok) {
+                    const json = await response.json();
+                    return {
+                        ...json,
+                        type: 'point_cloud',
+                        layerId: 'point_cloud',
+                    };
+                }
+            } catch (error) {
+                console.log(error);
+            }
+        }
         const layerPath = layerId && layerId !== 'enhanced' ? `/layers/${encodeURIComponent(layerId)}` : '';
         return fetch(`${baseApiURL}/mapcreator/${dir}${layerPath}/tiles.json?mode=0`, {
             credentials: 'include',
