@@ -42,6 +42,7 @@ const POINT_CLOUD_RGB_ORTHO_MIN_RELATIVE_Z = Number.isFinite(configuredRgbOrthoM
 const POINT_CLOUD_RGB_ORTHO_MAX_RELATIVE_Z = Number.isFinite(configuredRgbOrthoMaxRelativeZ)
   ? configuredRgbOrthoMaxRelativeZ
   : 1.2;
+const POINT_CLOUD_RGB_ORTHO_STYLE = String(process.env.POINT_CLOUD_RGB_ORTHO_STYLE || 'annotation').toLowerCase();
 const DEFAULT_POINT_CLOUD_BLOCK_POINTS = Number(
   process.env.POINT_CLOUD_BLOCK_POINTS || (POINT_CLOUD_HIGH_DETAIL_MODE ? 160000 : 60000),
 );
@@ -5522,6 +5523,65 @@ function normalizePointColor(color, intensity = null) {
   };
 }
 
+function clampRgbChannel(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function getRgbLuma(color) {
+  return color.r * 0.299 + color.g * 0.587 + color.b * 0.114;
+}
+
+function getRgbChroma(color) {
+  return Math.max(color.r, color.g, color.b) - Math.min(color.r, color.g, color.b);
+}
+
+function isWarmRoadMarkingColor(color) {
+  return color.r >= 120 && color.g >= 80 && color.b <= 130 && color.r - color.b >= 36 && color.g - color.b >= 12;
+}
+
+function scoreRgbOrthoPixel(color, priority = 0) {
+  const luma = getRgbLuma(color);
+  const chroma = getRgbChroma(color);
+  const warmMarkingBonus = isWarmRoadMarkingColor(color) ? 74 : 0;
+  const darkFeatureBonus = luma < 92 ? Math.min(34, (92 - luma) * 0.35) : 0;
+  const highlightPenalty = chroma < 18 && luma > 218 ? (luma - 218) * 0.42 : 0;
+  return priority * 1.45 + chroma * 1.2 + warmMarkingBonus + darkFeatureBonus - highlightPenalty;
+}
+
+function enhanceRgbOrthoColor(color) {
+  if (POINT_CLOUD_RGB_ORTHO_STYLE === 'raw') {
+    return color;
+  }
+  const luma = getRgbLuma(color);
+  const chroma = getRgbChroma(color);
+  const warmMarking = isWarmRoadMarkingColor(color);
+  const normalizedLuma = Math.max(0, Math.min(1, luma / 255));
+  let targetLuma = 24 + 224 * Math.pow(normalizedLuma, 1.42);
+  if (chroma < 22 && luma > 185) {
+    targetLuma = Math.min(targetLuma, 190 + (luma - 185) * 0.36);
+  }
+  if (chroma < 12) {
+    targetLuma *= 0.94;
+  }
+  const saturation = warmMarking ? 2.05 : chroma > 26 ? 1.48 : chroma > 12 ? 1.18 : 0.82;
+  let r = targetLuma + (color.r - luma) * saturation;
+  let g = targetLuma + (color.g - luma) * saturation;
+  let b = targetLuma + (color.b - luma) * saturation;
+  if (warmMarking) {
+    r += 28;
+    g += 12;
+    b -= 18;
+  }
+  return {
+    r: clampRgbChannel(r),
+    g: clampRgbChannel(g),
+    b: clampRgbChannel(b),
+  };
+}
+
 function normalizePointIntensity(intensity) {
   if (!Number.isFinite(intensity)) {
     return 72;
@@ -5800,10 +5860,20 @@ function createRgbOrthoTileAccumulator(options = {}) {
       return;
     }
     if (currentPriority > 0 && nextPriority <= currentPriority + 6) {
-      const blend = 0.35;
-      tile.rgba[offset] = Math.round(tile.rgba[offset] * (1 - blend) + color.r * blend);
-      tile.rgba[offset + 1] = Math.round(tile.rgba[offset + 1] * (1 - blend) + color.g * blend);
-      tile.rgba[offset + 2] = Math.round(tile.rgba[offset + 2] * (1 - blend) + color.b * blend);
+      const currentColor = {
+        r: tile.rgba[offset],
+        g: tile.rgba[offset + 1],
+        b: tile.rgba[offset + 2],
+      };
+      const currentScore = scoreRgbOrthoPixel(currentColor, currentPriority);
+      const nextScore = scoreRgbOrthoPixel(color, nextPriority);
+      if (nextScore <= currentScore + 3) {
+        return;
+      }
+      const blend = nextScore >= currentScore + 24 ? 1 : 0.22;
+      tile.rgba[offset] = Math.round(currentColor.r * (1 - blend) + color.r * blend);
+      tile.rgba[offset + 1] = Math.round(currentColor.g * (1 - blend) + color.g * blend);
+      tile.rgba[offset + 2] = Math.round(currentColor.b * (1 - blend) + color.b * blend);
       tile.rgba[offset + 3] = Math.max(currentPriority, nextPriority);
       return;
     }
@@ -5905,9 +5975,14 @@ function createRgbOrthoTileAccumulator(options = {}) {
       colorType: 6,
     });
     for (let index = 0; index < rgba.length; index += 4) {
-      png.data[index] = rgba[index];
-      png.data[index + 1] = rgba[index + 1];
-      png.data[index + 2] = rgba[index + 2];
+      const color = enhanceRgbOrthoColor({
+        r: rgba[index],
+        g: rgba[index + 1],
+        b: rgba[index + 2],
+      });
+      png.data[index] = color.r;
+      png.data[index + 1] = color.g;
+      png.data[index + 2] = color.b;
       png.data[index + 3] = rgba[index + 3] > 0 ? 255 : 0;
     }
     await fsp.writeFile(filePath, PNG.sync.write(png));
@@ -5929,7 +6004,7 @@ function createRgbOrthoTileAccumulator(options = {}) {
     const payload = {
       version: 1,
       sourceType: metadata.sourceType || options.sourceType || 'point_cloud_rgb_ortho',
-      renderMode: 'rgb_orthographic',
+      renderMode: POINT_CLOUD_RGB_ORTHO_STYLE === 'raw' ? 'rgb_orthographic' : 'rgb_orthographic_annotation',
       tileSize: POINT_CLOUD_TILE_SIZE,
       pointCount: metadata.pointCount || result.totalPointCount,
       layerPointCount: result.totalPointCount,
@@ -9498,6 +9573,7 @@ async function importPointCloudFilesBaseMap(config, params) {
               finestLevel: POINT_CLOUD_RGB_ORTHO_FINEST_LEVEL,
               minRelativeZ: POINT_CLOUD_RGB_ORTHO_MIN_RELATIVE_Z,
               maxRelativeZ: POINT_CLOUD_RGB_ORTHO_MAX_RELATIVE_Z,
+              style: POINT_CLOUD_RGB_ORTHO_STYLE,
             }
           : null,
       },
