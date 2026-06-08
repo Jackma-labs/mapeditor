@@ -512,6 +512,20 @@ class FileService {
     async getBaseMapInfo(dir: string, layerId: string = 'enhanced') {
         if (!layerId || layerId === 'enhanced') {
             try {
+                const response = await fetch(`${baseApiURL}/mapcreator/${dir}/layers/rgb_ortho/tiles.json?mode=0`, {
+                    credentials: 'include',
+                });
+                if (response.ok) {
+                    const json = await response.json();
+                    return {
+                        ...json,
+                        layerId: 'rgb_ortho',
+                    };
+                }
+            } catch (error) {
+                console.log(error);
+            }
+            try {
                 const response = await fetch(`${baseApiURL}/mapcreator/${dir}/point_cloud/index.json`, {
                     credentials: 'include',
                 });

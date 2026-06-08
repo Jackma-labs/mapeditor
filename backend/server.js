@@ -107,6 +107,7 @@ const authSessions = new Map();
 const AUTH_COOKIE_NAME = "mapeditor_session";
 
 const BASE_MAP_LAYER_DIRS = {
+  rgb_ortho: "map_images_rgb_ortho",
   enhanced: "map_images",
   raw: "map_images_raw",
   ground: "map_images_ground",
@@ -1200,13 +1201,19 @@ async function listBaseMaps() {
         "map_images",
         "tiles.json",
       );
+      const rgbOrthoTileJson = path.join(
+        config.baseMapRoot,
+        mapName,
+        "map_images_rgb_ortho",
+        "tiles.json",
+      );
       const pointCloudIndex = path.join(
         config.baseMapRoot,
         mapName,
         "point_cloud",
         "index.json",
       );
-      if ((await pathExists(pointCloudIndex)) || (await pathExists(tileJson))) {
+      if ((await pathExists(rgbOrthoTileJson)) || (await pathExists(pointCloudIndex)) || (await pathExists(tileJson))) {
         results.push(mapName);
       }
     }

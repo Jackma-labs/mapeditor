@@ -15,6 +15,7 @@ const MAX_LOCAL_SEGMENT_METERS = 30;
 const MAX_AREA_CANDIDATE_METERS = 90;
 
 const BASE_MAP_LAYER_DIRS = {
+  rgb_ortho: 'map_images_rgb_ortho',
   enhanced: 'map_images',
   raw: 'map_images_raw',
   ground: 'map_images_ground',

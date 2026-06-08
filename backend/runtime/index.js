@@ -26,6 +26,22 @@ const POINT_CLOUD_TILE_SIZE = 1024;
 const POINT_CLOUD_TILE_LEVELS = [0, 1, 2, 3, 4];
 const POINT_CLOUD_HIGH_DETAIL_MODE = process.env.POINT_CLOUD_HIGH_DETAIL_MODE !== 'false';
 const POINT_CLOUD_GENERATE_RASTER = process.env.POINT_CLOUD_GENERATE_RASTER !== 'false';
+const POINT_CLOUD_GENERATE_RGB_ORTHO = process.env.POINT_CLOUD_GENERATE_RGB_ORTHO !== 'false';
+const configuredRgbOrthoFinestLevel = Number(process.env.POINT_CLOUD_RGB_ORTHO_FINEST_LEVEL || 3);
+const POINT_CLOUD_RGB_ORTHO_FINEST_LEVEL = Number.isFinite(configuredRgbOrthoFinestLevel)
+  ? Math.max(0, Math.min(Math.max(...POINT_CLOUD_TILE_LEVELS), Math.floor(configuredRgbOrthoFinestLevel)))
+  : 3;
+const POINT_CLOUD_RGB_ORTHO_LEVELS = POINT_CLOUD_TILE_LEVELS.filter(
+  (level) => level <= POINT_CLOUD_RGB_ORTHO_FINEST_LEVEL,
+);
+const configuredRgbOrthoMinRelativeZ = Number(process.env.POINT_CLOUD_RGB_ORTHO_MIN_RELATIVE_Z);
+const configuredRgbOrthoMaxRelativeZ = Number(process.env.POINT_CLOUD_RGB_ORTHO_MAX_RELATIVE_Z);
+const POINT_CLOUD_RGB_ORTHO_MIN_RELATIVE_Z = Number.isFinite(configuredRgbOrthoMinRelativeZ)
+  ? configuredRgbOrthoMinRelativeZ
+  : -0.35;
+const POINT_CLOUD_RGB_ORTHO_MAX_RELATIVE_Z = Number.isFinite(configuredRgbOrthoMaxRelativeZ)
+  ? configuredRgbOrthoMaxRelativeZ
+  : 1.2;
 const DEFAULT_POINT_CLOUD_BLOCK_POINTS = Number(
   process.env.POINT_CLOUD_BLOCK_POINTS || (POINT_CLOUD_HIGH_DETAIL_MODE ? 160000 : 60000),
 );
@@ -5724,6 +5740,247 @@ function createRasterTileAccumulator(options = {}) {
   };
 }
 
+function createRgbOrthoTileAccumulator(options = {}) {
+  const levels = (options.levels || POINT_CLOUD_RGB_ORTHO_LEVELS).filter((level) =>
+    POINT_CLOUD_TILE_LEVELS.includes(level),
+  );
+  const activeLevels = levels.length > 0 ? levels : [3];
+  const finestLevel = Math.max(...activeLevels);
+  const finestResolution = getPointCloudTileResolution(finestLevel);
+  const tilesByLevel = new Map(activeLevels.map((level) => [level, new Map()]));
+  const result = {
+    totalPointCount: 0,
+    rgbPointCount: 0,
+    intensityColorPointCount: 0,
+    sourceFiles: [],
+    imageFileCount: 0,
+    bounds: {
+      minX: Infinity,
+      minY: Infinity,
+      minZ: Infinity,
+      maxX: -Infinity,
+      maxY: -Infinity,
+      maxZ: -Infinity,
+    },
+  };
+
+  const tileKey = (tileX, tileY) => `${tileX},${tileY}`;
+  const getTile = (level, tileX, tileY) => {
+    const levelTiles = tilesByLevel.get(level);
+    const key = tileKey(tileX, tileY);
+    let tile = levelTiles.get(key);
+    if (!tile) {
+      tile = {
+        x: tileX,
+        y: tileY,
+        rgba: new Uint8Array(POINT_CLOUD_TILE_SIZE * POINT_CLOUD_TILE_SIZE * 4),
+      };
+      levelTiles.set(key, tile);
+    }
+    return tile;
+  };
+
+  const updateBounds = (x, y, z) => {
+    result.bounds.minX = Math.min(result.bounds.minX, x);
+    result.bounds.minY = Math.min(result.bounds.minY, y);
+    result.bounds.minZ = Math.min(result.bounds.minZ, z);
+    result.bounds.maxX = Math.max(result.bounds.maxX, x);
+    result.bounds.maxY = Math.max(result.bounds.maxY, y);
+    result.bounds.maxZ = Math.max(result.bounds.maxZ, z);
+  };
+
+  const addPixel = (tile, pixelX, pixelY, color, priority) => {
+    if (pixelX < 0 || pixelY < 0 || pixelX >= POINT_CLOUD_TILE_SIZE || pixelY >= POINT_CLOUD_TILE_SIZE) {
+      return;
+    }
+    const offset = (pixelY * POINT_CLOUD_TILE_SIZE + pixelX) * 4;
+    const currentPriority = tile.rgba[offset + 3];
+    const nextPriority = Math.max(1, Math.min(254, Math.round(priority)));
+    if (currentPriority > nextPriority + 6) {
+      return;
+    }
+    if (currentPriority > 0 && nextPriority <= currentPriority + 6) {
+      const blend = 0.35;
+      tile.rgba[offset] = Math.round(tile.rgba[offset] * (1 - blend) + color.r * blend);
+      tile.rgba[offset + 1] = Math.round(tile.rgba[offset + 1] * (1 - blend) + color.g * blend);
+      tile.rgba[offset + 2] = Math.round(tile.rgba[offset + 2] * (1 - blend) + color.b * blend);
+      tile.rgba[offset + 3] = Math.max(currentPriority, nextPriority);
+      return;
+    }
+    tile.rgba[offset] = color.r;
+    tile.rgba[offset + 1] = color.g;
+    tile.rgba[offset + 2] = color.b;
+    tile.rgba[offset + 3] = nextPriority;
+  };
+
+  const addRgbPoint = (x, y, z = 0, color = null, intensity = null, optionsForPoint = {}) => {
+    if (![x, y, z].every(Number.isFinite)) {
+      return;
+    }
+    const pointColor = normalizePointColor(color, intensity);
+    result.totalPointCount += 1;
+    if (pointColor.source === 'rgb') {
+      result.rgbPointCount += 1;
+    } else {
+      result.intensityColorPointCount += 1;
+    }
+    updateBounds(x, y, z);
+
+    const globalPixelX = Math.floor(x / finestResolution);
+    const globalPixelY = Math.floor(y / finestResolution);
+    const tileX = Math.floor(globalPixelX / POINT_CLOUD_TILE_SIZE);
+    const tileY = Math.floor(globalPixelY / POINT_CLOUD_TILE_SIZE);
+    const pixelX = globalPixelX - tileX * POINT_CLOUD_TILE_SIZE;
+    const localWorldPixelY = globalPixelY - tileY * POINT_CLOUD_TILE_SIZE;
+    const pixelY = POINT_CLOUD_TILE_SIZE - 1 - localWorldPixelY;
+    const tile = getTile(finestLevel, tileX, tileY);
+    const basePriority = pointColor.source === 'rgb' ? 170 : 96;
+    const priority = Number.isFinite(optionsForPoint.priority) ? optionsForPoint.priority : basePriority;
+    const dilation = Math.max(0, Math.min(2, Math.round(optionsForPoint.dilation || 0)));
+    for (let offsetY = -dilation; offsetY <= dilation; offsetY += 1) {
+      for (let offsetX = -dilation; offsetX <= dilation; offsetX += 1) {
+        const distance = Math.abs(offsetX) + Math.abs(offsetY);
+        if (distance > dilation) {
+          continue;
+        }
+        const weight = distance === 0 ? 1 : 0.58;
+        addPixel(tile, pixelX + offsetX, pixelY + offsetY, pointColor, priority * weight);
+      }
+    }
+  };
+
+  const deriveLowerLevel = (sourceLevel, targetLevel) => {
+    const sourceTiles = tilesByLevel.get(sourceLevel);
+    if (!sourceTiles) {
+      return;
+    }
+    for (const sourceTile of sourceTiles.values()) {
+      const sourceRgba = sourceTile.rgba;
+      for (let pixelY = 0; pixelY < POINT_CLOUD_TILE_SIZE; pixelY += 1) {
+        const localWorldPixelY = POINT_CLOUD_TILE_SIZE - 1 - pixelY;
+        const sourceGlobalPixelY = sourceTile.y * POINT_CLOUD_TILE_SIZE + localWorldPixelY;
+        const targetGlobalPixelY = Math.floor(sourceGlobalPixelY / 2);
+        const targetTileY = Math.floor(targetGlobalPixelY / POINT_CLOUD_TILE_SIZE);
+        const targetLocalWorldPixelY = targetGlobalPixelY - targetTileY * POINT_CLOUD_TILE_SIZE;
+        const targetPixelY = POINT_CLOUD_TILE_SIZE - 1 - targetLocalWorldPixelY;
+        for (let pixelX = 0; pixelX < POINT_CLOUD_TILE_SIZE; pixelX += 1) {
+          const sourceOffset = (pixelY * POINT_CLOUD_TILE_SIZE + pixelX) * 4;
+          const priority = sourceRgba[sourceOffset + 3];
+          if (priority === 0) {
+            continue;
+          }
+          const sourceGlobalPixelX = sourceTile.x * POINT_CLOUD_TILE_SIZE + pixelX;
+          const targetGlobalPixelX = Math.floor(sourceGlobalPixelX / 2);
+          const targetTileX = Math.floor(targetGlobalPixelX / POINT_CLOUD_TILE_SIZE);
+          const targetPixelX = targetGlobalPixelX - targetTileX * POINT_CLOUD_TILE_SIZE;
+          const targetTile = getTile(targetLevel, targetTileX, targetTileY);
+          addPixel(
+            targetTile,
+            targetPixelX,
+            targetPixelY,
+            {
+              r: sourceRgba[sourceOffset],
+              g: sourceRgba[sourceOffset + 1],
+              b: sourceRgba[sourceOffset + 2],
+            },
+            priority,
+          );
+        }
+      }
+    }
+  };
+
+  const derivePyramid = () => {
+    for (let level = finestLevel - 1; level >= 0; level -= 1) {
+      if (tilesByLevel.has(level)) {
+        deriveLowerLevel(level + 1, level);
+      }
+    }
+  };
+
+  const writePngTile = async (filePath, rgba) => {
+    const png = new PNG({
+      width: POINT_CLOUD_TILE_SIZE,
+      height: POINT_CLOUD_TILE_SIZE,
+      colorType: 6,
+    });
+    for (let index = 0; index < rgba.length; index += 4) {
+      png.data[index] = rgba[index];
+      png.data[index + 1] = rgba[index + 1];
+      png.data[index + 2] = rgba[index + 2];
+      png.data[index + 3] = rgba[index + 3] > 0 ? 255 : 0;
+    }
+    await fsp.writeFile(filePath, PNG.sync.write(png));
+  };
+
+  const writeTiles = async (mapImagesDir, metadata = {}) => {
+    if (result.totalPointCount === 0 && !metadata.allowEmpty) {
+      throw new Error('No RGB orthographic points were available for base-map tiles');
+    }
+    if (result.totalPointCount > 0) {
+      derivePyramid();
+    }
+    const bounds = metadata.bounds || result.bounds;
+    const center = {
+      x: roundPointValue((bounds.minX + bounds.maxX) / 2),
+      y: roundPointValue((bounds.minY + bounds.maxY) / 2),
+      z: roundPointValue((bounds.minZ + bounds.maxZ) / 2),
+    };
+    const payload = {
+      version: 1,
+      sourceType: metadata.sourceType || options.sourceType || 'point_cloud_rgb_ortho',
+      renderMode: 'rgb_orthographic',
+      tileSize: POINT_CLOUD_TILE_SIZE,
+      pointCount: metadata.pointCount || result.totalPointCount,
+      layerPointCount: result.totalPointCount,
+      rgbPointCount: result.rgbPointCount,
+      intensityColorPointCount: result.intensityColorPointCount,
+      sourceFiles: metadata.sourceFiles || result.sourceFiles,
+      imageFileCount: metadata.imageFileCount ?? result.imageFileCount,
+      center,
+      bounds,
+      coordinate: metadata.coordinate || null,
+      imageOverlay: metadata.imageOverlay || null,
+      stitchPlan: metadata.stitchPlan || null,
+      sourceAsset: metadata.sourceAsset || null,
+      processing: metadata.processing || null,
+      layers: metadata.layers || null,
+      tiles: {},
+    };
+
+    await fsp.mkdir(mapImagesDir, { recursive: true });
+    for (const level of activeLevels) {
+      const levelTiles = Array.from(tilesByLevel.get(level).values()).sort((a, b) => a.y - b.y || a.x - b.x);
+      payload.tiles[level] = levelTiles.map((tile) => ({
+        offset_x: String(tile.x),
+        offset_y: String(tile.y),
+      }));
+      for (const tile of levelTiles) {
+        const rowDir = path.join(mapImagesDir, String(level), String(tile.y));
+        await fsp.mkdir(rowDir, { recursive: true });
+        await writePngTile(path.join(rowDir, `${tile.x}.png`), tile.rgba);
+      }
+    }
+    await fsp.writeFile(path.join(mapImagesDir, 'tiles.json'), JSON.stringify(payload), 'utf8');
+    return {
+      totalPointCount: payload.pointCount,
+      bounds: payload.bounds,
+      center: payload.center,
+      sourceFiles: payload.sourceFiles,
+      imageFileCount: payload.imageFileCount,
+      layerPointCount: result.totalPointCount,
+      rgbPointCount: result.rgbPointCount,
+      tileCount: activeLevels.reduce((count, level) => count + tilesByLevel.get(level).size, 0),
+    };
+  };
+
+  return {
+    addRgbPoint,
+    getPointCount: () => result.totalPointCount,
+    writeTiles,
+  };
+}
+
 function createPointCloudStreamAccumulator(options = {}) {
   const bounds = options.bounds || {};
   const center = options.center || {
@@ -7935,7 +8192,7 @@ async function prebuildDataPackageBaseMaps(config, params = {}) {
 
   let mergedMap = null;
   if (autoMerge) {
-    const mergedMapExists = await pathExists(path.join(config.baseMapRoot, mergedMapName, 'map_images', 'tiles.json'));
+    const mergedMapExists = await baseMapArtifactExists(config, mergedMapName);
     if (generatedBaseMaps.length === 0 && mergedMapExists && !overwriteMergedMap) {
       await progress(`Skipping stitched base map: ${mergedMapName} is already current`);
     } else {
@@ -8135,15 +8392,23 @@ function buildPackageQuality(summary, analyses) {
   };
 }
 
+async function baseMapArtifactExists(config, mapName) {
+  if (!mapName) {
+    return false;
+  }
+  return (
+    (await pathExists(path.join(config.baseMapRoot, mapName, 'map_images_rgb_ortho', 'tiles.json'))) ||
+    (await pathExists(path.join(config.baseMapRoot, mapName, 'point_cloud', 'index.json'))) ||
+    (await pathExists(path.join(config.baseMapRoot, mapName, 'map_images', 'tiles.json')))
+  );
+}
+
 async function baseMapExistsForPackage(config, displayName) {
   const mapName = sanitizePackageName(displayName || '');
   if (!mapName) {
     return false;
   }
-  return (
-    (await pathExists(path.join(config.baseMapRoot, mapName, 'point_cloud', 'index.json'))) ||
-    (await pathExists(path.join(config.baseMapRoot, mapName, 'map_images', 'tiles.json')))
-  );
+  return baseMapArtifactExists(config, mapName);
 }
 
 function normalizeCaptureReplacementKey(packageInfo) {
@@ -9079,9 +9344,11 @@ async function importPointCloudFilesBaseMap(config, params) {
     const stats = statsCollector.finalize();
     if (progress) {
       await progress(
-        POINT_CLOUD_GENERATE_RASTER
-          ? `Statistics ready: ${stats.totalPointCount} points; rendering raster layers`
-          : `Statistics ready: ${stats.totalPointCount} points; writing high-definition point cloud`,
+        POINT_CLOUD_GENERATE_RGB_ORTHO
+          ? `Statistics ready: ${stats.totalPointCount} points; rendering RGB orthographic base map`
+          : POINT_CLOUD_GENERATE_RASTER
+            ? `Statistics ready: ${stats.totalPointCount} points; rendering raster layers`
+            : `Statistics ready: ${stats.totalPointCount} points; writing high-definition point cloud`,
       );
     }
     const coordinate = classifyCoordinateSystem(stats.bounds);
@@ -9096,6 +9363,11 @@ async function importPointCloudFilesBaseMap(config, params) {
       bounds: stats.bounds,
       center: pointCloudCenter,
     });
+    const rgbOrthoLayer = POINT_CLOUD_GENERATE_RGB_ORTHO
+      ? createRgbOrthoTileAccumulator({
+          sourceType: 'point_cloud_rgb_ortho',
+        })
+      : null;
     const layers = {
       enhanced: createRasterTileAccumulator({
         sourceType: 'point_cloud_enhanced',
@@ -9116,14 +9388,31 @@ async function importPointCloudFilesBaseMap(config, params) {
         return;
       }
       pointCloudStream.addPoint(x, y, z, intensity, color);
-      if (!POINT_CLOUD_GENERATE_RASTER) {
-        return;
-      }
-      const value = stats.normalizeIntensityForRaster(intensity);
       const groundZ = stats.getGroundZ(x, y);
       const relativeZ = Number.isFinite(groundZ) ? z - groundZ : 0;
       const isGround = stats.isGroundPoint(x, y, z);
       const isMarking = isGround && stats.isHighIntensity(intensity);
+      const isNearGroundForRgb =
+        !Number.isFinite(groundZ) ||
+        (relativeZ >= POINT_CLOUD_RGB_ORTHO_MIN_RELATIVE_Z &&
+          relativeZ <= POINT_CLOUD_RGB_ORTHO_MAX_RELATIVE_Z);
+      if (rgbOrthoLayer && (isNearGroundForRgb || isMarking)) {
+        const pointColor = normalizePointColor(color, intensity);
+        const colorPriority = pointColor.source === 'rgb' ? 170 : 96;
+        const heightPenalty = Number.isFinite(relativeZ) ? Math.min(38, Math.max(0, relativeZ) * 18) : 0;
+        const priority = Math.max(
+          64,
+          Math.min(254, colorPriority + (isNearGroundForRgb ? 34 : 0) + (isMarking ? 48 : 0) - heightPenalty),
+        );
+        rgbOrthoLayer.addRgbPoint(x, y, z, color, intensity, {
+          priority,
+          dilation: isMarking ? 1 : 0,
+        });
+      }
+      if (!POINT_CLOUD_GENERATE_RASTER) {
+        return;
+      }
+      const value = stats.normalizeIntensityForRaster(intensity);
       const isEdge = isGround && stats.isEdgeCell(x, y);
       layers.raw.addPointValue(x, y, z, Math.max(32, Math.round(value * 0.72)), 0);
       if (isGround) {
@@ -9152,15 +9441,17 @@ async function importPointCloudFilesBaseMap(config, params) {
       const originalName = file.originalName || file.originalname || path.basename(file.path);
       if (progress) {
         await progress(
-          POINT_CLOUD_GENERATE_RASTER
-            ? `Rendering raster ${fileIndex + 1}/${cloudFiles.length}: ${originalName}`
-            : `Streaming point cloud ${fileIndex + 1}/${cloudFiles.length}: ${originalName}`,
+          POINT_CLOUD_GENERATE_RGB_ORTHO
+            ? `Rendering RGB ortho ${fileIndex + 1}/${cloudFiles.length}: ${originalName}`
+            : POINT_CLOUD_GENERATE_RASTER
+              ? `Rendering raster ${fileIndex + 1}/${cloudFiles.length}: ${originalName}`
+              : `Streaming point cloud ${fileIndex + 1}/${cloudFiles.length}: ${originalName}`,
         );
       }
       await scanPointCloudFile(file.path, originalName, renderEnhancedPoint);
     }
 
-    const layerDescriptors = [
+    const legacyLayerDescriptors = [
       { id: 'enhanced', name: '增强底图', path: 'map_images' },
       { id: 'raw', name: '原始投影', path: 'map_images_raw' },
       { id: 'ground', name: '地面过滤', path: 'map_images_ground' },
@@ -9171,6 +9462,12 @@ async function importPointCloudFilesBaseMap(config, params) {
       (layer) =>
         POINT_CLOUD_GENERATE_RASTER && (layer.id === 'enhanced' || layers[layer.id].getPointCount() > 0),
     );
+    const layerDescriptors = [
+      ...(rgbOrthoLayer && rgbOrthoLayer.getPointCount() > 0
+        ? [{ id: 'rgb_ortho', name: 'RGB Ortho', path: 'map_images_rgb_ortho' }]
+        : []),
+      ...legacyLayerDescriptors,
+    ];
     const metadata = {
       pointCount: stats.totalPointCount,
       bounds: stats.bounds,
@@ -9182,13 +9479,27 @@ async function importPointCloudFilesBaseMap(config, params) {
       stitchPlan: params.stitchPlan || null,
       sourceAsset: params.sourceAsset || null,
       processing: {
-        mode: POINT_CLOUD_GENERATE_RASTER ? 'resultout_las_annotation_raster' : 'resultout_las_direct_point_cloud',
+        mode: POINT_CLOUD_GENERATE_RGB_ORTHO
+          ? 'resultout_las_rgb_orthographic'
+          : POINT_CLOUD_GENERATE_RASTER
+            ? 'resultout_las_annotation_raster'
+            : 'resultout_las_direct_point_cloud',
         purpose: 'apollo_hdmap_annotation',
-        tileResolutionMetersPerPixel: getPointCloudTileResolution(Math.max(...POINT_CLOUD_TILE_LEVELS)),
+        tileResolutionMetersPerPixel: getPointCloudTileResolution(
+          POINT_CLOUD_GENERATE_RGB_ORTHO ? POINT_CLOUD_RGB_ORTHO_FINEST_LEVEL : Math.max(...POINT_CLOUD_TILE_LEVELS),
+        ),
         groundGrid: stats.groundGrid,
         intensity: stats.intensity,
         outputs: [...layerDescriptors.map((layer) => layer.id), 'point_cloud'],
         rasterEnabled: POINT_CLOUD_GENERATE_RASTER,
+        rgbOrthoEnabled: POINT_CLOUD_GENERATE_RGB_ORTHO,
+        rgbOrtho: POINT_CLOUD_GENERATE_RGB_ORTHO
+          ? {
+              finestLevel: POINT_CLOUD_RGB_ORTHO_FINEST_LEVEL,
+              minRelativeZ: POINT_CLOUD_RGB_ORTHO_MIN_RELATIVE_Z,
+              maxRelativeZ: POINT_CLOUD_RGB_ORTHO_MAX_RELATIVE_Z,
+            }
+          : null,
       },
     };
     if (progress) {
@@ -9201,12 +9512,21 @@ async function importPointCloudFilesBaseMap(config, params) {
       center: pointCloudCenter,
       tileCount: 0,
     };
+    if (rgbOrthoLayer && rgbOrthoLayer.getPointCount() > 0) {
+      if (progress) {
+        await progress('Writing tile layer: rgb_ortho');
+      }
+      parsed = await rgbOrthoLayer.writeTiles(path.join(stagingDir, 'map_images_rgb_ortho'), {
+        ...metadata,
+        sourceType: 'point_cloud_rgb_ortho',
+      });
+    }
     if (POINT_CLOUD_GENERATE_RASTER) {
       if (progress) {
         await progress('Writing tile layer: enhanced');
       }
       parsed = await layers.enhanced.writeTiles(path.join(stagingDir, 'map_images'), metadata);
-      for (const layer of layerDescriptors) {
+      for (const layer of legacyLayerDescriptors) {
         if (layer.id === 'enhanced') {
           continue;
         }
@@ -9219,7 +9539,7 @@ async function importPointCloudFilesBaseMap(config, params) {
           allowEmpty: true,
         });
       }
-    } else if (progress) {
+    } else if (!POINT_CLOUD_GENERATE_RGB_ORTHO && progress) {
       await progress('PNG raster tiles skipped; direct point-cloud mode is enabled');
     }
     if (progress) {

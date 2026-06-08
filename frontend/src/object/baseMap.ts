@@ -68,6 +68,7 @@ function isCameraMovePayload(value: number[][] | CameraMovePayload): value is Ca
 }
 
 const layerMaterialStyles: { [key: string]: { color: number; opacity: number } } = {
+    rgb_ortho: { color: 0xffffff, opacity: 1 },
     enhanced: { color: 0xffffff, opacity: 1 },
     raw: { color: 0x82aaff, opacity: 0.92 },
     ground: { color: 0x64d98a, opacity: 0.9 },
@@ -223,7 +224,7 @@ export default class BaseMap {
     }
 
     public updatePointSize(val: number) {
-        this.pointSize = Math.max(0.6, Math.min(3, Number(val) || 1.2));
+        this.pointSize = Math.max(0.6, Math.min(5, Number(val) || 1.2));
         Object.keys(this.meshs).forEach((id: string) => {
             const mesh = this.meshs[id];
             if (mesh instanceof THREE.Points) {
@@ -248,6 +249,7 @@ export default class BaseMap {
             return;
         }
         this.pointCloudIndex = null;
+        this.scale = this.getAvailableTileScale(json.tiles, this.scale);
         const tiles = json.tiles[this.scale];
         const { points: allPoints, imageBasemapCenter, hdBasemapCenter } = useManagerStore.getState().mapState;
         useManagerStore.getState().setMapState({
@@ -581,6 +583,7 @@ export default class BaseMap {
             return;
         }
         this.loading = true;
+        this.scale = this.getAvailableTileScale(this.tiles, this.scale);
         // 随着scale的增大，加载瓦片的范围随之减少，即通过指数函数的方式计算加载范围
         const tiles = this.getInviewTile(this.tiles[this.scale], this.position);
 
@@ -596,16 +599,30 @@ export default class BaseMap {
         this.loading = false;
     }
 
+    private isRgbTileLayer() {
+        return this.activeLayerId === 'rgb_ortho';
+    }
+
     private addTile(size: number, texture: THREE.Texture, position: THREE.Vector3, id: string) {
         const geometry = new THREE.PlaneGeometry(size, size, 1);
         if (texture) {
             const style = layerMaterialStyles[this.activeLayerId] || layerMaterialStyles.enhanced;
-            const material = new THREE.MeshBasicMaterial({
-                alphaMap: texture,
-                transparent: true,
-                opacity: this.opacity * style.opacity,
-                color: style.color,
-            });
+            let material: THREE.MeshBasicMaterial;
+            if (this.isRgbTileLayer()) {
+                material = new THREE.MeshBasicMaterial({
+                    map: texture,
+                    transparent: true,
+                    opacity: this.opacity * style.opacity,
+                    color: 0xffffff,
+                });
+            } else {
+                material = new THREE.MeshBasicMaterial({
+                    alphaMap: texture,
+                    transparent: true,
+                    opacity: this.opacity * style.opacity,
+                    color: style.color,
+                });
+            }
 
             material.depthWrite = false;
             material.needsUpdate = true;
@@ -697,6 +714,20 @@ export default class BaseMap {
                 this.meshs[id].visible = false;
             }
         });
+    }
+
+    private getAvailableTileScale(tiles: { [key: string]: TileItem[] }, requestedScale: number): number {
+        const availableScales = Object.keys(tiles || {})
+            .map((key) => Number(key))
+            .filter((scale) => Number.isFinite(scale) && Array.isArray(tiles[scale]) && tiles[scale].length > 0)
+            .sort((left, right) => right - left);
+        if (availableScales.length === 0) {
+            return requestedScale;
+        }
+        if (availableScales.includes(requestedScale)) {
+            return requestedScale;
+        }
+        return availableScales.find((scale) => scale <= requestedScale) ?? availableScales[0];
     }
 
     private getResolution(): number {
