@@ -240,7 +240,8 @@ export default function MapEditor() {
                 setBaseMapUi((prev) => ({
                     ...prev,
                     dir: data.dir,
-                    supportsPointSize: data.json?.type === 'point_cloud',
+                    supportsPointSize:
+                        data.json?.type === 'point_cloud' || data.json?.sourceType === 'point_cloud_stream',
                 }));
                 setShowRemind(false);
                 baseMap.renderMap(data.dir, data.json, data.options || {}).then(() => {
@@ -478,8 +479,8 @@ export default function MapEditor() {
                             </small>
                         </div>
                         <Slider
-                            min={0.6}
-                            max={3}
+                            min={0.4}
+                            max={5}
                             step={0.1}
                             value={[baseMapUi.pointSize]}
                             disabled={!baseMapUi.supportsPointSize}

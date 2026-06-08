@@ -24,27 +24,40 @@ const MAX_POINT_CLOUD_RENDER_POINTS = Number.isFinite(configuredPointCloudRender
   : DEFAULT_POINT_CLOUD_RENDER_POINTS;
 const POINT_CLOUD_TILE_SIZE = 1024;
 const POINT_CLOUD_TILE_LEVELS = [0, 1, 2, 3, 4];
-const DEFAULT_POINT_CLOUD_BLOCK_POINTS = Number(process.env.POINT_CLOUD_BLOCK_POINTS || 60000);
+const POINT_CLOUD_HIGH_DETAIL_MODE = process.env.POINT_CLOUD_HIGH_DETAIL_MODE !== 'false';
+const POINT_CLOUD_GENERATE_RASTER = process.env.POINT_CLOUD_GENERATE_RASTER !== 'false';
+const DEFAULT_POINT_CLOUD_BLOCK_POINTS = Number(
+  process.env.POINT_CLOUD_BLOCK_POINTS || (POINT_CLOUD_HIGH_DETAIL_MODE ? 160000 : 60000),
+);
 const POINT_CLOUD_BLOCK_POINTS = Number.isFinite(DEFAULT_POINT_CLOUD_BLOCK_POINTS)
   ? Math.max(5000, DEFAULT_POINT_CLOUD_BLOCK_POINTS)
   : 60000;
-const POINT_CLOUD_STREAM_LEVELS = [
-  {
-    level: 0,
-    cellSizeMeters: Number(process.env.POINT_CLOUD_LEVEL0_CELL_METERS || 512),
-    maxPointsPerBlock: Math.max(5000, Math.round(POINT_CLOUD_BLOCK_POINTS * 0.35)),
-  },
-  {
-    level: 1,
-    cellSizeMeters: Number(process.env.POINT_CLOUD_LEVEL1_CELL_METERS || 256),
-    maxPointsPerBlock: Math.max(10000, Math.round(POINT_CLOUD_BLOCK_POINTS * 0.55)),
-  },
-  {
-    level: 2,
-    cellSizeMeters: Number(process.env.POINT_CLOUD_LEVEL2_CELL_METERS || 128),
-    maxPointsPerBlock: POINT_CLOUD_BLOCK_POINTS,
-  },
-];
+const POINT_CLOUD_STREAM_LEVELS = (
+  POINT_CLOUD_HIGH_DETAIL_MODE
+    ? [
+        { level: 0, cellSizeMeters: 1024, maxPointsRatio: 0.2 },
+        { level: 1, cellSizeMeters: 512, maxPointsRatio: 0.32 },
+        { level: 2, cellSizeMeters: 256, maxPointsRatio: 0.55 },
+        { level: 3, cellSizeMeters: 128, maxPointsRatio: 0.8 },
+        { level: 4, cellSizeMeters: 64, maxPointsRatio: 1 },
+        { level: 5, cellSizeMeters: 32, maxPointsRatio: 1.15 },
+      ]
+    : [
+        { level: 0, cellSizeMeters: 512, maxPointsRatio: 0.35 },
+        { level: 1, cellSizeMeters: 256, maxPointsRatio: 0.55 },
+        { level: 2, cellSizeMeters: 128, maxPointsRatio: 1 },
+      ]
+).map((level) => ({
+  level: level.level,
+  cellSizeMeters: Number(process.env[`POINT_CLOUD_LEVEL${level.level}_CELL_METERS`] || level.cellSizeMeters),
+  maxPointsPerBlock: Math.max(
+    5000,
+    Math.round(
+      Number(process.env[`POINT_CLOUD_LEVEL${level.level}_BLOCK_POINTS`] || 0) ||
+        POINT_CLOUD_BLOCK_POINTS * level.maxPointsRatio,
+    ),
+  ),
+}));
 const GROUND_GRID_SIZE_METERS = 0.5;
 const GROUND_MIN_RELATIVE_Z = -0.2;
 const GROUND_MAX_RELATIVE_Z = 0.35;
@@ -8127,7 +8140,10 @@ async function baseMapExistsForPackage(config, displayName) {
   if (!mapName) {
     return false;
   }
-  return pathExists(path.join(config.baseMapRoot, mapName, 'map_images', 'tiles.json'));
+  return (
+    (await pathExists(path.join(config.baseMapRoot, mapName, 'point_cloud', 'index.json'))) ||
+    (await pathExists(path.join(config.baseMapRoot, mapName, 'map_images', 'tiles.json')))
+  );
 }
 
 function normalizeCaptureReplacementKey(packageInfo) {
@@ -9062,7 +9078,11 @@ async function importPointCloudFilesBaseMap(config, params) {
     }
     const stats = statsCollector.finalize();
     if (progress) {
-      await progress(`Statistics ready: ${stats.totalPointCount} points; rendering raster layers`);
+      await progress(
+        POINT_CLOUD_GENERATE_RASTER
+          ? `Statistics ready: ${stats.totalPointCount} points; rendering raster layers`
+          : `Statistics ready: ${stats.totalPointCount} points; writing high-definition point cloud`,
+      );
     }
     const coordinate = classifyCoordinateSystem(stats.bounds);
     const pointCloudCenter = {
@@ -9096,6 +9116,9 @@ async function importPointCloudFilesBaseMap(config, params) {
         return;
       }
       pointCloudStream.addPoint(x, y, z, intensity, color);
+      if (!POINT_CLOUD_GENERATE_RASTER) {
+        return;
+      }
       const value = stats.normalizeIntensityForRaster(intensity);
       const groundZ = stats.getGroundZ(x, y);
       const relativeZ = Number.isFinite(groundZ) ? z - groundZ : 0;
@@ -9128,7 +9151,11 @@ async function importPointCloudFilesBaseMap(config, params) {
       const file = cloudFiles[fileIndex];
       const originalName = file.originalName || file.originalname || path.basename(file.path);
       if (progress) {
-        await progress(`Rendering raster ${fileIndex + 1}/${cloudFiles.length}: ${originalName}`);
+        await progress(
+          POINT_CLOUD_GENERATE_RASTER
+            ? `Rendering raster ${fileIndex + 1}/${cloudFiles.length}: ${originalName}`
+            : `Streaming point cloud ${fileIndex + 1}/${cloudFiles.length}: ${originalName}`,
+        );
       }
       await scanPointCloudFile(file.path, originalName, renderEnhancedPoint);
     }
@@ -9140,7 +9167,10 @@ async function importPointCloudFilesBaseMap(config, params) {
       { id: 'marking', name: '标线增强', path: 'map_images_marking' },
       { id: 'edge', name: '路沿/边界', path: 'map_images_edge' },
       { id: 'structure', name: '立物/杆牌', path: 'map_images_structure' },
-    ].filter((layer) => layer.id === 'enhanced' || layers[layer.id].getPointCount() > 0);
+    ].filter(
+      (layer) =>
+        POINT_CLOUD_GENERATE_RASTER && (layer.id === 'enhanced' || layers[layer.id].getPointCount() > 0),
+    );
     const metadata = {
       pointCount: stats.totalPointCount,
       bounds: stats.bounds,
@@ -9152,35 +9182,46 @@ async function importPointCloudFilesBaseMap(config, params) {
       stitchPlan: params.stitchPlan || null,
       sourceAsset: params.sourceAsset || null,
       processing: {
-        mode: 'resultout_las_annotation_raster',
+        mode: POINT_CLOUD_GENERATE_RASTER ? 'resultout_las_annotation_raster' : 'resultout_las_direct_point_cloud',
         purpose: 'apollo_hdmap_annotation',
         tileResolutionMetersPerPixel: getPointCloudTileResolution(Math.max(...POINT_CLOUD_TILE_LEVELS)),
         groundGrid: stats.groundGrid,
         intensity: stats.intensity,
         outputs: [...layerDescriptors.map((layer) => layer.id), 'point_cloud'],
+        rasterEnabled: POINT_CLOUD_GENERATE_RASTER,
       },
     };
-    if (progress) {
-      await progress('Writing tile layer: enhanced');
-    }
-    const parsed = await layers.enhanced.writeTiles(path.join(stagingDir, 'map_images'), metadata);
-    for (const layer of layerDescriptors) {
-      if (layer.id === 'enhanced') {
-        continue;
-      }
-      if (progress) {
-        await progress(`Writing tile layer: ${layer.id}`);
-      }
-      await layers[layer.id].writeTiles(path.join(stagingDir, layer.path), {
-        ...metadata,
-        sourceType: `point_cloud_${layer.id}`,
-        allowEmpty: true,
-      });
-    }
     if (progress) {
       await progress('Writing high-definition point-cloud blocks');
     }
     const pointCloudIndex = await pointCloudStream.writeIndex(path.join(stagingDir, 'point_cloud'), metadata);
+    let parsed = {
+      totalPointCount: stats.totalPointCount,
+      bounds: stats.bounds,
+      center: pointCloudCenter,
+      tileCount: 0,
+    };
+    if (POINT_CLOUD_GENERATE_RASTER) {
+      if (progress) {
+        await progress('Writing tile layer: enhanced');
+      }
+      parsed = await layers.enhanced.writeTiles(path.join(stagingDir, 'map_images'), metadata);
+      for (const layer of layerDescriptors) {
+        if (layer.id === 'enhanced') {
+          continue;
+        }
+        if (progress) {
+          await progress(`Writing tile layer: ${layer.id}`);
+        }
+        await layers[layer.id].writeTiles(path.join(stagingDir, layer.path), {
+          ...metadata,
+          sourceType: `point_cloud_${layer.id}`,
+          allowEmpty: true,
+        });
+      }
+    } else if (progress) {
+      await progress('PNG raster tiles skipped; direct point-cloud mode is enabled');
+    }
     if (progress) {
       await progress('Copying source files into base map package');
     }
