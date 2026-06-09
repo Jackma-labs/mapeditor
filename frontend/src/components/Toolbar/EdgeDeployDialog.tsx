@@ -650,6 +650,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                         showSearch
                                         placeholder="选择发布包"
                                         optionFilterProp="title"
+                                        popupClassName="edge-deploy-map-select-dropdown"
                                         onChange={() => setPreflight(null)}
                                         options={selectableMaps.map((item: any, index: number) => {
                                             const optionStatus = item.ready ? 'ready' : item.status || 'invalid';
@@ -659,9 +660,12 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             return {
                                                 value: item.mapName,
                                                 title: `${item.mapName} ${item.statusMessage || ''}`,
-                                                disabled: !item.ready,
                                                 label: (
-                                                    <div className="edge-deploy-option">
+                                                    <div
+                                                        className={`edge-deploy-option ${
+                                                            item.ready ? 'is-ready' : 'is-not-ready'
+                                                        }`}
+                                                    >
                                                         <span>{item.mapName}</span>
                                                         <small>
                                                             {optionStatus}

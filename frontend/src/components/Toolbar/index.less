@@ -2512,6 +2512,64 @@
     }
 }
 
+.edge-deploy-map-select-dropdown {
+    padding: 4px;
+    border: 1px solid #43516a;
+    border-radius: 8px;
+    background: #202938;
+    box-shadow: 0 18px 46px rgba(0, 0, 0, 0.44);
+
+    .ant-select-item {
+        min-height: 44px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        color: #dce8f8;
+    }
+
+    .ant-select-item-option-active,
+    .ant-select-item-option-selected {
+        background: #2e3a50 !important;
+    }
+
+    .ant-select-item-option-content {
+        min-width: 0;
+    }
+
+    .edge-deploy-option {
+        display: grid;
+        min-width: 0;
+        line-height: 18px;
+
+        span,
+        small {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        span {
+            color: #f3f8ff;
+            font-weight: 650;
+        }
+
+        small {
+            color: #94a6bf;
+            font-size: 12px;
+        }
+
+        &.is-not-ready {
+            span {
+                color: #f0b4ad;
+            }
+
+            small {
+                color: #d99f98;
+            }
+        }
+    }
+}
+
 .runtime-status-modal,
 .workflow-modal {
     color: #c2cee0;
