@@ -192,6 +192,32 @@ async function main() {
   assert.match(baseMapText, /crosswalk_overlap_info \{/);
   assert.match(baseMapText, /speed_bump_overlap_info \{/);
 
+  const autoOriginJsonPath = path.join(tmpDir, 'editor_map_auto_origin.json');
+  const autoOriginReleaseDir = path.join(tmpDir, 'release-auto-origin');
+  const autoOriginEditorMap = JSON.parse(JSON.stringify(editorMap));
+  delete autoOriginEditorMap.coordinateCenter;
+  delete autoOriginEditorMap.trajectoryCenter;
+  autoOriginEditorMap.basemapCenter = { x: 500000, y: 4300000, z: 0 };
+  await fs.writeFile(autoOriginJsonPath, JSON.stringify(autoOriginEditorMap), 'utf8');
+  await convertEditorMapToApolloPackage({
+    mapName: 'auto-origin-test',
+    jsonPath: autoOriginJsonPath,
+    releaseDir: autoOriginReleaseDir,
+  });
+  const autoManifest = JSON.parse(await fs.readFile(path.join(autoOriginReleaseDir, 'manifest.json'), 'utf8'));
+  const autoCoordinateMetadata = JSON.parse(
+    await fs.readFile(path.join(autoOriginReleaseDir, 'coordinate_metadata.json'), 'utf8'),
+  );
+  const autoQualityGate = JSON.parse(await fs.readFile(path.join(autoOriginReleaseDir, 'quality_gate.json'), 'utf8'));
+  assert.strictEqual(autoManifest.coordinateTransform.source, 'basemapCenter(auto-origin)');
+  assert.deepStrictEqual(autoManifest.coordinateTransform.offset, { x: 500000, y: 4300000, z: 0 });
+  assert.strictEqual(autoQualityGate.ready, true);
+  assert.strictEqual(autoQualityGate.errors, 0);
+  assert.ok(autoManifest.bounds.xMin > 499000);
+  assert.ok(autoManifest.bounds.yMin > 4299000);
+  assert.strictEqual(autoCoordinateMetadata.captureTrajectoryCenter.enforcement, 'advisory');
+  assert.ok(autoCoordinateMetadata.captureTrajectoryCenter.distanceToMapCenterMeters < 100);
+
   console.log(
     JSON.stringify({
       releaseDir,

@@ -535,11 +535,23 @@ function anchorUtmFromEditorMap(editorMap) {
   if (anchorUtm) {
     return anchorUtm;
   }
-  if (editorMap.basemapCenterIsApolloOrigin === true || editorMap.basemap_center_is_apollo_origin === true) {
-    const baseMapCenter = finiteCoordinate(coordinateFromArray(editorMap.basemapCenter || editorMap.baseMapCenter));
-    if (baseMapCenter) {
-      return { coordinate: baseMapCenter, source: 'basemapCenter(explicit)' };
-    }
+  const baseMapCenterAsOrigin =
+    editorMap.basemapCenterIsApolloOrigin === true || editorMap.basemap_center_is_apollo_origin === true;
+  const sourceCrs = coordinateFrameFromEditorMap(editorMap) || 'LOCAL_ENU_METERS';
+  const baseMapCenter = finiteCoordinate(
+    coordinateFromArray(
+      editorMap.basemapCenter ||
+        editorMap.baseMapCenter ||
+        editorMap.base_map_center ||
+        editorMap.imageBasemapCenter ||
+        editorMap.image_basemap_center,
+    ),
+  );
+  if (baseMapCenterAsOrigin && baseMapCenter) {
+    return { coordinate: baseMapCenter, source: 'basemapCenter(explicit)' };
+  }
+  if (sourceCrs === 'LOCAL_ENU_METERS' && pointLooksGlobalApollo(baseMapCenter)) {
+    return { coordinate: baseMapCenter, source: 'basemapCenter(auto-origin)' };
   }
   return null;
 }
