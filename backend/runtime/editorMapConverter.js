@@ -1440,11 +1440,15 @@ function turnSpeedLimitForApollo(baseSpeedLimit, lane, center, conversionWarning
       details: {
         originalSpeedMps: Number(baseSpeedLimit.toFixed(2)),
         limitedSpeedMps: Number(limitedSpeed.toFixed(2)),
+        originalSpeedKph: Number((baseSpeedLimit * 3.6).toFixed(1)),
+        limitedSpeedKph: Number((limitedSpeed * 3.6).toFixed(1)),
+        turnSpeedCapKph: Number((cap * 3.6).toFixed(1)),
+        radiusSpeedKph: Number((radiusSpeed * 3.6).toFixed(1)),
         turnAngleDegrees: Number(((turnAngle * 180) / Math.PI).toFixed(1)),
         minRadius: Number.isFinite(metrics.minRadius) ? Number(metrics.minRadius.toFixed(2)) : null,
         vehicleWidthMeters: EDGE_VEHICLE_WIDTH_METERS,
         vehicleLengthMeters: EDGE_VEHICLE_LENGTH_METERS,
-        defaultTurnSpeedKph: 15,
+        defaultTurnSpeedCapKph: 15,
       },
     });
   }

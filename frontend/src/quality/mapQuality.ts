@@ -895,7 +895,12 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                     });
                 } else if (
                     laneGeometryAudit.minTurnRadius < LANE_MIN_TURN_RADIUS_WARNING_METERS &&
-                    laneGeometryAudit.minTurnRadius < LANE_TIGHT_TURN_RADIUS_WARNING_METERS
+                    laneGeometryAudit.minTurnRadius < LANE_TIGHT_TURN_RADIUS_WARNING_METERS &&
+                    !(
+                        recommendedTurnSpeedKph !== null &&
+                        Number.isFinite(laneSpeedKph) &&
+                        laneSpeedKph <= recommendedTurnSpeedKph + LANE_TURN_SPEED_TOLERANCE_KPH
+                    )
                 ) {
                     buildIssue(issues, {
                         severity: 'warning',
