@@ -364,6 +364,43 @@ function samePointPair(left: [string | null, string | null], right: [string | nu
     return Boolean(left[0] && left[1] && left[0] === right[0] && left[1] === right[1]);
 }
 
+function reversedPointPair(left: [string | null, string | null], right: [string | null, string | null]) {
+    return Boolean(left[0] && left[1] && left[0] === right[1] && left[1] === right[0]);
+}
+
+function compatibleReversedEndpoint(
+    mapState: MapState,
+    lane: Lane,
+    otherLane: Lane,
+    fromEndpoint: 'start' | 'end',
+    toEndpoint: 'start' | 'end',
+) {
+    const fromDirection = getLaneEndpointDirection(mapState, lane, fromEndpoint);
+    const toDirection = getLaneEndpointDirection(mapState, otherLane, toEndpoint);
+    if (!fromDirection || !toDirection) {
+        return false;
+    }
+    return angleBetweenDirections(fromDirection, toDirection) < LANE_SUCCESSOR_SHARP_ANGLE_ERROR_DEGREES;
+}
+
+function connectedEndpointPair(
+    mapState: MapState,
+    lane: Lane,
+    otherLane: Lane,
+    left: [string | null, string | null],
+    right: [string | null, string | null],
+    fromEndpoint: 'start' | 'end',
+    toEndpoint: 'start' | 'end',
+) {
+    if (samePointPair(left, right)) {
+        return true;
+    }
+    return (
+        reversedPointPair(left, right) &&
+        compatibleReversedEndpoint(mapState, lane, otherLane, fromEndpoint, toEndpoint)
+    );
+}
+
 export function buildLaneRelations(mapState: MapState): Record<string, LaneRelation> {
     const lanes = Object.values(mapState.lanes);
     const relations: Record<string, LaneRelation> = {};
@@ -386,10 +423,30 @@ export function buildLaneRelations(mapState: MapState): Record<string, LaneRelat
                 return;
             }
             const otherRelation = relations[otherLane.id];
-            if (samePointPair(otherRelation.startPointIds, relation.endPointIds)) {
+            if (
+                connectedEndpointPair(
+                    mapState,
+                    lane,
+                    otherLane,
+                    relation.endPointIds,
+                    otherRelation.startPointIds,
+                    'end',
+                    'start',
+                )
+            ) {
                 relation.successors.push(otherLane.id);
             }
-            if (samePointPair(otherRelation.endPointIds, relation.startPointIds)) {
+            if (
+                connectedEndpointPair(
+                    mapState,
+                    lane,
+                    otherLane,
+                    relation.startPointIds,
+                    otherRelation.endPointIds,
+                    'start',
+                    'end',
+                )
+            ) {
                 relation.predecessors.push(otherLane.id);
             }
             if ([otherLane.leftBoundaryId, otherLane.rightBoundaryId].includes(lane.leftBoundaryId)) {

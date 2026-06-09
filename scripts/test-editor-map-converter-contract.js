@@ -240,6 +240,61 @@ async function main() {
   assert.deepStrictEqual(originManifest.coordinateTransform.offset, { x: 500000, y: 4300000, z: 0 });
   assert.match(originBaseMapText, /x:\s*500000(?:\.0+)?\s*\n\s*y:\s*4300002(?:\.0+)?/);
 
+  const reversedTopologyJsonPath = path.join(tmpDir, 'editor_map_reversed_topology.json');
+  const reversedTopologyReleaseDir = path.join(tmpDir, 'release-reversed-topology');
+  const reversedTopologyMap = {
+    header: { version: 'reversed-topology-test' },
+    sourceCrs: 'LOCAL_ENU_METERS',
+    coordinateCenter: { x: 500030, y: 4300000, z: 0 },
+    trajectoryCenter: { x: 30, y: 0, z: 0 },
+    point: [
+      point('lane-a-left-a', 0, 2, 1),
+      point('lane-a-left-b', 30, 2, 1),
+      point('lane-a-right-a', 0, -2, 1),
+      point('lane-a-right-b', 30, -2, 1),
+      point('lane-b-left-b', 60, -2, 1),
+      point('lane-b-right-b', 60, 2, 1),
+    ],
+    boundary: [
+      boundary('lane-a-left', ['lane-a-left-a', 'lane-a-left-b'], 7),
+      boundary('lane-a-right', ['lane-a-right-a', 'lane-a-right-b'], 7),
+      boundary('lane-b-left', ['lane-a-right-b', 'lane-b-left-b'], 7),
+      boundary('lane-b-right', ['lane-a-left-b', 'lane-b-right-b'], 7),
+    ],
+    lane: [
+      {
+        id: 'lane-a',
+        left_boundary_id: 'lane-a-left',
+        right_boundary_id: 'lane-a-right',
+        width: 4,
+        attr: { speed: 8, direction: 1, prossibleDrivingDirection: 1, laneType: 1 },
+      },
+      {
+        id: 'lane-b',
+        left_boundary_id: 'lane-b-left',
+        right_boundary_id: 'lane-b-right',
+        width: 4,
+        attr: { speed: 8, direction: 1, prossibleDrivingDirection: 1, laneType: 1 },
+      },
+    ],
+  };
+  await fs.writeFile(reversedTopologyJsonPath, JSON.stringify(reversedTopologyMap), 'utf8');
+  await convertEditorMapToApolloPackage({
+    mapName: 'reversed-topology-test',
+    jsonPath: reversedTopologyJsonPath,
+    releaseDir: reversedTopologyReleaseDir,
+  });
+  const reversedTopologyManifest = JSON.parse(
+    await fs.readFile(path.join(reversedTopologyReleaseDir, 'manifest.json'), 'utf8'),
+  );
+  assert.strictEqual(reversedTopologyManifest.summary.lanes, 2);
+  assert.strictEqual(reversedTopologyManifest.summary.routingEdges, 1);
+  assert.ok(
+    !reversedTopologyManifest.warnings.some(
+      (item) => item.code === 'lane-endpoints-near-but-not-topologically-connected',
+    ),
+  );
+
   console.log(
     JSON.stringify({
       releaseDir,

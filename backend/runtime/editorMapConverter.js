@@ -919,6 +919,40 @@ function sameEndpointPointPair(left, right) {
   return Boolean(left?.[0] && left?.[1] && left[0] === right?.[0] && left[1] === right?.[1]);
 }
 
+function reversedEndpointPointPair(left, right) {
+  return Boolean(left?.[0] && left?.[1] && left[0] === right?.[1] && left[1] === right?.[0]);
+}
+
+function endpointHeading(points, endpoint) {
+  if (!Array.isArray(points) || points.length < 2) {
+    return null;
+  }
+  if (endpoint === 'start') {
+    return headingBetween(points[0], points[1]);
+  }
+  return headingBetween(points[points.length - 2], points[points.length - 1]);
+}
+
+function laneEndpointHeadingAngleDegrees(current, candidate) {
+  const currentHeading = endpointHeading(current.center, 'end');
+  const candidateHeading = endpointHeading(candidate.center, 'start');
+  if (!Number.isFinite(currentHeading) || !Number.isFinite(candidateHeading)) {
+    return null;
+  }
+  return (Math.abs(normalizeAngle(candidateHeading - currentHeading)) * 180) / Math.PI;
+}
+
+function laneEndpointsAreTopologicallyConnected(current, candidate) {
+  if (sameEndpointPointPair(current.endPointIds, candidate.startPointIds)) {
+    return true;
+  }
+  if (!reversedEndpointPointPair(current.endPointIds, candidate.startPointIds)) {
+    return false;
+  }
+  const angleDegrees = laneEndpointHeadingAngleDegrees(current, candidate);
+  return angleDegrees !== null && angleDegrees < 100;
+}
+
 function pointsFromBoundary(boundary, pointIndex, reverse = false, transform = null) {
   if (!boundary) {
     return [];
@@ -1523,20 +1557,33 @@ function buildLanes(editorMap, boundaryIndex, pointIndex, conversionWarnings, tr
       if (current === candidate) {
         continue;
       }
-      if (sameEndpointPointPair(current.endPointIds, candidate.startPointIds)) {
+      if (laneEndpointsAreTopologicallyConnected(current, candidate)) {
         current.proto.successorId.push(id(candidate.source.id));
         candidate.proto.predecessorId.push(id(current.source.id));
       } else if (distance(current.end, candidate.start) <= 0.5) {
+        const headingAngleDegrees = laneEndpointHeadingAngleDegrees(current, candidate);
+        const reversedEndpoint = reversedEndpointPointPair(current.endPointIds, candidate.startPointIds);
+        const oppositeEndpoint = reversedEndpoint && headingAngleDegrees !== null && headingAngleDegrees >= 100;
         addConversionWarning(conversionWarnings, {
-          severity: 'warning',
-          code: 'lane-endpoints-near-but-not-topologically-connected',
+          severity: oppositeEndpoint ? 'info' : 'warning',
+          code: oppositeEndpoint
+            ? 'lane-endpoints-overlap-with-opposite-heading'
+            : 'lane-endpoints-near-but-not-topologically-connected',
           element: 'lane',
           id: current.source.id,
-          message: `Lane ${current.source.id || ''} endpoint is close to lane ${candidate.source.id || ''}, but their endpoint point IDs are not shared; no Apollo successor edge was created.`,
+          message: oppositeEndpoint
+            ? `Lane ${current.source.id || ''} shares an endpoint with lane ${
+                candidate.source.id || ''
+              }, but their headings differ by ${headingAngleDegrees.toFixed(
+                1,
+              )} degrees; this was treated as an opposing or independent endpoint, not an Apollo successor.`
+            : `Lane ${current.source.id || ''} endpoint is close to lane ${candidate.source.id || ''}, but their endpoint point IDs are not shared; no Apollo successor edge was created.`,
           details: {
             sourceEndPointIds: current.endPointIds,
             targetStartPointIds: candidate.startPointIds,
             distance: Number(distance(current.end, candidate.start).toFixed(3)),
+            headingAngleDegrees:
+              headingAngleDegrees === null ? null : Number(headingAngleDegrees.toFixed(1)),
           },
         });
       }
@@ -2835,6 +2882,7 @@ async function convertEditorMapToApolloPackage(options) {
   const contract = buildConversionContract(editorMap, cleanMap, routingGraph, warnings);
   const coordinateMetadata = buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransform);
   const routeArtifacts = buildDefaultRouteArtifacts(mapName, mapMessage);
+  const warningCounts = countBySeverity(warnings);
   const qualityGate = buildReleaseQualityGate({
     cleanMap,
     routingGraph,
@@ -2948,7 +2996,8 @@ async function convertEditorMapToApolloPackage(options) {
           overlaps: cleanMap.overlap.length,
           routingNodes: routingGraph.node.length,
           routingEdges: routingGraph.edge.length,
-          warnings: warnings.length,
+          warnings: warningCounts.warning || 0,
+          infos: warningCounts.info || 0,
           contractWarnings: contract.warningCounts.warning || 0,
           contractErrors: contract.warningCounts.error || 0,
           qualityGateReady: qualityGate.ready,
