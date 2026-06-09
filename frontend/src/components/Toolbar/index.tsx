@@ -649,15 +649,15 @@ export default function Index(prop: ToolbarProps) {
                         <h3>标准流程</h3>
                         <div className="help-doc-step">
                             <span>1</span>
-                            <p>进入采图包工作台，同步 NAS 采图包，完成预检、单包底图生成和多段底图合并。</p>
+                            <p>进入采图包工作台，手动上传最新 LAS/LAZ/ZIP 采图包，一键生成可编辑点云资产。</p>
                         </div>
                         <div className="help-doc-step">
                             <span>2</span>
-                            <p>新建标注任务时选择一个已生成底图，从空标注开始绘制。</p>
+                            <p>打开刚生成的点云资产，直接按照点云开始绘制车道、边界、路口和交通设施。</p>
                         </div>
                         <div className="help-doc-step">
                             <span>3</span>
-                            <p>继续编辑标注时打开已有标注地图，系统会自动加载关联底图瓦片作为背景。</p>
+                            <p>继续编辑时打开已有 Apollo 标注地图，确认底图仍然是最新点云资产。</p>
                         </div>
                         <div className="help-doc-step">
                             <span>4</span>
@@ -740,8 +740,10 @@ export default function Index(prop: ToolbarProps) {
                         </p>
                     </section>
                     <section>
-                        <h3>后台任务</h3>
-                        <p>底图生成和合并会在后台执行；大合并会占用 CPU 和磁盘 I/O，系统会跳过仍在写入的采图目录。</p>
+                        <h3>采图包原则</h3>
+                        <p>
+                            采图包不再自动同步、不再自动合并；每次只由人工确认上传最新 LAS 包，避免旧采集和新采集叠加。
+                        </p>
                     </section>
                 </div>
             ),
@@ -853,7 +855,7 @@ export default function Index(prop: ToolbarProps) {
                             label: (
                                 <FileMenuLabel
                                     title="采图包工作台"
-                                    description="同步 NAS、上传、预检、生成底图、合并多段底图"
+                                    description="手动上传 LAS 包、生成点云资产、打开后直接标注"
                                 />
                             ),
                             key: 'asset-manager',

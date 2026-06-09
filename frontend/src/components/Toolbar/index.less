@@ -2401,9 +2401,7 @@
         height: auto !important;
         max-height: min(320px, calc(100vh - 470px));
         border: 1px solid #303b4d;
-        background:
-            linear-gradient(180deg, rgba(36, 45, 60, 0.72), rgba(20, 27, 38, 0.92)),
-            #151b24 !important;
+        background: linear-gradient(180deg, rgba(36, 45, 60, 0.72), rgba(20, 27, 38, 0.92)), #151b24 !important;
     }
 
     .dialog-body-empty {
@@ -2496,5 +2494,194 @@
     h3,
     strong {
         color: #f3f8ff;
+    }
+}
+
+.asset-manager-dialog {
+    .asset-manager-subtitle {
+        margin-top: 4px;
+        color: #92a2b8;
+        font-size: 12px;
+        line-height: 18px;
+    }
+
+    .asset-lite-steps {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 12px;
+    }
+
+    .asset-lite-step {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr);
+        gap: 9px;
+        align-items: flex-start;
+        min-height: 82px;
+        padding: 12px;
+        border: 1px solid #3d4d66;
+        border-radius: 8px;
+        background: #182131;
+
+        span {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border: 1px solid #4c6386;
+            border-radius: 50%;
+            color: #99bdff;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 24px;
+        }
+
+        > span {
+            grid-row: 1 / span 2;
+        }
+
+        strong,
+        em {
+            display: block;
+            grid-column: 2;
+            min-width: 0;
+        }
+
+        strong {
+            color: #f3f8ff;
+            font-size: 14px;
+            font-weight: 750;
+            line-height: 20px;
+        }
+
+        em {
+            margin-top: 4px;
+            color: #94a4ba;
+            font-size: 12px;
+            font-style: normal;
+            line-height: 18px;
+        }
+
+        &.active {
+            border-color: #2f7ff7;
+            background: #1d2d46;
+        }
+    }
+
+    .asset-upload-zone {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 12px;
+        padding: 14px 16px;
+        border: 1px dashed #557198;
+        border-radius: 8px;
+        background: #162031;
+
+        strong,
+        span {
+            display: block;
+            min-width: 0;
+        }
+
+        strong {
+            color: #ffffff;
+            font-size: 15px;
+            font-weight: 750;
+            line-height: 22px;
+        }
+
+        span {
+            margin-top: 4px;
+            color: #a6b5cc;
+            font-size: 12px;
+            line-height: 18px;
+        }
+    }
+
+    .asset-lite-progress {
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border: 1px solid #415a7f;
+        border-radius: 8px;
+        background: #1b2a42;
+
+        > div:first-child {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+
+        strong {
+            color: #ffffff;
+            font-size: 13px;
+            line-height: 18px;
+        }
+
+        span {
+            color: #9ec5ff;
+            font-size: 12px;
+        }
+
+        .ant-progress-text {
+            color: #dce8f8 !important;
+        }
+    }
+
+    .asset-lite-summary {
+        display: grid;
+        grid-template-columns: 110px 110px 110px minmax(0, 1fr);
+        gap: 10px;
+        margin-bottom: 12px;
+
+        div {
+            min-width: 0;
+            padding: 10px 12px;
+            border: 1px solid #3d4d66;
+            border-radius: 8px;
+            background: #182131;
+        }
+
+        span,
+        strong {
+            display: block;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        span {
+            color: #8797ad;
+            font-size: 12px;
+            line-height: 17px;
+        }
+
+        strong {
+            margin-top: 3px;
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 750;
+            line-height: 20px;
+        }
+    }
+
+    .asset-manager-table {
+        .ant-table-selection-column {
+            background: #202837 !important;
+        }
+
+        .ant-table-tbody .ant-table-selection-column,
+        .ant-table-tbody .ant-table-cell-fix-left {
+            background: #151b24 !important;
+        }
+
+        .asset-manager-actions {
+            flex-wrap: wrap;
+        }
     }
 }

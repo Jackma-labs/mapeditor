@@ -274,6 +274,49 @@ class FileService {
         }));
     }
 
+    async analyzeDataPackageWithProgress(
+        file: File | File[],
+        packageName: string,
+        onProgress?: (percent: number) => void,
+    ): Promise<any> {
+        const formData = new FormData();
+        const files = Array.isArray(file) ? file : [file];
+        files.forEach((item) => formData.append(files.length === 1 ? 'file' : 'files', item));
+        formData.append('packageName', packageName);
+
+        return new Promise((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open('POST', `${baseApiURL}/runtime/analyze-data-package`);
+            request.withCredentials = true;
+            request.upload.onprogress = (event) => {
+                if (!event.lengthComputable) {
+                    return;
+                }
+                const percent = Math.max(0, Math.min(99, (event.loaded / event.total) * 100));
+                onProgress?.(percent);
+            };
+            request.onload = () => {
+                let payload: any = {
+                    code: request.status,
+                    message: request.statusText,
+                };
+                try {
+                    payload = JSON.parse(request.responseText || '{}');
+                } catch (error) {
+                    // Keep the HTTP fallback payload when the server returns non-JSON content.
+                }
+                if (request.status >= 200 && request.status < 300) {
+                    onProgress?.(100);
+                    resolve(payload);
+                    return;
+                }
+                reject(new Error(payload?.message || request.statusText || '上传失败'));
+            };
+            request.onerror = () => reject(new Error('上传失败，请检查网络连接'));
+            request.send(formData);
+        });
+    }
+
     async startAnalyzeDataPackageJob(file: File | File[], packageName: string) {
         const formData = new FormData();
         const files = Array.isArray(file) ? file : [file];

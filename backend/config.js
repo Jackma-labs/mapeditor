@@ -351,6 +351,14 @@ if (process.env.MAP_APOLLOLITE_VALIDATION_COMMAND) {
   merged.apolloLite.validationCommand = process.env.MAP_APOLLOLITE_VALIDATION_COMMAND;
 }
 
+// Capture packages are now operated manually from the workbench. Keep the
+// legacy endpoints available, but do not allow scheduled auto jobs to run.
+merged.captureAutoSync.enabled = false;
+merged.captureAutoSync.autoGenerateBaseMaps = false;
+merged.captureAutoSync.autoMerge = false;
+merged.inboxAutoPrebuild.enabled = false;
+merged.inboxAutoPrebuild.autoMerge = false;
+
 function ensureAbsolute(dirPath) {
   if (typeof dirPath !== 'string' || dirPath.length === 0) {
     return dirPath;
