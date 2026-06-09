@@ -1297,7 +1297,7 @@ def max_bounds_delta(left, right):
         return None
 
 for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
-    if not name or name == current or name.startswith('.'):
+    if not name or name.startswith('.'):
         continue
     map_dir = os.path.join(root, name)
     path = os.path.join(map_dir, 'base_map.txt')
