@@ -102,7 +102,7 @@ export default class BaseMap {
 
     private opacity: number = 1;
 
-    private pointSize: number = 1.2;
+    private pointSize: number = 1.8;
 
     private currentMapExtent: number = 0;
 
@@ -224,7 +224,7 @@ export default class BaseMap {
     }
 
     public updatePointSize(val: number) {
-        this.pointSize = Math.max(0.6, Math.min(5, Number(val) || 1.2));
+        this.pointSize = Math.max(0.6, Math.min(8, Number(val) || 1.8));
         Object.keys(this.meshs).forEach((id: string) => {
             const mesh = this.meshs[id];
             if (mesh instanceof THREE.Points) {
@@ -471,9 +471,13 @@ export default class BaseMap {
     }
 
     private async loadPointCloudBlock(block: PointCloudBlock) {
-        const response = await fetch(`${baseApiURL}/mapcreator/${this.dir}/point_cloud/${block.file}`, {
-            credentials: 'include',
-        });
+        const blockFile = block.file?.startsWith('blocks/') ? block.file : `blocks/${block.file}`;
+        const response = await fetch(
+            `${baseApiURL}/mapcreator/${encodeURIComponent(this.dir)}/point_cloud/${blockFile}`,
+            {
+                credentials: 'include',
+            },
+        );
         if (!response.ok) {
             throw new Error(`load point-cloud block failed: ${block.file}`);
         }

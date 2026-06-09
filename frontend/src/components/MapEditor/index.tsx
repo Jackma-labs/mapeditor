@@ -68,7 +68,7 @@ export default function MapEditor() {
     const [baseMapUi, setBaseMapUi] = useState({
         dir: '',
         opacity: 1,
-        pointSize: 1.2,
+        pointSize: 1.8,
         supportsPointSize: false,
     });
     const render = () => {
@@ -480,7 +480,7 @@ export default function MapEditor() {
                         </div>
                         <Slider
                             min={0.4}
-                            max={5}
+                            max={8}
                             step={0.1}
                             value={[baseMapUi.pointSize]}
                             disabled={!baseMapUi.supportsPointSize}
