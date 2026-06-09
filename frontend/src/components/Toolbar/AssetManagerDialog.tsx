@@ -500,7 +500,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             title: '点云资产',
             dataIndex: 'defaultMapName',
             key: 'asset',
-            width: 270,
+            width: 300,
             render: (_value: string, record: any) => (
                 <div className="asset-manager-name-cell" title={record.packageId}>
                     <div className="asset-manager-name">{getPackageTitle(record)}</div>
@@ -513,7 +513,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '状态',
             key: 'status',
-            width: 100,
+            width: 120,
             render: (_value: string, record: any) => (
                 <Tag color={getWorkflowStatusColor(record)}>{getWorkflowStatusLabel(record)}</Tag>
             ),
@@ -521,7 +521,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '质量/坐标',
             key: 'quality',
-            width: 140,
+            width: 116,
             render: (_value: string, record: any) => (
                 <div className="asset-manager-tag-line">
                     <Tag color={qualityColor[record.quality?.rating] || 'default'}>
@@ -534,7 +534,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '内容',
             key: 'content',
-            width: 150,
+            width: 116,
             render: (_value: string, record: any) => {
                 const summary = record.summary || {};
                 return (
@@ -551,7 +551,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '点数/大小',
             key: 'size',
-            width: 110,
+            width: 120,
             render: (_value: string, record: any) => (
                 <div className="asset-manager-size">
                     <div>{formatCount(record.summary?.pointCount)}</div>
@@ -562,7 +562,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '操作',
             key: 'actions',
-            width: 230,
+            width: 220,
             render: (_value: string, record: any) => (
                 <Space size={6} className="asset-manager-actions">
                     <Button size="small" type="primary" onClick={() => handleGenerateAsset(record)} disabled={working}>
@@ -723,6 +723,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
                 columns={columns}
                 dataSource={packages}
                 loading={loading}
+                tableLayout="fixed"
                 pagination={{ pageSize: 6, showSizeChanger: false }}
                 className="asset-manager-table"
                 locale={{ emptyText: '还没有点云资产，请上传最新 LAS/LAZ/ZIP 包。' }}
