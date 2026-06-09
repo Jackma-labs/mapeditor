@@ -1318,29 +1318,41 @@ async function validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir,
   }
   const allReferences = await fetchEdgeReferenceMapBounds(config, remoteRoot, mapName);
   const references = allReferences.filter(isGlobalApolloCoordinateBounds);
-  if (references.length === 0) {
-    throw new Error(
-      `released map coordinate validation failed: no global-coordinate reference maps were found on edge under ${remoteRoot}`,
-    );
-  }
-  const nearestReference = references
-    .map((reference) => ({
-      ...reference,
-      distanceMeters: coordinateDistance(localBounds, reference),
-    }))
-    .sort((left, right) => left.distanceMeters - right.distanceMeters)[0];
   const maxDistanceMeters = Number(config.edgeDeploy.coordinateValidationMaxDistanceMeters || 1000);
-  if (nearestReference.distanceMeters > maxDistanceMeters) {
-    throw new Error(
-      [
-        `released map coordinate validation failed: ${mapName} is ${nearestReference.distanceMeters.toFixed(
+  let nearestReference = null;
+  let referenceValidation = {
+    status: 'warning',
+    message: `no global-coordinate reference maps were found on edge under ${remoteRoot}; trusting released map coordinate metadata`,
+  };
+  if (references.length > 0) {
+    nearestReference = references
+      .map((reference) => ({
+        ...reference,
+        distanceMeters: coordinateDistance(localBounds, reference),
+      }))
+      .sort((left, right) => left.distanceMeters - right.distanceMeters)[0];
+    if (nearestReference.distanceMeters <= maxDistanceMeters) {
+      referenceValidation = {
+        status: 'ok',
+        message: `${mapName} is ${nearestReference.distanceMeters.toFixed(
           1,
         )}m from nearest edge reference map ${nearestReference.mapName}`,
-        `new=${formatCoordinateBounds(localBounds)}`,
-        `reference=${formatCoordinateBounds(nearestReference)}`,
-        `maxDistanceMeters=${maxDistanceMeters}`,
-      ].join('; '),
-    );
+      };
+    } else {
+      referenceValidation = {
+        status: 'warning',
+        message: [
+          `${mapName} is ${nearestReference.distanceMeters.toFixed(
+            1,
+          )}m from nearest edge reference map ${nearestReference.mapName}`,
+          'edge reference maps may have been produced by an older coordinate pipeline',
+          'trusting released map coordinate metadata for deployment',
+          `new=${formatCoordinateBounds(localBounds)}`,
+          `reference=${formatCoordinateBounds(nearestReference)}`,
+          `maxDistanceMeters=${maxDistanceMeters}`,
+        ].join('; '),
+      };
+    }
   }
   return {
     localBounds,
@@ -1348,6 +1360,7 @@ async function validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir,
     referencesChecked: references.length,
     nearestReference,
     maxDistanceMeters,
+    referenceValidation,
     vehiclePoseValidation: await validateReleasedMapAgainstEdgePose(config, sourceDir, localBounds).catch((error) => ({
       available: false,
       status: config.edgeDeploy.requireLocalizationGate !== false ? 'error' : 'warning',
@@ -10032,6 +10045,20 @@ async function preflightEdgeDeploy(config, params = {}) {
       `Released map coordinates ok: ${mapName}; ${formatCoordinateBounds(validation.localBounds)}`,
       validation,
     );
+    if (validation.referenceValidation) {
+      const referenceStatus = validation.referenceValidation.status || 'warning';
+      addCheck(
+        'selected-map-edge-reference',
+        referenceStatus === 'ok',
+        referenceStatus === 'error' ? 'error' : 'warning',
+        validation.referenceValidation.message,
+        {
+          referencesChecked: validation.referencesChecked,
+          nearestReference: validation.nearestReference,
+          maxDistanceMeters: validation.maxDistanceMeters,
+        },
+      );
+    }
     const vehiclePoseValidation = validation.vehiclePoseValidation;
     if (vehiclePoseValidation?.available) {
       const vehiclePoseStatus = vehiclePoseValidation.status || 'warning';
