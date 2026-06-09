@@ -2088,7 +2088,7 @@ async function listReleasedMaps(config) {
     const selectable = isSelectableReleasedMapName(mapName);
     const status = ready ? 'ready' : conversionErrors.length > 0 ? 'coordinate_invalid' : 'invalid';
     const statusMessage = ready
-      ? 'Ready for deployment and simulation'
+      ? 'Ready for edge deployment'
       : conversionErrors.length > 0
         ? `Coordinate conversion failed: ${summarizeReleasedMapErrors(conversionErrors)}`
         : `Missing ${missingExpectedFiles.join(', ') || 'valid map files'}`;

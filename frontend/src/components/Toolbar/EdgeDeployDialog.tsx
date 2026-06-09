@@ -277,7 +277,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const readyCheckCount = preflightChecks.filter((item: any) => item.status === 'ok').length;
     const warningCheckCount = preflightChecks.filter((item: any) => item.status === 'warning').length;
     const errorCheckCount = preflightChecks.filter((item: any) => item.status === 'error').length;
-    const recentDeploymentRecords = useMemo(() => deploymentRecords.slice(0, 6), [deploymentRecords]);
+    const recentDeploymentRecords = useMemo(
+        () => deploymentRecords.filter((item: any) => item?.type === 'deploy' || item?.type === 'rollback').slice(0, 6),
+        [deploymentRecords],
+    );
     let overviewStatus = 'idle';
     if (errorCheckCount > 0) {
         overviewStatus = 'error';
