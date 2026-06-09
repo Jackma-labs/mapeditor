@@ -762,42 +762,6 @@
     }
 }
 
-.release-map-switcher {
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-    margin-bottom: 10px;
-
-    button {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 8px;
-        align-items: center;
-        padding: 8px 9px;
-        border: 1px solid #344155;
-        border-radius: 6px;
-        background: #171d28;
-        color: #dce7f7;
-        text-align: left;
-        cursor: pointer;
-
-        &:hover,
-        &.active {
-            border-color: #5c81c8;
-            background: #202a3c;
-        }
-
-        > span {
-            min-width: 0;
-            overflow: hidden;
-            font-size: 12px;
-            line-height: 17px;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-    }
-}
-
 .release-package-summary {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));

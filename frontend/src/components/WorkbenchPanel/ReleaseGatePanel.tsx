@@ -64,16 +64,6 @@ function getCheck(map: any, id: string) {
     return getQualityChecks(map).find((check: any) => check.id === id);
 }
 
-function statusToVariant(status: string): 'outline' | 'secondary' | 'destructive' {
-    if (status === 'error' || status === 'invalid' || status === 'coordinate_invalid') {
-        return 'destructive';
-    }
-    if (status === 'warning') {
-        return 'secondary';
-    }
-    return 'outline';
-}
-
 function statusText(status: string) {
     if (status === 'ok') return '通过';
     if (status === 'warning') return '警告';
@@ -168,24 +158,12 @@ function buildGateCards(map: any) {
     ];
 }
 
-function getSelectedMap(maps: any[], currentMapName?: string, selectedMapName?: string) {
-    const selected = normalizeMapName(selectedMapName);
-    if (selected) {
-        const selectedMap = maps.find((item) => normalizeMapName(item.mapName) === selected);
-        if (selectedMap) {
-            return selectedMap;
-        }
-    }
+function getCurrentReleasedMap(maps: any[], currentMapName?: string) {
     const current = normalizeMapName(currentMapName);
-    if (current) {
-        const currentMap = maps.find((item) => normalizeMapName(item.mapName) === current);
-        if (currentMap) {
-            return currentMap;
-        }
+    if (!current) {
+        return null;
     }
-    return (
-        maps.find((item) => item.selectable && item.ready) || maps.find((item) => item.selectable) || maps[0] || null
-    );
+    return maps.find((item) => normalizeMapName(item.mapName) === current) || null;
 }
 
 function buildReleaseCertificate(map: any, report: MapQualityReport) {
@@ -229,10 +207,10 @@ export default function ReleaseGatePanel({
     const [loading, setLoading] = useState(false);
     const [loadError, setLoadError] = useState('');
     const [releasedMaps, setReleasedMaps] = useState<any[]>([]);
-    const [selectedMapName, setSelectedMapName] = useState('');
+    const currentMapLabel = normalizeMapName(currentMapName) || '未打开地图';
     const selectedMap = useMemo(
-        () => getSelectedMap(releasedMaps, currentMapName, selectedMapName),
-        [releasedMaps, currentMapName, selectedMapName],
+        () => getCurrentReleasedMap(releasedMaps, currentMapName),
+        [releasedMaps, currentMapName],
     );
     const gateCards = useMemo(() => buildGateCards(selectedMap), [selectedMap]);
     const qualityChecks = getQualityChecks(selectedMap);
@@ -265,14 +243,13 @@ export default function ReleaseGatePanel({
             }
             const maps = Array.isArray(response?.data?.maps) ? response.data.maps : [];
             setReleasedMaps(maps);
-            setSelectedMapName((current) => getSelectedMap(maps, currentMapName, current)?.mapName || '');
         } catch (error: any) {
             setLoadError(error?.message || '读取发布包失败');
             setReleasedMaps([]);
         } finally {
             setLoading(false);
         }
-    }, [currentMapName]);
+    }, []);
 
     useEffect(() => {
         loadReleasedMaps();
@@ -313,8 +290,12 @@ export default function ReleaseGatePanel({
             <section className="release-package-section">
                 <div className="release-package-heading">
                     <div>
-                        <strong>发布包</strong>
-                        <span>{selectedMap ? `当前查看 ${selectedMap.mapName}` : '暂无发布包'}</span>
+                        <strong>当前地图发布检查</strong>
+                        <span>
+                            {selectedMap
+                                ? `当前地图 ${selectedMap.mapName}`
+                                : `当前地图 ${currentMapLabel} 暂无匹配发布包`}
+                        </span>
                     </div>
                     <Button type="button" variant="outline" size="sm" onClick={loadReleasedMaps} disabled={loading}>
                         <RefreshCw data-icon="inline-start" />
@@ -328,25 +309,6 @@ export default function ReleaseGatePanel({
                 </div>
 
                 {loadError && <div className="release-error">{loadError}</div>}
-
-                {releasedMaps.length > 0 && (
-                    <div className="release-map-switcher">
-                        {releasedMaps
-                            .filter((item) => item.selectable)
-                            .slice(0, 6)
-                            .map((item) => (
-                                <button
-                                    type="button"
-                                    key={item.mapName}
-                                    className={selectedMap?.mapName === item.mapName ? 'active' : ''}
-                                    onClick={() => setSelectedMapName(item.mapName)}
-                                >
-                                    <span>{item.mapName}</span>
-                                    <Badge variant={statusToVariant(item.status)}>{statusText(item.status)}</Badge>
-                                </button>
-                            ))}
-                    </div>
-                )}
 
                 {selectedMap ? (
                     <>
@@ -427,7 +389,8 @@ export default function ReleaseGatePanel({
                     </>
                 ) : (
                     <div className="release-empty">
-                        暂无发布包。先保存标注并从顶部“生产”菜单发布，再回到这里确认坐标、route 和质量门禁。
+                        当前地图还没有发布包。先保存标注并从顶部“生产”菜单发布当前地图，再回到这里检查坐标、默认路线、POI
+                        和质量门禁；其它历史发布包请在“边缘部署”里选择。
                     </div>
                 )}
             </section>
