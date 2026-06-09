@@ -9865,7 +9865,13 @@ async function preflightEdgeDeploy(config, params = {}) {
     });
     addCheck('ssh-connectivity', true, 'error', `SSH connectivity ok: ${result.stdout.trim()}`);
   } catch (error) {
-    addCheck('ssh-connectivity', false, 'error', 'SSH connectivity failed', error.message);
+    addCheck(
+      'ssh-connectivity',
+      false,
+      'warning',
+      'Basic SSH probe failed; deployment will rely on upload, Docker and Dreamview SSH checks',
+      error.message,
+    );
   }
 
   try {
