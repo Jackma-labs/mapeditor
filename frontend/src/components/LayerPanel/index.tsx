@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import PubSub from 'pubsub-js';
-import { Eye, EyeOff, Layers, LocateFixed, Lock, MousePointer2, PanelLeftClose, Unlock } from 'lucide-react';
+import { Eye, EyeOff, Layers, LocateFixed, Lock, PanelLeftClose, Unlock } from 'lucide-react';
 import { editorLayerConfigs, mergeEditorLayers } from 'src/constant/editorLayers';
 import { Badge } from 'src/components/ui/badge';
 import { Button } from 'src/components/ui/button';
@@ -13,12 +13,13 @@ import { filterPickElementsByEditorLayers, getEditorLayerForThreeElementType } f
 import './index.less';
 
 const editLayerIds: EditorLayerId[] = ['lane', 'boundary', 'junction', 'traffic', 'area'];
+const systemLayerIds: EditorLayerId[] = ['reference', 'quality'];
 
 const layerPresets = [
     {
         id: 'edit',
-        label: '标注车道',
-        description: '只保留车道、边界和底图，减少误选其它对象。',
+        label: '标注',
+        description: '只保留底图、车道和边界，适合画主线、调车道和修边界。',
         build: (): EditorLayerMap => {
             const next = mergeEditorLayers();
             editorLayerConfigs.forEach((config) => {
@@ -33,46 +34,13 @@ const layerPresets = [
     },
     {
         id: 'inspect',
-        label: '检查拓扑',
-        description: '显示所有地图内容并锁定编辑图层，配合右侧质检定位问题。',
+        label: '检查',
+        description: '显示全部对象并锁定编辑，配合质检逐项定位问题。',
         build: (): EditorLayerMap => {
             const next = mergeEditorLayers();
             editorLayerConfigs.forEach((config) => {
                 next[config.id] = {
                     visible: true,
-                    locked: editLayerIds.includes(config.id),
-                };
-            });
-            return next;
-        },
-    },
-    {
-        id: 'traffic',
-        label: '补交通设施',
-        description: '显示车道、路口和交通控制对象，隐藏区域干扰。',
-        build: (): EditorLayerMap => {
-            const next = mergeEditorLayers();
-            editorLayerConfigs.forEach((config) => {
-                next[config.id] = {
-                    visible: ['reference', 'lane', 'boundary', 'junction', 'traffic'].includes(config.id),
-                    locked: !['junction', 'traffic'].includes(config.id),
-                };
-            });
-            next.reference.locked = true;
-            next.quality.visible = false;
-            next.quality.locked = true;
-            return next;
-        },
-    },
-    {
-        id: 'problem',
-        label: '只看问题',
-        description: '锁定标注对象，保留质检覆盖层用于逐项定位。',
-        build: (): EditorLayerMap => {
-            const next = mergeEditorLayers();
-            editorLayerConfigs.forEach((config) => {
-                next[config.id] = {
-                    visible: ['lane', 'boundary', 'quality'].includes(config.id),
                     locked: true,
                 };
             });
@@ -81,8 +49,8 @@ const layerPresets = [
     },
     {
         id: 'preview',
-        label: '发布预览',
-        description: '隐藏质检覆盖层，锁定所有编辑图层。',
+        label: '预览',
+        description: '隐藏质检覆盖层并锁定全部图层，用发布前最终查看。',
         build: (): EditorLayerMap => {
             const next = mergeEditorLayers();
             editorLayerConfigs.forEach((config) => {
@@ -162,11 +130,23 @@ function getLayerCoordinates(mapState: MapState, layerId: EditorLayerId) {
     return coordinates;
 }
 
-function getLayerState(layer: EditorLayerMap[EditorLayerId]) {
+function getLayerState(layerId: EditorLayerId, layer: EditorLayerMap[EditorLayerId], count: number) {
     if (!layer.visible) {
         return {
             label: '隐藏',
             className: 'hidden',
+        };
+    }
+    if (layerId === 'quality') {
+        return {
+            label: count > 0 ? '问题定位' : '无问题',
+            className: count > 0 ? 'readonly' : 'hidden',
+        };
+    }
+    if (systemLayerIds.includes(layerId)) {
+        return {
+            label: '只显示',
+            className: 'readonly',
         };
     }
     if (layer.locked) {
@@ -176,7 +156,7 @@ function getLayerState(layer: EditorLayerMap[EditorLayerId]) {
         };
     }
     return {
-        label: '可选中',
+        label: '可编辑',
         className: 'editable',
     };
 }
@@ -215,12 +195,15 @@ function fitCoordinates(coordinates: number[][]) {
 
 export default function LayerPanel() {
     const [collapsed, setCollapsed] = useState(false);
+    const [activePresetId, setActivePresetId] = useState('custom');
     const [mapState, setMapState] = useManagerStore((state) => [state.mapState, state.setMapState]);
     const report = useMemo(() => inspectMapQuality(mapState), [mapState]);
     const layers = mergeEditorLayers(mapState.editorLayers);
     const counts = getLayerCounts(mapState, report.issues.length);
+    const activePreset = layerPresets.find((preset) => preset.id === activePresetId);
 
     const updateLayer = (layerId: EditorLayerId, patch: Partial<(typeof layers)[EditorLayerId]>) => {
+        setActivePresetId('custom');
         const currentMapState = useManagerStore.getState().mapState;
         const nextLayers = mergeEditorLayers(currentMapState.editorLayers);
         nextLayers[layerId] = {
@@ -239,7 +222,8 @@ export default function LayerPanel() {
         });
     };
 
-    const replaceLayers = (nextLayers: EditorLayerMap) => {
+    const replaceLayers = (nextLayers: EditorLayerMap, presetId: string) => {
+        setActivePresetId(presetId);
         const currentMapState = useManagerStore.getState().mapState;
         const nextMapState = {
             ...currentMapState,
@@ -283,7 +267,7 @@ export default function LayerPanel() {
                     <>
                         <div className="editor-layer-title">
                             <strong>图层控制</strong>
-                            <span>先选模式，再按需显示、锁定或定位图层。</span>
+                            <span>先选模式，再微调显示、锁定和定位。</span>
                         </div>
                         <Button
                             type="button"
@@ -305,30 +289,33 @@ export default function LayerPanel() {
                             <Button
                                 key={preset.id}
                                 type="button"
-                                variant="outline"
+                                variant={activePresetId === preset.id ? 'secondary' : 'outline'}
                                 size="sm"
+                                className={activePresetId === preset.id ? 'is-active' : ''}
                                 title={preset.description}
-                                onClick={() => replaceLayers(preset.build())}
+                                onClick={() => replaceLayers(preset.build(), preset.id)}
                             >
                                 {preset.label}
                             </Button>
                         ))}
                     </div>
-                    <div className="editor-layer-help">
-                        <MousePointer2 />
-                        锁定后不会被选中，隐藏后从画布消失；定位只移动视角，不修改地图。
+                    <div className="editor-layer-mode-note">
+                        {activePreset
+                            ? activePreset.description
+                            : '当前为手动微调模式；显示影响画布，锁定影响是否可选中。'}
                     </div>
                     <div className="editor-layer-list">
                         {editorLayerConfigs.map((config) => {
                             const layer = layers[config.id];
                             const count = counts[config.id] || 0;
+                            const canLock = editLayerIds.includes(config.id);
                             const visibleLabel = layer.visible ? '隐藏' : '显示';
                             const lockLabel = layer.locked ? '解锁' : '锁定';
-                            const state = getLayerState(layer);
+                            const state = getLayerState(config.id, layer, count);
                             return (
                                 <div
                                     className={`editor-layer-row ${!layer.visible ? 'is-hidden' : ''} ${
-                                        layer.locked ? 'is-locked' : ''
+                                        canLock && layer.locked ? 'is-locked' : ''
                                     }`}
                                     key={config.id}
                                 >
@@ -343,7 +330,7 @@ export default function LayerPanel() {
                                         </div>
                                         <span className="editor-layer-description">{config.description}</span>
                                     </div>
-                                    <div className="editor-layer-actions">
+                                    <div className={`editor-layer-actions ${canLock ? '' : 'is-simple'}`}>
                                         <Button
                                             type="button"
                                             variant={layer.visible ? 'secondary' : 'outline'}
@@ -359,21 +346,23 @@ export default function LayerPanel() {
                                             )}
                                             {visibleLabel}
                                         </Button>
-                                        <Button
-                                            type="button"
-                                            variant={layer.locked ? 'secondary' : 'outline'}
-                                            size="sm"
-                                            aria-label={`${lockLabel}${config.label}`}
-                                            title={`${lockLabel}${config.label}`}
-                                            onClick={() => updateLayer(config.id, { locked: !layer.locked })}
-                                        >
-                                            {layer.locked ? (
-                                                <Lock data-icon="inline-start" />
-                                            ) : (
-                                                <Unlock data-icon="inline-start" />
-                                            )}
-                                            {lockLabel}
-                                        </Button>
+                                        {canLock && (
+                                            <Button
+                                                type="button"
+                                                variant={layer.locked ? 'secondary' : 'outline'}
+                                                size="sm"
+                                                aria-label={`${lockLabel}${config.label}`}
+                                                title={`${lockLabel}${config.label}`}
+                                                onClick={() => updateLayer(config.id, { locked: !layer.locked })}
+                                            >
+                                                {layer.locked ? (
+                                                    <Lock data-icon="inline-start" />
+                                                ) : (
+                                                    <Unlock data-icon="inline-start" />
+                                                )}
+                                                {lockLabel}
+                                            </Button>
+                                        )}
                                         <Button
                                             type="button"
                                             variant="ghost"

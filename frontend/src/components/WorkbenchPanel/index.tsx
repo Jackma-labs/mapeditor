@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import PubSub from 'pubsub-js';
 import { Bot, ClipboardCheck, ListChecks, Map, MousePointer2 } from 'lucide-react';
+import { Button } from 'src/components/ui/button';
 import { useManagerStore } from 'src/store';
 import { inspectMapQuality } from 'src/quality/mapQuality';
 import Attr from '../Attr';
@@ -21,82 +22,85 @@ const tabs: { key: WorkbenchTab; label: string; desc: string; icon: React.Elemen
     { key: 'publish', label: '发布检查', desc: '确认能否部署', icon: ClipboardCheck },
 ];
 
-function getGateStatus(blocked: boolean, warning: boolean): FlowStatus {
-    if (blocked) {
-        return 'blocked';
-    }
-    if (warning) {
-        return 'warning';
-    }
-    return 'ready';
-}
-
 export default function WorkbenchPanel() {
     const [activeTab, setActiveTab] = useState<WorkbenchTab>('guide');
     const [mapState] = useManagerStore((state) => [state.mapState]);
     const report = useMemo(() => inspectMapQuality(mapState), [mapState]);
     const selectedCount = mapState.currentPickElement?.length || 0;
-    const publishBlocked = report.summary.errors > 0;
-    const publishWarning = !publishBlocked && report.summary.warnings > 0;
-    const qualityStatus = getGateStatus(report.summary.errors > 0, report.summary.warnings > 0);
-    const publishFlowStatus = getGateStatus(publishBlocked, publishWarning);
-    const openAssetManager = () => PubSub.publish('openAssetManager');
-    const openEdgeDeploy = () => PubSub.publish('openEdgeDeploy');
-    const flowItems: {
-        label: string;
-        value: string;
-        status: FlowStatus;
-        tab?: WorkbenchTab;
-        action?: () => void;
-    }[] = [
-        {
-            label: '采图',
-            value: mapState.baseMapDir ? '底图已加载' : '上传 LAS',
-            status: mapState.baseMapDir ? 'ready' : 'idle',
-            action: openAssetManager,
-        },
-        {
-            label: '标注',
-            value: report.summary.lanes > 0 ? `${report.summary.lanes} 条车道` : '待标注',
-            status: report.summary.lanes > 0 ? 'ready' : 'idle',
-            tab: 'attr',
-        },
-        {
-            label: '质检',
-            value: report.summary.errors > 0 ? `${report.summary.errors} 错误` : `${report.summary.warnings} 警告`,
-            status: qualityStatus,
-            tab: 'quality',
-        },
-        {
-            label: '发布',
-            value: publishBlocked ? '被阻塞' : '可检查',
-            status: publishFlowStatus,
-            tab: 'publish',
-        },
-        {
-            label: '边缘',
-            value: publishBlocked ? '待发布' : '可部署',
-            status: publishBlocked ? 'idle' : publishFlowStatus,
-            action: openEdgeDeploy,
-        },
-    ];
+    const openAssetManager = useCallback(() => PubSub.publish('openAssetManager'), []);
+    const openEdgeDeploy = useCallback(() => PubSub.publish('openEdgeDeploy'), []);
+    const nextAction = useMemo(() => {
+        if (!mapState.baseMapDir) {
+            return {
+                title: '上传最新采图包',
+                detail: '先生成可编辑点云资产，再开始标注。',
+                button: '采图包',
+                status: 'idle' as FlowStatus,
+                action: openAssetManager,
+            };
+        }
+        if (report.summary.lanes === 0) {
+            return {
+                title: '开始基础车道标注',
+                detail: '先画连续主路线，再补路口和交通控制。',
+                button: '看向导',
+                status: 'idle' as FlowStatus,
+                tab: 'guide' as WorkbenchTab,
+            };
+        }
+        if (report.summary.errors > 0) {
+            return {
+                title: '处理红色错误',
+                detail: `${report.summary.errors} 个错误会阻塞发布，先从质检列表定位。`,
+                button: '打开质检',
+                status: 'blocked' as FlowStatus,
+                tab: 'quality' as WorkbenchTab,
+            };
+        }
+        if (report.summary.warnings > 0) {
+            return {
+                title: '确认黄色警告',
+                detail: `${report.summary.warnings} 个警告需要确认，不阻塞但会影响实车信心。`,
+                button: '确认警告',
+                status: 'warning' as FlowStatus,
+                tab: 'quality' as WorkbenchTab,
+            };
+        }
+        return {
+            title: '进入发布检查',
+            detail: '编辑态质检通过，确认发布包坐标和 route 后推送边缘设备。',
+            button: '发布检查',
+            status: 'ready' as FlowStatus,
+            tab: 'publish' as WorkbenchTab,
+        };
+    }, [mapState.baseMapDir, openAssetManager, report.summary.errors, report.summary.lanes, report.summary.warnings]);
     const selectionSubtitle =
         selectedCount > 0
             ? `已选中 ${selectedCount} 个对象，右侧显示可编辑属性。`
-            : '未选中对象，先在画布或左侧工具开始。';
+            : '未选中对象，按下一步推进生产流程。';
 
     const getTabBadge = (tabKey: WorkbenchTab) => {
         if (tabKey === 'quality') {
             return report.summary.errors + report.summary.warnings;
         }
         if (tabKey === 'publish') {
-            return report.summary.errors;
+            return report.summary.errors || report.summary.warnings;
         }
         return 0;
     };
 
     const stopPanelEvent = (event: React.MouseEvent) => {
         event.stopPropagation();
+    };
+
+    const runNextAction = () => {
+        if (nextAction.action) {
+            nextAction.action();
+            return;
+        }
+        if (nextAction.tab) {
+            setActiveTab(nextAction.tab);
+        }
     };
 
     return (
@@ -107,29 +111,22 @@ export default function WorkbenchPanel() {
                     <div className="workbench-subtitle">{selectionSubtitle}</div>
                 </div>
             </div>
-            <div className="workbench-flow" aria-label="地图生产流程">
-                {flowItems.map((item) => (
-                    <button
-                        type="button"
-                        key={item.label}
-                        className={item.status}
-                        disabled={!item.tab && !item.action}
-                        onClick={() => {
-                            if (item.action) {
-                                item.action();
-                                return;
-                            }
-                            if (item.tab) {
-                                setActiveTab(item.tab);
-                            }
-                        }}
-                    >
-                        <strong>{item.label}</strong>
-                        <span>{item.value}</span>
-                    </button>
-                ))}
+            <div className={`workbench-next-action ${nextAction.status}`}>
+                <div>
+                    <span>下一步</span>
+                    <strong>{nextAction.title}</strong>
+                    <em>{nextAction.detail}</em>
+                </div>
+                <Button
+                    type="button"
+                    size="sm"
+                    variant={nextAction.status === 'ready' ? 'default' : 'secondary'}
+                    onClick={runNextAction}
+                >
+                    {nextAction.button}
+                </Button>
             </div>
-            <div className="workbench-tabs">
+            <div className="workbench-tabs" aria-label="工作台功能">
                 {tabs.map((tab) => {
                     const TabIcon = tab.icon;
                     const tabBadge = getTabBadge(tab.key);
@@ -138,13 +135,11 @@ export default function WorkbenchPanel() {
                             type="button"
                             key={tab.key}
                             className={activeTab === tab.key ? 'active' : ''}
+                            title={tab.desc}
                             onClick={() => setActiveTab(tab.key)}
                         >
                             <TabIcon />
-                            <span>
-                                <strong>{tab.label}</strong>
-                                <small>{tab.desc}</small>
-                            </span>
+                            <strong>{tab.label}</strong>
                             {tabBadge > 0 && <em>{tabBadge}</em>}
                         </button>
                     );
