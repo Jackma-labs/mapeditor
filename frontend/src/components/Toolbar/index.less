@@ -1434,6 +1434,43 @@
         color: #ffffff;
     }
 
+    .ant-tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        margin-inline-end: 0;
+        border-color: #50617a !important;
+        border-radius: 999px;
+        background: rgba(42, 52, 69, 0.78) !important;
+        color: #dbe7f7 !important;
+        font-weight: 650;
+        line-height: 20px;
+    }
+
+    .ant-tag-default {
+        border-color: #50617a !important;
+        background: rgba(42, 52, 69, 0.78) !important;
+        color: #dbe7f7 !important;
+    }
+
+    .ant-tag-green {
+        border-color: rgba(34, 197, 94, 0.42) !important;
+        background: rgba(34, 197, 94, 0.12) !important;
+        color: #bff7d2 !important;
+    }
+
+    .ant-tag-gold {
+        border-color: rgba(245, 158, 11, 0.45) !important;
+        background: rgba(245, 158, 11, 0.13) !important;
+        color: #ffd894 !important;
+    }
+
+    .ant-tag-red {
+        border-color: rgba(239, 68, 68, 0.45) !important;
+        background: rgba(239, 68, 68, 0.14) !important;
+        color: #ffb8b8 !important;
+    }
+
     .edge-deploy-form {
         width: 100%;
     }
@@ -1636,6 +1673,41 @@
         }
     }
 
+    .edge-deploy-input-action {
+        align-items: stretch;
+
+        .ant-input,
+        .ant-input-affix-wrapper,
+        .ant-select-selector,
+        .ant-btn {
+            height: 40px !important;
+            min-height: 40px;
+        }
+
+        .ant-select-selection-item,
+        .ant-select-selection-placeholder,
+        .ant-select-selection-search-input {
+            height: 38px !important;
+            line-height: 38px !important;
+        }
+
+        .ant-btn {
+            min-width: 92px;
+            padding-inline: 15px;
+            border-color: #536783 !important;
+            background: #22304a !important;
+            color: #edf4ff !important;
+            font-weight: 700;
+
+            &:hover,
+            &:focus {
+                border-color: #6f8fbd !important;
+                background: #2a4166 !important;
+                color: #ffffff !important;
+            }
+        }
+    }
+
     .edge-deploy-map-summary {
         display: grid;
         grid-template-columns: minmax(0, 1.3fr) 88px minmax(0, 1fr) 80px;
@@ -1748,7 +1820,9 @@
         gap: 7px;
         max-height: 230px;
         overflow-y: auto;
+        padding-right: 6px;
         padding-bottom: 4px;
+        scrollbar-gutter: stable;
     }
 
     .edge-deploy-history-row {
@@ -1763,6 +1837,11 @@
 
         .ant-btn {
             justify-self: end;
+            min-width: 64px;
+        }
+
+        .ant-btn:not(:disabled) {
+            color: #ffb8b8 !important;
         }
     }
 

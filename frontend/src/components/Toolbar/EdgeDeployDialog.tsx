@@ -656,7 +656,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                         <div className="edge-deploy-section-title">Apollo 目标</div>
                         <div className="edge-deploy-section-desc">地图目录、容器和部署后动作。</div>
                         <Form.Item label="地图目录" required>
-                            <Space.Compact style={{ width: '100%' }}>
+                            <Space.Compact className="edge-deploy-input-action" style={{ width: '100%' }}>
                                 <Form.Item name="targetMapRoot" noStyle>
                                     <Input placeholder="/apollo/modules/map/data" />
                                 </Form.Item>
@@ -685,7 +685,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                         <div className="edge-deploy-section-title">发布包</div>
                         <div className="edge-deploy-section-desc">选择已发布且可部署的地图包。</div>
                         <Form.Item label="选择发布包" required>
-                            <Space.Compact style={{ width: '100%' }}>
+                            <Space.Compact className="edge-deploy-input-action" style={{ width: '100%' }}>
                                 <Form.Item
                                     name="mapName"
                                     noStyle
@@ -695,6 +695,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                         showSearch
                                         placeholder="选择发布包"
                                         optionFilterProp="title"
+                                        optionLabelProp="value"
                                         popupClassName="edge-deploy-map-select-dropdown"
                                         onChange={() => setPreflight(null)}
                                         options={selectableMaps.map((item: any, index: number) => {
