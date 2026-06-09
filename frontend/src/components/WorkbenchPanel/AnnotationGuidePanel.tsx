@@ -1,9 +1,10 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, CheckCircle2, ClipboardCheck, ListChecks, MousePointer2, Route, Sparkles } from 'lucide-react';
 import { Badge } from 'src/components/ui/badge';
 import { Button } from 'src/components/ui/button';
 import { OperationType, PickElementInfo, ThreeElementType } from 'src/interface/commonInterFace';
 import { MapQualityIssue, MapQualityReport, inspectMapQuality } from 'src/quality/mapQuality';
+import FileService from 'src/service/index';
 import { useManagerStore } from 'src/store';
 
 type GuideTargetTab = 'attr' | 'quality' | 'ai' | 'publish';
@@ -23,6 +24,14 @@ interface GuideStep {
     action?: string;
     tab?: GuideTargetTab;
     actionTarget?: GuideAction;
+}
+
+interface ProductionState {
+    hasBaseMap: boolean;
+    hasReleasePackage: boolean;
+    hasEdgeDeployment: boolean;
+    releasedMap?: any;
+    deployment?: any;
 }
 
 const pickTypeLabels: Partial<Record<ThreeElementType, string>> = {
@@ -48,6 +57,45 @@ const operationLabels: Partial<Record<OperationType, string>> = {
     [OperationType.CopyParkingSpace]: '复制车位',
     [OperationType.InsertPointToBoundary]: '边界插点',
 };
+
+const normalizeMapName = (value?: string) =>
+    String(value || '')
+        .trim()
+        .replace(/\.json$/i, '');
+
+function hasEditorMapContent(mapState: any, report: MapQualityReport) {
+    return Boolean(
+        mapState.baseMapDir ||
+            mapState.hdMapFile ||
+            report.summary.lanes > 0 ||
+            Object.keys(mapState.points || {}).length > 0 ||
+            Object.keys(mapState.grouds || {}).length > 0 ||
+            Object.keys(mapState.boundarys || {}).length > 0,
+    );
+}
+
+function getCurrentReleasedMap(maps: any[], mapName?: string) {
+    const current = normalizeMapName(mapName);
+    if (current) {
+        const exact = maps.find((item) => normalizeMapName(item.mapName) === current);
+        if (exact) {
+            return exact;
+        }
+    }
+    return maps.find((item) => item.selectable && item.ready) || maps.find((item) => item.ready) || null;
+}
+
+function getCurrentDeployment(records: any[], mapName?: string) {
+    const current = normalizeMapName(mapName);
+    return (
+        records.find(
+            (item) =>
+                item?.type === 'deploy' &&
+                item?.status === 'succeeded' &&
+                (!current || normalizeMapName(item.mapName) === current),
+        ) || null
+    );
+}
 
 function getIssuePriority(issue: MapQualityIssue) {
     return issue.severity === 'error' ? 0 : 1;
@@ -171,35 +219,91 @@ function getQualityDetail(report: MapQualityReport, hasLane: boolean) {
     return '待标注完成后运行质检。';
 }
 
-function getPublishStatus(report: MapQualityReport, hasLane: boolean): GuideStatus {
+function getReleaseStatus(report: MapQualityReport, hasLane: boolean, production: ProductionState): GuideStatus {
+    if (production.hasReleasePackage || production.hasEdgeDeployment) {
+        return 'done';
+    }
     if (report.summary.errors > 0) {
         return 'blocked';
     }
     return hasLane ? 'active' : 'idle';
 }
 
-function getPublishDetail(report: MapQualityReport) {
+function getReleaseDetail(report: MapQualityReport, production: ProductionState) {
+    if (production.hasReleasePackage || production.hasEdgeDeployment) {
+        return production.releasedMap?.mapName ? `发布包 ${production.releasedMap.mapName} 已生成。` : '发布包已生成。';
+    }
     if (report.summary.errors > 0) {
         return '先清理红色错误，再生成发布包。';
     }
     return '保存标注后，从发布检查确认地图包。';
 }
 
-function buildGuideSteps(report: MapQualityReport, hasBaseMap: boolean): GuideStep[] {
+function getDeployStatus(report: MapQualityReport, production: ProductionState): GuideStatus {
+    if (production.hasEdgeDeployment) {
+        return 'done';
+    }
+    if (report.summary.errors > 0) {
+        return 'blocked';
+    }
+    if (production.hasReleasePackage) {
+        return 'active';
+    }
+    return 'idle';
+}
+
+function getDeployDetail(report: MapQualityReport, production: ProductionState) {
+    if (production.hasEdgeDeployment) {
+        const deployedAt = production.deployment?.finishedAt || production.deployment?.startedAt;
+        return deployedAt ? `已部署到边缘设备：${new Date(deployedAt).toLocaleString()}。` : '已部署到边缘设备。';
+    }
+    if (report.summary.errors > 0) {
+        return '当前仍有红色错误，不能部署。';
+    }
+    if (production.hasReleasePackage) {
+        return '发布包已就绪，可以推送到边缘设备。';
+    }
+    return '待发布包生成后再部署。';
+}
+
+function getDeployStepAction(report: MapQualityReport, production: ProductionState) {
+    if (production.hasEdgeDeployment) {
+        return {};
+    }
+    if (report.summary.errors > 0) {
+        return {
+            action: '处理错误',
+            tab: 'quality' as GuideTargetTab,
+        };
+    }
+    if (production.hasReleasePackage) {
+        return {
+            action: '部署边缘',
+            actionTarget: 'deploy' as GuideAction,
+        };
+    }
+    return {
+        action: '发布检查',
+        tab: 'publish' as GuideTargetTab,
+    };
+}
+
+function buildGuideSteps(report: MapQualityReport, production: ProductionState): GuideStep[] {
     const hasLane = report.summary.lanes > 0;
     const topologyBlocked = hasLane && report.summary.lanes > 1 && report.summary.laneComponents > 1;
     const hasIssue = report.issues.length > 0;
+    const deployAction = getDeployStepAction(report, production);
     return [
         {
             label: '底图与采图资产',
-            status: hasBaseMap ? 'done' : 'active',
-            detail: hasBaseMap ? '底图已加载，可以开始标注。' : '先上传最新 LAS 包并生成可编辑点云资产。',
-            action: hasBaseMap ? undefined : '上传 LAS',
-            actionTarget: hasBaseMap ? undefined : 'assets',
+            status: production.hasBaseMap ? 'done' : 'active',
+            detail: production.hasBaseMap ? '已检测到可用底图或地图内容。' : '先上传最新 LAS 包并生成可编辑点云资产。',
+            action: production.hasBaseMap ? undefined : '上传 LAS',
+            actionTarget: production.hasBaseMap ? undefined : 'assets',
         },
         {
             label: '基础车道',
-            status: getBaseLaneStatus(hasLane, hasBaseMap),
+            status: getBaseLaneStatus(hasLane, production.hasBaseMap),
             detail: hasLane ? `已有 ${report.summary.lanes} 条车道。` : '从主路线开始画直道，再补弯道。',
             action: hasLane ? undefined : '去标注属性',
             tab: 'attr',
@@ -220,21 +324,40 @@ function buildGuideSteps(report: MapQualityReport, hasBaseMap: boolean): GuideSt
         },
         {
             label: '发布与边缘部署',
-            status: getPublishStatus(report, hasLane),
-            detail: getPublishDetail(report),
-            action: report.summary.errors > 0 ? '发布检查' : '部署边缘',
+            status: getReleaseStatus(report, hasLane, production),
+            detail: getReleaseDetail(report, production),
+            action: production.hasReleasePackage || production.hasEdgeDeployment ? undefined : '发布检查',
             tab: 'publish',
-            actionTarget: report.summary.errors > 0 ? undefined : 'deploy',
+        },
+        {
+            label: '边缘设备部署',
+            status: getDeployStatus(report, production),
+            detail: getDeployDetail(report, production),
+            ...deployAction,
         },
     ];
 }
 
-function getPrimaryAction(report: MapQualityReport, hasBaseMap: boolean) {
-    if (!hasBaseMap) {
+function getPrimaryAction(report: MapQualityReport, production: ProductionState) {
+    if (!production.hasBaseMap) {
         return {
             title: '先上传最新采图包',
             detail: '从采图包工作台上传 LAS/LAZ/ZIP，生成可编辑点云资产后再标注。',
             actionTarget: 'assets' as GuideAction,
+        };
+    }
+    if (production.hasEdgeDeployment && report.summary.warnings > 0) {
+        return {
+            title: '已部署，复核剩余警告',
+            detail: '边缘部署已完成；黄色警告作为风险项保留，建议实车前逐项确认。',
+            tab: 'quality' as GuideTargetTab,
+        };
+    }
+    if (production.hasEdgeDeployment) {
+        return {
+            title: '边缘部署已完成',
+            detail: '当前地图已推送到边缘设备，下一步在边缘设备侧做定位和实车验证。',
+            actionTarget: 'deploy' as GuideAction,
         };
     }
     if (report.summary.lanes === 0) {
@@ -267,18 +390,56 @@ function getPrimaryAction(report: MapQualityReport, hasBaseMap: boolean) {
 
 export default function AnnotationGuidePanel({ onOpenTab, onOpenAssets, onOpenDeploy }: AnnotationGuidePanelProps) {
     const [mapState] = useManagerStore((state) => [state.mapState]);
+    const [releasedMaps, setReleasedMaps] = useState<any[]>([]);
+    const [deploymentRecords, setDeploymentRecords] = useState<any[]>([]);
     const report = useMemo(() => inspectMapQuality(mapState), [mapState]);
+    const releasedMap = useMemo(
+        () => getCurrentReleasedMap(releasedMaps, mapState.hdMapFile),
+        [releasedMaps, mapState.hdMapFile],
+    );
+    const deployment = useMemo(
+        () => getCurrentDeployment(deploymentRecords, mapState.hdMapFile),
+        [deploymentRecords, mapState.hdMapFile],
+    );
+    const production = useMemo<ProductionState>(
+        () => ({
+            hasBaseMap: hasEditorMapContent(mapState, report) || Boolean(releasedMap) || Boolean(deployment),
+            hasReleasePackage: Boolean(releasedMap?.ready) || Boolean(deployment),
+            hasEdgeDeployment: Boolean(deployment),
+            releasedMap,
+            deployment,
+        }),
+        [deployment, mapState, releasedMap, report],
+    );
     const prioritizedIssues = useMemo(
         () => [...report.issues].sort((left, right) => getIssuePriority(left) - getIssuePriority(right)).slice(0, 5),
         [report.issues],
     );
     const selection = formatSelection(mapState.currentPickElement || []);
     const playbook = getSelectionPlaybook(mapState.currentPickElement || []);
-    const steps = buildGuideSteps(report, Boolean(mapState.baseMapDir));
-    const primaryAction = getPrimaryAction(report, Boolean(mapState.baseMapDir));
-    const completedCount = steps.filter((step) => step.status === 'done').length;
+    const steps = buildGuideSteps(report, production);
+    const primaryAction = getPrimaryAction(report, production);
+    const completedCount = steps.filter((step) => step.status === 'done' || step.status === 'warning').length;
     const progress = Math.round((completedCount / steps.length) * 100);
     const operationLabel = mapState.operationType ? operationLabels[mapState.operationType] || '操作中' : '选择/编辑';
+
+    useEffect(() => {
+        let cancelled = false;
+        Promise.allSettled([FileService.getReleasedMaps(), FileService.getDeployments()]).then((results) => {
+            if (cancelled) {
+                return;
+            }
+            const releasedResponse = results[0].status === 'fulfilled' ? results[0].value : null;
+            const deploymentResponse = results[1].status === 'fulfilled' ? results[1].value : null;
+            setReleasedMaps(Array.isArray(releasedResponse?.data?.maps) ? releasedResponse.data.maps : []);
+            setDeploymentRecords(
+                Array.isArray(deploymentResponse?.data?.deployments) ? deploymentResponse.data.deployments : [],
+            );
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [mapState.hdMapFile]);
     const runGuideAction = (target?: GuideAction, tab?: GuideTargetTab) => {
         if (target === 'assets') {
             onOpenAssets();

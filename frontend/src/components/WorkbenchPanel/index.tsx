@@ -27,10 +27,18 @@ export default function WorkbenchPanel() {
     const [mapState] = useManagerStore((state) => [state.mapState]);
     const report = useMemo(() => inspectMapQuality(mapState), [mapState]);
     const selectedCount = mapState.currentPickElement?.length || 0;
+    const hasMapContext = Boolean(
+        mapState.baseMapDir ||
+            mapState.hdMapFile ||
+            report.summary.lanes > 0 ||
+            Object.keys(mapState.points || {}).length > 0 ||
+            Object.keys(mapState.grouds || {}).length > 0 ||
+            Object.keys(mapState.boundarys || {}).length > 0,
+    );
     const openAssetManager = useCallback(() => PubSub.publish('openAssetManager'), []);
     const openEdgeDeploy = useCallback(() => PubSub.publish('openEdgeDeploy'), []);
     const nextAction = useMemo(() => {
-        if (!mapState.baseMapDir) {
+        if (!hasMapContext) {
             return {
                 title: '上传最新采图包',
                 detail: '先生成可编辑点云资产，再开始标注。',
@@ -73,7 +81,7 @@ export default function WorkbenchPanel() {
             status: 'ready' as FlowStatus,
             tab: 'publish' as WorkbenchTab,
         };
-    }, [mapState.baseMapDir, openAssetManager, report.summary.errors, report.summary.lanes, report.summary.warnings]);
+    }, [hasMapContext, openAssetManager, report.summary.errors, report.summary.lanes, report.summary.warnings]);
     const selectionSubtitle =
         selectedCount > 0
             ? `已选中 ${selectedCount} 个对象，右侧显示可编辑属性。`
