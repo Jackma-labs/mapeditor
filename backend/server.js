@@ -84,14 +84,20 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const dataRoot = path.resolve(config.baseMapRoot, "..");
 const importTmpRoot = path.join(dataRoot, "import_tmp");
 const runtimeJobRoot = path.join(dataRoot, "runtime_jobs");
+const chunkUploadRoot = path.join(dataRoot, "chunk_uploads");
 fs.mkdirSync(importTmpRoot, { recursive: true });
 fs.mkdirSync(runtimeJobRoot, { recursive: true });
+fs.mkdirSync(chunkUploadRoot, { recursive: true });
 const upload = multer({
   dest: importTmpRoot,
   limits: {
     fileSize: config.uploadFileSizeBytes,
   },
 });
+const DATA_PACKAGE_CHUNK_SIZE_BYTES = Math.max(
+  1024 * 1024,
+  Number(process.env.MAPEDITOR_UPLOAD_CHUNK_SIZE_BYTES) || 8 * 1024 * 1024,
+);
 
 if (fs.existsSync(config.frontendBuildRoot)) {
   app.use(express.static(config.frontendBuildRoot));
@@ -114,6 +120,15 @@ const BASE_MAP_LAYER_DIRS = {
   marking: "map_images_marking",
   edge: "map_images_edge",
   structure: "map_images_structure",
+};
+const APOLLO_TARGET_CRS = {
+  datum: "WGS84",
+  projection: "UTM",
+  zone: 50,
+  hemisphere: "north",
+  epsg: "EPSG:32650",
+  proj4: "+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs",
+  unit: "meter",
 };
 
 function getBaseMapLayerDir(layer = "enhanced") {
@@ -1007,6 +1022,171 @@ function sanitizeUploadFileName(name, index) {
   return `${index}-${base || "upload"}`;
 }
 
+function sanitizeUploadSessionId(sessionId) {
+  const value = String(sessionId || "").trim();
+  if (!/^[a-z0-9-]+$/u.test(value)) {
+    throw new Error("非法上传会话");
+  }
+  return value;
+}
+
+function buildUploadSessionId() {
+  return `${Date.now().toString(36)}-${crypto.randomBytes(6).toString("hex")}`;
+}
+
+function getChunkUploadSessionDir(sessionId) {
+  return path.join(chunkUploadRoot, sanitizeUploadSessionId(sessionId));
+}
+
+function getChunkUploadSessionPath(sessionId) {
+  return path.join(getChunkUploadSessionDir(sessionId), "session.json");
+}
+
+async function readChunkUploadSession(sessionId) {
+  const sessionPath = getChunkUploadSessionPath(sessionId);
+  const raw = await fsp.readFile(sessionPath, "utf8");
+  return JSON.parse(raw);
+}
+
+async function writeChunkUploadSession(session) {
+  session.updatedAt = new Date().toISOString();
+  await fsp.mkdir(getChunkUploadSessionDir(session.id), { recursive: true });
+  await fsp.writeFile(
+    getChunkUploadSessionPath(session.id),
+    JSON.stringify(session, null, 2),
+    "utf8",
+  );
+}
+
+function normalizeChunkUploadFiles(files) {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error("files is required");
+  }
+  if (files.length > 64) {
+    throw new Error("一次最多上传 64 个文件");
+  }
+  return files.map((file, index) => {
+    const name = path.basename(String(file?.name || `upload-${index}`));
+    const size = Number(file?.size || 0);
+    if (!name || name === "." || name === "..") {
+      throw new Error(`第 ${index + 1} 个文件名称无效`);
+    }
+    if (!Number.isFinite(size) || size <= 0) {
+      throw new Error(`${name} 文件大小无效`);
+    }
+    if (size > config.uploadFileSizeBytes) {
+      throw new Error(
+        `${name} 超过单文件上传上限 ${formatBytes(config.uploadFileSizeBytes)}`,
+      );
+    }
+    return {
+      name,
+      size,
+      type: String(file?.type || ""),
+      lastModified: Number(file?.lastModified || 0) || null,
+      chunkCount: Math.max(1, Math.ceil(size / DATA_PACKAGE_CHUNK_SIZE_BYTES)),
+      uploadedChunks: [],
+    };
+  });
+}
+
+function getChunkUploadPartPath(sessionId, fileIndex, chunkIndex) {
+  return path.join(
+    getChunkUploadSessionDir(sessionId),
+    "chunks",
+    String(fileIndex),
+    `${chunkIndex}.part`,
+  );
+}
+
+function assertChunkUploadIndex(session, fileIndex, chunkIndex) {
+  const normalizedFileIndex = Number(fileIndex);
+  const normalizedChunkIndex = Number(chunkIndex);
+  if (
+    !Number.isInteger(normalizedFileIndex) ||
+    normalizedFileIndex < 0 ||
+    normalizedFileIndex >= session.files.length
+  ) {
+    throw new Error("文件索引无效");
+  }
+  const file = session.files[normalizedFileIndex];
+  if (
+    !Number.isInteger(normalizedChunkIndex) ||
+    normalizedChunkIndex < 0 ||
+    normalizedChunkIndex >= file.chunkCount
+  ) {
+    throw new Error("分片索引无效");
+  }
+  return {
+    fileIndex: normalizedFileIndex,
+    chunkIndex: normalizedChunkIndex,
+    file,
+  };
+}
+
+async function assertChunkUploadComplete(session) {
+  for (let fileIndex = 0; fileIndex < session.files.length; fileIndex += 1) {
+    const file = session.files[fileIndex];
+    for (let chunkIndex = 0; chunkIndex < file.chunkCount; chunkIndex += 1) {
+      const partPath = getChunkUploadPartPath(session.id, fileIndex, chunkIndex);
+      if (!(await pathExists(partPath))) {
+        throw new Error(`${file.name} 缺少分片 ${chunkIndex + 1}/${file.chunkCount}`);
+      }
+    }
+  }
+}
+
+async function appendChunkFileToTarget(partPath, targetPath) {
+  await new Promise((resolve, reject) => {
+    const input = fs.createReadStream(partPath);
+    const output = fs.createWriteStream(targetPath, { flags: "a" });
+    input.on("error", reject);
+    output.on("error", reject);
+    output.on("finish", resolve);
+    input.pipe(output);
+  });
+}
+
+async function assembleChunkUploadSession(session) {
+  await assertChunkUploadComplete(session);
+  const stagingId = `chunk-${session.id}`;
+  const jobTmpDir = path.join(importTmpRoot, `job-${stagingId}`);
+  await fsp.rm(jobTmpDir, { recursive: true, force: true }).catch(() => {});
+  await fsp.mkdir(jobTmpDir, { recursive: true });
+  const files = [];
+  for (let fileIndex = 0; fileIndex < session.files.length; fileIndex += 1) {
+    const file = session.files[fileIndex];
+    const targetPath = path.join(jobTmpDir, sanitizeUploadFileName(file.name, fileIndex));
+    await fsp.rm(targetPath, { force: true }).catch(() => {});
+    for (let chunkIndex = 0; chunkIndex < file.chunkCount; chunkIndex += 1) {
+      const partPath = getChunkUploadPartPath(session.id, fileIndex, chunkIndex);
+      await appendChunkFileToTarget(partPath, targetPath);
+    }
+    const stat = await fsp.stat(targetPath);
+    if (stat.size !== file.size) {
+      throw new Error(
+        `${file.name} 合并后大小不一致：应为 ${formatBytes(file.size)}，实际 ${formatBytes(stat.size)}`,
+      );
+    }
+    files.push({
+      path: targetPath,
+      originalName: file.name,
+      size: file.size,
+    });
+  }
+  await validateUploadedFiles(
+    files.map((file) => ({
+      path: file.path,
+      originalname: file.originalName,
+      size: file.size,
+    })),
+  );
+  return {
+    jobTmpDir,
+    files,
+  };
+}
+
 function formatBytes(value) {
   const numberValue = Number(value || 0);
   if (!Number.isFinite(numberValue) || numberValue <= 0) {
@@ -1335,6 +1515,209 @@ function getEditorMapApolloAnchor(map) {
   return headerOrigin ? { coordinate: headerOrigin, source: "header.origin" } : null;
 }
 
+function normalizeCoordinateFrame(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  if (!raw) {
+    return "";
+  }
+  if (["APOLLO_UTM_ZONE_50", "UTM_ZONE_50", "EPSG:32650", "WGS84_UTM_ZONE_50"].includes(raw)) {
+    return "APOLLO_UTM_ZONE_50";
+  }
+  if (["WGS84_LON_LAT", "WGS84", "EPSG:4326", "LON_LAT", "LONGITUDE_LATITUDE"].includes(raw)) {
+    return "WGS84_LON_LAT";
+  }
+  if (["LOCAL_ENU_METERS", "LOCAL_ENU", "LOCAL", "EDITOR_LOCAL", "BASE_MAP_XY"].includes(raw)) {
+    return "LOCAL_ENU_METERS";
+  }
+  return raw;
+}
+
+function getEditorMapCoordinateFrame(map) {
+  return normalizeCoordinateFrame(
+    map?.sourceCrs ||
+      map?.source_crs ||
+      map?.coordinateFrame ||
+      map?.coordinate_frame ||
+      map?.coordinateMetadata?.sourceCrs ||
+      map?.coordinateMetadata?.source_crs,
+  );
+}
+
+function coordinateLooksGlobalApollo(point) {
+  return Boolean(point && Math.max(Math.abs(Number(point.x)), Math.abs(Number(point.y))) > 100000);
+}
+
+async function readJsonIfExists(filePath) {
+  if (!(await pathExists(filePath))) {
+    return null;
+  }
+  return JSON.parse((await fsp.readFile(filePath, "utf8")).replace(/^\uFEFF/, ""));
+}
+
+function boundsFromAny(value) {
+  if (!value) {
+    return null;
+  }
+  const minX = Number(value.minX ?? value.xMin ?? value.left);
+  const maxX = Number(value.maxX ?? value.xMax ?? value.right);
+  const minY = Number(value.minY ?? value.yMin ?? value.bottom);
+  const maxY = Number(value.maxY ?? value.yMax ?? value.top);
+  const minZ = Number(value.minZ ?? value.zMin ?? value.low ?? 0);
+  const maxZ = Number(value.maxZ ?? value.zMax ?? value.high ?? 0);
+  if (![minX, maxX, minY, maxY].every(Number.isFinite)) {
+    return null;
+  }
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    minZ: Number.isFinite(minZ) ? minZ : 0,
+    maxZ: Number.isFinite(maxZ) ? maxZ : 0,
+  };
+}
+
+function resolveBaseMapDirCandidate(candidate) {
+  const value = String(candidate || "").trim();
+  if (!value) {
+    return null;
+  }
+  const root = path.resolve(config.baseMapRoot);
+  const resolved = path.isAbsolute(value)
+    ? path.resolve(value)
+    : path.resolve(config.baseMapRoot, normalizeEditorMapName(value));
+  const relative = path.relative(root, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+  return resolved;
+}
+
+async function resolveBaseMapDirForMap(map) {
+  const candidates = [
+    map?.baseMapDir,
+    map?.base_map_dir,
+    map?.baseMap,
+    map?.base_map,
+    map?.baseMapName,
+    map?.base_map_name,
+  ];
+  for (const candidate of candidates) {
+    const resolved = (() => {
+      try {
+        return resolveBaseMapDirCandidate(candidate);
+      } catch (_error) {
+        return null;
+      }
+    })();
+    if (resolved && (await pathExists(resolved))) {
+      return resolved;
+    }
+  }
+  if (lastAccessedBaseMapDir && (await pathExists(lastAccessedBaseMapDir))) {
+    return lastAccessedBaseMapDir;
+  }
+  return null;
+}
+
+async function readBaseMapCoordinateSource(baseMapDir) {
+  if (!baseMapDir) {
+    return null;
+  }
+  const sourceFiles = [
+    ["point_cloud/index.json", path.join(baseMapDir, "point_cloud", "index.json")],
+    ["map_images_rgb_ortho/tiles.json", path.join(baseMapDir, "map_images_rgb_ortho", "tiles.json")],
+    ["map_images/tiles.json", path.join(baseMapDir, "map_images", "tiles.json")],
+  ];
+  for (const [sourceFile, filePath] of sourceFiles) {
+    const payload = await readJsonIfExists(filePath).catch((error) => {
+      log("Failed to read base-map coordinate metadata:", filePath, error.message);
+      return null;
+    });
+    if (!payload) {
+      continue;
+    }
+    const metadata = payload.coordinateMetadata || null;
+    const editorOrigin =
+      coordinateFromAny(metadata?.editorLocalFrame?.localOriginInTargetCrs) ||
+      coordinateFromAny(metadata?.rawPointCloud?.center) ||
+      coordinateFromAny(payload.center);
+    return {
+      baseMapName: path.basename(baseMapDir),
+      baseMapDir,
+      sourceFile,
+      center: coordinateFromAny(payload.center) || editorOrigin,
+      bounds: boundsFromAny(payload.bounds || metadata?.rawPointCloud?.bounds),
+      coordinate: payload.coordinate || null,
+      coordinateMetadata: metadata,
+      editorOrigin,
+    };
+  }
+  return null;
+}
+
+async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
+  if (!map) {
+    return { map, enriched: null };
+  }
+  const sourceCrs = getEditorMapCoordinateFrame(map);
+  if (sourceCrs === "APOLLO_UTM_ZONE_50" || sourceCrs === "WGS84_LON_LAT" || getEditorMapApolloAnchor(map)) {
+    return { map, enriched: null };
+  }
+  const baseMapDir = await resolveBaseMapDirForMap(map);
+  const baseMapCoordinate = await readBaseMapCoordinateSource(baseMapDir);
+  const origin = coordinateFromAny(baseMapCoordinate?.editorOrigin);
+  if (!coordinateLooksGlobalApollo(origin)) {
+    return { map, enriched: null };
+  }
+  const enrichedMap = JSON.parse(JSON.stringify(map));
+  const anchor = {
+    source: "base_map_coordinate_metadata:center_as_local_origin",
+    utm: origin,
+    baseMap: baseMapCoordinate.baseMapName,
+    sourceFile: baseMapCoordinate.sourceFile,
+    rawPointCloudCrs: baseMapCoordinate.coordinateMetadata?.rawPointCloud?.sourceCrs || null,
+    confidence: baseMapCoordinate.coordinateMetadata?.rawPointCloud?.confidence || "base_map_center",
+  };
+  enrichedMap.sourceCrs = "LOCAL_ENU_METERS";
+  enrichedMap.coordinateFrame = "LOCAL_ENU_METERS";
+  enrichedMap.baseMapDir = baseMapCoordinate.baseMapName;
+  enrichedMap.basemapCenter = coordinateFromAny(enrichedMap.basemapCenter) || baseMapCoordinate.center || origin;
+  enrichedMap.apolloOrigin = origin;
+  enrichedMap.anchor = anchor;
+  enrichedMap.header = {
+    ...(enrichedMap.header || {}),
+    origin,
+    projection: { proj: APOLLO_TARGET_CRS.proj4 },
+  };
+  enrichedMap.coordinateMetadata = {
+    ...(enrichedMap.coordinateMetadata || {}),
+    sourceCrs: "LOCAL_ENU_METERS",
+    targetCrs: APOLLO_TARGET_CRS,
+    anchor,
+    baseMap: {
+      name: baseMapCoordinate.baseMapName,
+      sourceFile: baseMapCoordinate.sourceFile,
+      center: baseMapCoordinate.center || origin,
+      bounds: baseMapCoordinate.bounds,
+      coordinate: baseMapCoordinate.coordinate,
+      rawPointCloud: baseMapCoordinate.coordinateMetadata?.rawPointCloud || null,
+      editorLocalFrame: baseMapCoordinate.coordinateMetadata?.editorLocalFrame || null,
+    },
+  };
+  return {
+    map: enrichedMap,
+    enriched: {
+      mapName,
+      baseMap: baseMapCoordinate.baseMapName,
+      sourceFile: baseMapCoordinate.sourceFile,
+      origin,
+      sourceCrs: "LOCAL_ENU_METERS",
+      targetCrs: APOLLO_TARGET_CRS,
+    },
+  };
+}
+
 async function findApolloAnchorForBaseCenter(mapName, baseCenter) {
   if (!baseCenter) {
     return null;
@@ -1638,11 +2021,18 @@ async function handleSaveMapFile(ws, requestId, info) {
       });
       return;
     }
-    await saveEditorMap(mapName, map);
+    const coordinateEnrichment = await enrichEditorMapCoordinateFromBaseMap(mapName, map);
+    if (coordinateEnrichment.enriched) {
+      log(
+        `Stamped base-map coordinate anchor for ${mapName} from ${coordinateEnrichment.enriched.baseMap}`,
+        coordinateEnrichment.enriched,
+      );
+    }
+    await saveEditorMap(mapName, coordinateEnrichment.map);
     sendWsResponse(ws, requestId, {
       code: 0,
       message: "Success",
-      data: { mapName, lock },
+      data: { mapName, coordinateMetadataEnrichment: coordinateEnrichment.enriched, lock },
     });
   } catch (error) {
     log("SaveMapFile failed:", error);
@@ -1691,7 +2081,14 @@ async function handleReleaseMapFile(ws, requestId, info) {
       });
       return;
     }
-    const anchorInference = await inferMissingApolloAnchor(mapName, map);
+    const coordinateEnrichment = await enrichEditorMapCoordinateFromBaseMap(mapName, map);
+    if (coordinateEnrichment.enriched) {
+      log(
+        `Stamped base-map coordinate anchor for release ${mapName} from ${coordinateEnrichment.enriched.baseMap}`,
+        coordinateEnrichment.enriched,
+      );
+    }
+    const anchorInference = await inferMissingApolloAnchor(mapName, coordinateEnrichment.map);
     if (anchorInference.inferred) {
       log(
         `Inferred Apollo coordinate anchor for ${mapName} from ${anchorInference.inferred.sourceMap}`,
@@ -1720,6 +2117,7 @@ async function handleReleaseMapFile(ws, requestId, info) {
         mapName,
         output_dir: dir,
         stdout: result.stdout.trim(),
+        coordinateMetadataEnrichment: coordinateEnrichment.enriched,
         coordinateAnchorInference: anchorInference.inferred,
         apolloLiteStage,
         apolloLiteStageError,
@@ -2163,6 +2561,143 @@ app.post("/runtime/analyze-data-package", requirePermission("canEdit"), upload.a
   }
 });
 
+app.post("/runtime/data-package-upload-sessions", requirePermission("canEdit"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const files = normalizeChunkUploadFiles(body.files);
+    const session = {
+      id: buildUploadSessionId(),
+      packageName: String(body.packageName || "").trim(),
+      chunkSize: DATA_PACKAGE_CHUNK_SIZE_BYTES,
+      status: "uploading",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      files,
+    };
+    await writeChunkUploadSession(session);
+    sendSuccess(res, {
+      session,
+    });
+  } catch (error) {
+    log("Create data package upload session failed:", error);
+    sendError(res, 500, 15083, error.message);
+  }
+});
+
+app.put(
+  "/runtime/data-package-upload-sessions/:sessionId/files/:fileIndex/chunks/:chunkIndex",
+  requirePermission("canEdit"),
+  upload.single("chunk"),
+  async (req, res) => {
+    let uploadedPath = req.file?.path || "";
+    try {
+      if (!uploadedPath) {
+        throw new Error("chunk is required");
+      }
+      const session = await readChunkUploadSession(req.params.sessionId);
+      if (session.status !== "uploading") {
+        throw new Error("上传会话已结束");
+      }
+      const { fileIndex, chunkIndex, file } = assertChunkUploadIndex(
+        session,
+        req.params.fileIndex,
+        req.params.chunkIndex,
+      );
+      const stat = await fsp.stat(uploadedPath);
+      const expectedSize = Math.min(
+        session.chunkSize,
+        file.size - chunkIndex * session.chunkSize,
+      );
+      if (stat.size !== expectedSize) {
+        throw new Error(
+          `${file.name} 分片 ${chunkIndex + 1}/${file.chunkCount} 大小不一致：应为 ${formatBytes(
+            expectedSize,
+          )}，实际 ${formatBytes(stat.size)}`,
+        );
+      }
+      const targetPath = getChunkUploadPartPath(session.id, fileIndex, chunkIndex);
+      await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+      await fsp.rm(targetPath, { force: true }).catch(() => {});
+      await fsp.rename(uploadedPath, targetPath);
+      uploadedPath = "";
+      const uploadedChunks = new Set(file.uploadedChunks || []);
+      uploadedChunks.add(chunkIndex);
+      file.uploadedChunks = Array.from(uploadedChunks).sort((left, right) => left - right);
+      await writeChunkUploadSession(session);
+      sendSuccess(res, {
+        sessionId: session.id,
+        fileIndex,
+        chunkIndex,
+        uploadedChunks: file.uploadedChunks.length,
+        chunkCount: file.chunkCount,
+      });
+    } catch (error) {
+      log("Upload data package chunk failed:", error);
+      sendError(res, 500, 15084, error.message);
+    } finally {
+      if (uploadedPath) {
+        await fsp.unlink(uploadedPath).catch(() => {});
+      }
+    }
+  },
+);
+
+app.post(
+  "/runtime/data-package-upload-sessions/:sessionId/complete",
+  requirePermission("canEdit"),
+  async (req, res) => {
+    let staged = null;
+    try {
+      const session = await readChunkUploadSession(req.params.sessionId);
+      if (session.status === "completed") {
+        throw new Error("上传会话已经完成");
+      }
+      staged = await assembleChunkUploadSession(session);
+      session.status = "completed";
+      session.completedAt = new Date().toISOString();
+      await writeChunkUploadSession(session);
+      const request = {
+        packageName: session.packageName || "",
+        fileCount: session.files.length,
+        uploadedFiles: session.files.map((file) => file.name),
+        uploadSessionId: session.id,
+        uploadMode: "chunked",
+      };
+      const job = startRuntimeJob(
+        "analyze-data-package",
+        async (runtimeJob) => {
+          try {
+            await appendRuntimeJobLog(
+              runtimeJob,
+              `Analyzing chunked upload session ${session.id}`,
+            );
+            return await runtime.analyzeDataPackage(config, {
+              files: staged.files,
+              packageName: session.packageName,
+            });
+          } finally {
+            await Promise.all([
+              fsp.rm(staged.jobTmpDir, { recursive: true, force: true }).catch(() => {}),
+              fsp.rm(getChunkUploadSessionDir(session.id), {
+                recursive: true,
+                force: true,
+              }).catch(() => {}),
+            ]);
+          }
+        },
+        request,
+      );
+      sendAcceptedJob(res, job);
+    } catch (error) {
+      log("Complete data package upload session failed:", error);
+      if (staged?.jobTmpDir) {
+        await fsp.rm(staged.jobTmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+      sendError(res, 500, 15085, error.message);
+    }
+  },
+);
+
 app.post(
   "/runtime/analyze-data-package-job",
   requirePermission("canEdit"),
@@ -2243,22 +2778,24 @@ app.get("/runtime/data-packages", requirePermission("canView"), async (req, res)
 });
 
 app.get("/runtime/capture-source-packages", requirePermission("canView"), async (_req, res) => {
-  try {
-    res.json({
-      code: 0,
-      message: "Success",
-      data: await runtime.scanCaptureSourcePackages(config),
-    });
-  } catch (error) {
-    res.status(500).json({
-      code: 15067,
-      message: error.message,
-    });
-  }
+  sendSuccess(res, {
+    disabled: true,
+    packages: [],
+    message: "生产模式已关闭自动同步。请在采图包工作台手动上传最新 LAS/LAZ/ZIP 包。",
+  });
 });
 
 app.post("/runtime/sync-capture-source-package-job", requirePermission("canEdit"), async (req, res) => {
   try {
+    if (!config.captureAutoSync?.enabled) {
+      sendError(
+        res,
+        410,
+        15068,
+        "生产模式已关闭采图目录同步。请手动上传最新 LAS/LAZ/ZIP 包，避免旧采集与新采集叠加。",
+      );
+      return;
+    }
     const body = req.body || {};
     const activeJob = findActiveHeavyRuntimeJob();
     if (activeJob) {
@@ -2285,6 +2822,15 @@ app.post("/runtime/sync-capture-source-package-job", requirePermission("canEdit"
 
 app.post("/runtime/sync-capture-source-packages-job", requirePermission("canEdit"), async (req, res) => {
   try {
+    if (!config.captureAutoSync?.enabled) {
+      sendError(
+        res,
+        410,
+        15069,
+        "生产模式已关闭批量自动同步。请在采图包工作台人工确认并上传最新采图包。",
+      );
+      return;
+    }
     const body = req.body || {};
     const activeJob = findActiveHeavyRuntimeJob();
     if (activeJob) {
@@ -2312,6 +2858,15 @@ app.post("/runtime/sync-capture-source-packages-job", requirePermission("canEdit
 
 app.post("/runtime/prebuild-data-package-base-maps-job", requirePermission("canEdit"), async (req, res) => {
   try {
+    if (!config.inboxAutoPrebuild?.enabled) {
+      sendError(
+        res,
+        410,
+        15081,
+        "生产模式已关闭后台自动预构建。请选中采图包后手动生成点云资产。",
+      );
+      return;
+    }
     const activeJob = findActiveHeavyRuntimeJob();
     if (activeJob) {
       sendRuntimeJobBusy(res, activeJob);

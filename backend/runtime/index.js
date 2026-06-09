@@ -5852,6 +5852,7 @@ function createRasterTileAccumulator(options = {}) {
       center,
       bounds,
       coordinate: metadata.coordinate || null,
+      coordinateMetadata: metadata.coordinateMetadata || null,
       imageOverlay: metadata.imageOverlay || null,
       stitchPlan: metadata.stitchPlan || null,
       sourceAsset: metadata.sourceAsset || null,
@@ -6120,6 +6121,7 @@ function createRgbOrthoTileAccumulator(options = {}) {
       center,
       bounds,
       coordinate: metadata.coordinate || null,
+      coordinateMetadata: metadata.coordinateMetadata || null,
       imageOverlay: metadata.imageOverlay || null,
       stitchPlan: metadata.stitchPlan || null,
       sourceAsset: metadata.sourceAsset || null,
@@ -6291,6 +6293,7 @@ function createPointCloudStreamAccumulator(options = {}) {
       center,
       bounds: metadata.bounds || bounds,
       coordinate: metadata.coordinate || null,
+      coordinateMetadata: metadata.coordinateMetadata || null,
       sourceFiles: metadata.sourceFiles || [],
       imageFileCount: metadata.imageFileCount || 0,
       imageOverlay: metadata.imageOverlay || null,
@@ -6551,6 +6554,61 @@ function classifyCoordinateSystem(bounds) {
   return {
     kind: 'local_meters',
     message: '坐标范围像局部米制坐标，不是经纬度；后续拼合要依赖同一局部坐标系或外部定位/控制点。',
+  };
+}
+
+function isLikelyApolloUtmZone50Bounds(bounds) {
+  if (!bounds) {
+    return false;
+  }
+  const values = [bounds.minX, bounds.maxX, bounds.minY, bounds.maxY].map(Number);
+  if (!values.every(Number.isFinite)) {
+    return false;
+  }
+  const [minX, maxX, minY, maxY] = values;
+  return (
+    minX >= 100000 &&
+    maxX <= 900000 &&
+    minY >= 0 &&
+    maxY <= 10000000 &&
+    maxX - minX > 0 &&
+    maxY - minY > 0 &&
+    maxX - minX < 100000 &&
+    maxY - minY < 100000
+  );
+}
+
+function buildPointCloudCoordinateMetadata({ mapName, coordinate, bounds, center, sourceFiles, sourceAsset }) {
+  const targetAligned = isLikelyApolloUtmZone50Bounds(bounds);
+  const rawSourceCrs = targetAligned ? 'APOLLO_UTM_ZONE_50' : coordinate?.kind || 'UNKNOWN';
+  const localOriginInTargetCrs = targetAligned ? center : null;
+  return {
+    version: 1,
+    source: 'point_cloud_import',
+    mapName,
+    generatedAt: new Date().toISOString(),
+    targetCrs: APOLLO_DEPLOY_TARGET_CRS,
+    rawPointCloud: {
+      sourceCrs: rawSourceCrs,
+      confidence: targetAligned ? 'inferred_from_utm_meter_bounds' : 'coordinate_range_only',
+      coordinateKind: coordinate?.kind || 'unknown',
+      message: coordinate?.message || '',
+      bounds,
+      center,
+      sourceFiles,
+      sourceAsset: sourceAsset || null,
+    },
+    editorLocalFrame: {
+      sourceCrs: 'LOCAL_ENU_METERS',
+      localOriginInTargetCrs,
+      transform:
+        'editor_xy = raw_point_cloud_xy - localOriginInTargetCrs.xy; apollo_xy = editor_xy + localOriginInTargetCrs.xy',
+      requiresExternalAnchor: !localOriginInTargetCrs,
+    },
+    deployment: {
+      targetCrs: APOLLO_DEPLOY_TARGET_CRS,
+      transformPolicy: localOriginInTargetCrs ? 'scene_xy_plus_local_origin' : 'requires_control_point_or_anchor',
+    },
   };
 }
 
@@ -9537,6 +9595,14 @@ async function importPointCloudFilesBaseMap(config, params) {
       y: roundPointValue((stats.bounds.minY + stats.bounds.maxY) / 2),
       z: roundPointValue((stats.bounds.minZ + stats.bounds.maxZ) / 2),
     };
+    const coordinateMetadata = buildPointCloudCoordinateMetadata({
+      mapName,
+      coordinate,
+      bounds: stats.bounds,
+      center: pointCloudCenter,
+      sourceFiles,
+      sourceAsset: params.sourceAsset || null,
+    });
     const imageIndex = await buildImageOverlayIndex(files, stagingDir);
     const imageOverlay = getImageOverlayMetadataFromIndex(imageFileCount, imageIndex);
     const pointCloudStream = createPointCloudStreamAccumulator({
@@ -9654,6 +9720,7 @@ async function importPointCloudFilesBaseMap(config, params) {
       sourceFiles,
       imageFileCount,
       coordinate,
+      coordinateMetadata,
       imageOverlay,
       layers: layerDescriptors,
       stitchPlan: params.stitchPlan || null,
@@ -9747,6 +9814,7 @@ async function importPointCloudFilesBaseMap(config, params) {
       pointCloud: pointCloudIndex,
       layers: layerDescriptors.map((layer) => layer.id),
       coordinate,
+      coordinateMetadata,
       imageOverlay,
       stitchPlan: params.stitchPlan || null,
       bounds: parsed.bounds,

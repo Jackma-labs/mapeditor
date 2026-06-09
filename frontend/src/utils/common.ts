@@ -265,6 +265,7 @@ function loadCenterlineLaneMap(data: any) {
     const boundarys: { [id: string]: Boundary } = {};
     const lanes: { [id: string]: Lane } = {};
     const basemapCenter = data.basemapCenter || data.basemap_center || new THREE.Vector2(0, 0);
+    const baseMapDir = data.baseMapDir || data.base_map_dir || data.baseMapName || data.base_map_name || '';
 
     (data.point || []).forEach((item: any) => {
         if (!item?.id || !item?.position) {
@@ -356,6 +357,7 @@ function loadCenterlineLaneMap(data: any) {
         speedBumps: {},
         points,
         hdBasemapCenter: new THREE.Vector2(basemapCenter.x, basemapCenter.y),
+        baseMapDir,
         ...importedCoordinateMetadata(data),
         stopLines: {},
         parkingSpaces: {},
@@ -381,6 +383,7 @@ export function loadHdmp(data: any): any {
     const crosswalk = data.crosswalk || [];
     const speedBump = data.speedBump || data.speed_bump || [];
     const basemapCenter = data.basemapCenter || data.basemap_center || new THREE.Vector2(0, 0);
+    const baseMapDir = data.baseMapDir || data.base_map_dir || data.baseMapName || data.base_map_name || '';
     const coordinateMetadata = importedCoordinateMetadata(data);
     const trafficSignal = data.trafficSignal || [];
     const stopLine = data.stopLine || data.stop_line || [];
@@ -579,6 +582,7 @@ export function loadHdmp(data: any): any {
         speedBumps,
         points,
         hdBasemapCenter: new THREE.Vector2(basemapCenter.x, basemapCenter.y),
+        baseMapDir,
         ...coordinateMetadata,
         stopLines,
         parkingSpaces,

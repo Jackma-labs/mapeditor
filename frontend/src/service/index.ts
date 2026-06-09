@@ -317,6 +317,136 @@ class FileService {
         });
     }
 
+    async createDataPackageUploadSession(packageName: string, files: File[]) {
+        return this.requestJson('/runtime/data-package-upload-sessions', {
+            method: 'POST',
+            body: JSON.stringify({
+                packageName,
+                files: files.map((file) => ({
+                    name: file.name,
+                    size: file.size,
+                    type: file.type,
+                    lastModified: file.lastModified,
+                })),
+            }),
+        });
+    }
+
+    private async uploadDataPackageChunk(
+        sessionId: string,
+        fileIndex: number,
+        chunkIndex: number,
+        chunk: Blob,
+        onProgress?: (loaded: number, total: number) => void,
+    ): Promise<any> {
+        const formData = new FormData();
+        formData.append('chunk', chunk, `chunk-${fileIndex}-${chunkIndex}`);
+
+        return new Promise((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open(
+                'PUT',
+                `${baseApiURL}/runtime/data-package-upload-sessions/${encodeURIComponent(
+                    sessionId,
+                )}/files/${fileIndex}/chunks/${chunkIndex}`,
+            );
+            request.withCredentials = true;
+            request.upload.onprogress = (event) => {
+                if (event.lengthComputable) {
+                    onProgress?.(event.loaded, event.total);
+                }
+            };
+            request.onload = () => {
+                let payload: any = {
+                    code: request.status,
+                    message: request.statusText,
+                };
+                try {
+                    payload = JSON.parse(request.responseText || '{}');
+                } catch (error) {
+                    // Keep the HTTP fallback payload when the server returns non-JSON content.
+                }
+                if (request.status >= 200 && request.status < 300) {
+                    resolve(payload);
+                    return;
+                }
+                reject(new Error(payload?.message || request.statusText || '上传分片失败'));
+            };
+            request.onerror = () => reject(new Error('上传分片失败，请检查网络连接'));
+            request.send(formData);
+        });
+    }
+
+    async completeDataPackageUploadSession(sessionId: string) {
+        return this.requestJson(`/runtime/data-package-upload-sessions/${encodeURIComponent(sessionId)}/complete`, {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
+    }
+
+    async uploadDataPackageResumable(
+        file: File | File[],
+        packageName: string,
+        onProgress?: (percent: number, detail?: string) => void,
+    ) {
+        const files = Array.isArray(file) ? file : [file];
+        const sessionResponse = await this.createDataPackageUploadSession(packageName, files);
+        if (sessionResponse?.code !== 0) {
+            throw new Error(sessionResponse?.message || '创建上传会话失败');
+        }
+        const session = sessionResponse?.data?.session;
+        const sessionId = session?.id;
+        const chunkSize = Number(session?.chunkSize || 8 * 1024 * 1024);
+        if (!sessionId || !Number.isFinite(chunkSize) || chunkSize <= 0) {
+            throw new Error('上传会话信息不完整');
+        }
+
+        const uploadChunks = files.flatMap((currentFile, fileIndex) => {
+            const chunkCount = Math.max(1, Math.ceil(currentFile.size / chunkSize));
+            return Array.from({ length: chunkCount }, (_item, chunkIndex) => {
+                const start = chunkIndex * chunkSize;
+                const end = Math.min(currentFile.size, start + chunkSize);
+                const chunk = currentFile.slice(start, end);
+                return {
+                    fileIndex,
+                    chunkIndex,
+                    chunkCount,
+                    fileName: currentFile.name,
+                    chunk,
+                    size: chunk.size,
+                };
+            });
+        });
+        const totalBytes = files.reduce((sum, item) => sum + item.size, 0);
+        let uploadedBytes = 0;
+        const uploadNextChunk = async (index: number): Promise<void> => {
+            const current = uploadChunks[index];
+            if (!current) {
+                return;
+            }
+            const uploadedBeforeChunk = uploadedBytes;
+            await this.uploadDataPackageChunk(
+                sessionId,
+                current.fileIndex,
+                current.chunkIndex,
+                current.chunk,
+                (loaded) => {
+                    const percent = Math.min(99, ((uploadedBeforeChunk + loaded) / Math.max(totalBytes, 1)) * 100);
+                    onProgress?.(percent, `${current.fileName} ${current.chunkIndex + 1}/${current.chunkCount}`);
+                },
+            );
+            uploadedBytes += current.size;
+            onProgress?.(
+                Math.min(99, (uploadedBytes / Math.max(totalBytes, 1)) * 100),
+                `${current.fileName} ${current.chunkIndex + 1}/${current.chunkCount}`,
+            );
+            await uploadNextChunk(index + 1);
+        };
+        await uploadNextChunk(0);
+        onProgress?.(100, '上传完成，服务器正在合并并识别');
+        return this.completeDataPackageUploadSession(sessionId);
+    }
+
     async startAnalyzeDataPackageJob(file: File | File[], packageName: string) {
         const formData = new FormData();
         const files = Array.isArray(file) ? file : [file];

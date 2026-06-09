@@ -145,6 +145,7 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             targetCrs,
             apolloOrigin,
             coordinateAnchor,
+            baseMapDir,
         } = loadHdmp(json);
         let newState = get().mapState;
 
@@ -152,6 +153,7 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             ...cloneDeep(initialMapState),
             needRender: true,
             hdMapFile: file,
+            baseMapDir: baseMapDir || '',
             scene: newState.scene,
             camera: newState.camera,
             dom: newState.dom,
@@ -255,6 +257,7 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             targetCrs,
             apolloOrigin,
             coordinateAnchor,
+            baseMapDir,
         } = get().mapState;
         const publishCoordinateFrame = coordinateFrame || 'LOCAL_ENU_METERS';
         const publishTargetCrs = targetCrs || APOLLO_TARGET_CRS;
@@ -270,6 +273,7 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             targetCrs: publishTargetCrs,
             apolloOrigin: apolloOrigin || undefined,
             anchor: publishAnchor || undefined,
+            baseMapDir: baseMapDir || undefined,
             point: Object.keys(points).map((item: string) => {
                 const { id, type, position } = points[item];
                 const handlePosition = { x: Number(position.x.toFixed(4)), y: Number(position.y.toFixed(4)) };

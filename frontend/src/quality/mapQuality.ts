@@ -66,6 +66,12 @@ interface ComponentGap {
     distance: number;
 }
 
+interface MissingTopologyCandidate {
+    laneId: string;
+    distance: number;
+    angle: number;
+}
+
 const validLaneDirections = new Set<number>([
     LaneDireaciotn.STRAIGHT,
     LaneDireaciotn.TURN_LEFT,
@@ -92,6 +98,8 @@ const LANE_TURN_SPEED_TOLERANCE_KPH = 2;
 const LANE_MAX_SPEED_WARNING_KPH = 120;
 const LANE_SUCCESSOR_SHARP_ANGLE_ERROR_DEGREES = 100;
 const LANE_SUCCESSOR_SHARP_ANGLE_WARNING_DEGREES = 65;
+const LANE_MISSING_LINK_CANDIDATE_DISTANCE_METERS = 4;
+const LANE_MISSING_LINK_CANDIDATE_ANGLE_DEGREES = 35;
 const CURVE_SAMPLE_COUNT = 17;
 
 interface Point2D {
@@ -512,6 +520,66 @@ function formatEndpoint(endpoint: LaneEndpointInfo) {
     )})`;
 }
 
+function findMissingTopologyCandidate(
+    mapState: MapState,
+    lane: Lane,
+    relations: Record<string, LaneRelation>,
+    side: 'predecessor' | 'successor',
+): MissingTopologyCandidate | null {
+    const relation = relations[lane.id];
+    const ownEndpoint = side === 'successor' ? 'end' : 'start';
+    const ownPointIds = side === 'successor' ? relation.endPointIds : relation.startPointIds;
+    const ownCenter = getEndpointCenter(mapState, ownPointIds);
+    const ownDirection = getLaneEndpointDirection(mapState, lane, ownEndpoint);
+    if (!ownCenter || !ownDirection) {
+        return null;
+    }
+
+    let bestCandidate: MissingTopologyCandidate | null = null;
+    Object.values(relations).forEach((otherRelation) => {
+        if (otherRelation.laneId === lane.id) {
+            return;
+        }
+        if (side === 'successor' && otherRelation.predecessors.length > 0) {
+            return;
+        }
+        if (side === 'predecessor' && otherRelation.successors.length > 0) {
+            return;
+        }
+
+        const otherLane = mapState.lanes[otherRelation.laneId];
+        const otherEndpoint = side === 'successor' ? 'start' : 'end';
+        const otherPointIds = side === 'successor' ? otherRelation.startPointIds : otherRelation.endPointIds;
+        const otherCenter = getEndpointCenter(mapState, otherPointIds);
+        const otherDirection = otherLane ? getLaneEndpointDirection(mapState, otherLane, otherEndpoint) : null;
+        if (!otherCenter || !otherDirection) {
+            return;
+        }
+
+        const candidateDistance = Math.hypot(ownCenter.x - otherCenter.x, ownCenter.y - otherCenter.y);
+        if (candidateDistance > LANE_MISSING_LINK_CANDIDATE_DISTANCE_METERS) {
+            return;
+        }
+        const candidateAngle = angleBetweenDirections(ownDirection, otherDirection);
+        if (candidateAngle > LANE_MISSING_LINK_CANDIDATE_ANGLE_DEGREES) {
+            return;
+        }
+        if (
+            !bestCandidate ||
+            candidateDistance < bestCandidate.distance ||
+            (candidateDistance === bestCandidate.distance && candidateAngle < bestCandidate.angle)
+        ) {
+            bestCandidate = {
+                laneId: otherRelation.laneId,
+                distance: candidateDistance,
+                angle: candidateAngle,
+            };
+        }
+    });
+
+    return bestCandidate;
+}
+
 function findNearestComponentGaps(
     mapState: MapState,
     laneComponents: LaneComponent[],
@@ -817,23 +885,43 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 target,
             });
         } else {
-            if (relation.predecessors.length === 0 && lanes.length > 1) {
+            const missingPredecessorCandidate =
+                relation.predecessors.length === 0
+                    ? findMissingTopologyCandidate(mapState, lane, relations, 'predecessor')
+                    : null;
+            const missingSuccessorCandidate =
+                relation.successors.length === 0
+                    ? findMissingTopologyCandidate(mapState, lane, relations, 'successor')
+                    : null;
+            if (missingPredecessorCandidate && lanes.length > 1) {
                 buildIssue(issues, {
                     severity: 'warning',
-                    title: `车道 ${lane.id} 没有前驱`,
-                    description: '该车道可能是合法入口，也可能是断头；发布前需要确认。',
-                    suggestion: '如果不是地图入口，请连接到上一段车道。',
-                    details: buildLaneRelationDetails(relation, laneComponentIndex),
+                    title: `车道 ${lane.id} 疑似缺少前驱`,
+                    description: `附近 ${missingPredecessorCandidate.distance.toFixed(2)}m 有可连接车道 ${
+                        missingPredecessorCandidate.laneId
+                    }，方向夹角 ${missingPredecessorCandidate.angle.toFixed(1)} 度，更像断点而不是合法入口。`,
+                    suggestion: '可使用智能修复或拓扑/连接补齐；如果这里确实是地图入口，可以忽略。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                        `候选前驱：${missingPredecessorCandidate.laneId}`,
+                        `端点距离：${missingPredecessorCandidate.distance.toFixed(2)}m`,
+                        `航向夹角：${missingPredecessorCandidate.angle.toFixed(1)} 度`,
+                    ]),
                     target,
                 });
             }
-            if (relation.successors.length === 0 && lanes.length > 1) {
+            if (missingSuccessorCandidate && lanes.length > 1) {
                 buildIssue(issues, {
                     severity: 'warning',
-                    title: `车道 ${lane.id} 没有后继`,
-                    description: '该车道可能是合法出口，也可能是断头；仿真路线可能无法继续。',
-                    suggestion: '如果不是地图出口，请连接到下一段车道。',
-                    details: buildLaneRelationDetails(relation, laneComponentIndex),
+                    title: `车道 ${lane.id} 疑似缺少后继`,
+                    description: `附近 ${missingSuccessorCandidate.distance.toFixed(2)}m 有可连接车道 ${
+                        missingSuccessorCandidate.laneId
+                    }，方向夹角 ${missingSuccessorCandidate.angle.toFixed(1)} 度，更像断点而不是合法出口。`,
+                    suggestion: '可使用智能修复或拓扑/连接补齐；如果这里确实是地图出口，可以忽略。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                        `候选后继：${missingSuccessorCandidate.laneId}`,
+                        `端点距离：${missingSuccessorCandidate.distance.toFixed(2)}m`,
+                        `航向夹角：${missingSuccessorCandidate.angle.toFixed(1)} 度`,
+                    ]),
                     target,
                 });
             }

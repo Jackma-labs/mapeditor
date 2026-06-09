@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import PubSub from 'pubsub-js';
 import { Bot, ClipboardCheck, ListChecks, Map, MousePointer2 } from 'lucide-react';
 import { useManagerStore } from 'src/store';
 import { inspectMapQuality } from 'src/quality/mapQuality';
@@ -16,8 +17,8 @@ const tabs: { key: WorkbenchTab; label: string; desc: string; icon: React.Elemen
     { key: 'guide', label: '向导', desc: '下一步建议', icon: Map },
     { key: 'attr', label: '属性', desc: '编辑选中对象', icon: MousePointer2 },
     { key: 'quality', label: '质检', desc: '定位地图问题', icon: ListChecks },
-    { key: 'ai', label: 'AI诊断', desc: '解释修复建议', icon: Bot },
-    { key: 'publish', label: '发布检查', desc: '确认能否发布', icon: ClipboardCheck },
+    { key: 'ai', label: 'AI 诊断', desc: '解释修复建议', icon: Bot },
+    { key: 'publish', label: '发布检查', desc: '确认能否部署', icon: ClipboardCheck },
 ];
 
 function getGateStatus(blocked: boolean, warning: boolean): FlowStatus {
@@ -39,20 +40,24 @@ export default function WorkbenchPanel() {
     const publishWarning = !publishBlocked && report.summary.warnings > 0;
     const qualityStatus = getGateStatus(report.summary.errors > 0, report.summary.warnings > 0);
     const publishFlowStatus = getGateStatus(publishBlocked, publishWarning);
+    const openAssetManager = () => PubSub.publish('openAssetManager');
+    const openEdgeDeploy = () => PubSub.publish('openEdgeDeploy');
     const flowItems: {
         label: string;
         value: string;
         status: FlowStatus;
         tab?: WorkbenchTab;
+        action?: () => void;
     }[] = [
         {
-            label: '底图',
-            value: mapState.baseMapDir ? '已加载' : '待加载',
+            label: '采图',
+            value: mapState.baseMapDir ? '底图已加载' : '上传 LAS',
             status: mapState.baseMapDir ? 'ready' : 'idle',
+            action: openAssetManager,
         },
         {
-            label: '车道',
-            value: report.summary.lanes > 0 ? `${report.summary.lanes} 条` : '待标注',
+            label: '标注',
+            value: report.summary.lanes > 0 ? `${report.summary.lanes} 条车道` : '待标注',
             status: report.summary.lanes > 0 ? 'ready' : 'idle',
             tab: 'attr',
         },
@@ -64,9 +69,15 @@ export default function WorkbenchPanel() {
         },
         {
             label: '发布',
-            value: publishBlocked ? '被阻断' : '可检查',
+            value: publishBlocked ? '被阻塞' : '可检查',
             status: publishFlowStatus,
             tab: 'publish',
+        },
+        {
+            label: '边缘',
+            value: publishBlocked ? '待发布' : '可部署',
+            status: publishBlocked ? 'idle' : publishFlowStatus,
+            action: openEdgeDeploy,
         },
     ];
     const selectionSubtitle =
@@ -102,8 +113,16 @@ export default function WorkbenchPanel() {
                         type="button"
                         key={item.label}
                         className={item.status}
-                        disabled={!item.tab}
-                        onClick={() => item.tab && setActiveTab(item.tab)}
+                        disabled={!item.tab && !item.action}
+                        onClick={() => {
+                            if (item.action) {
+                                item.action();
+                                return;
+                            }
+                            if (item.tab) {
+                                setActiveTab(item.tab);
+                            }
+                        }}
                     >
                         <strong>{item.label}</strong>
                         <span>{item.value}</span>
@@ -133,7 +152,13 @@ export default function WorkbenchPanel() {
             </div>
             <div className="workbench-body">
                 {activeTab === 'attr' && <Attr />}
-                {activeTab === 'guide' && <AnnotationGuidePanel onOpenTab={setActiveTab} />}
+                {activeTab === 'guide' && (
+                    <AnnotationGuidePanel
+                        onOpenTab={setActiveTab}
+                        onOpenAssets={openAssetManager}
+                        onOpenDeploy={openEdgeDeploy}
+                    />
+                )}
                 {activeTab === 'quality' && <MapQualityPanel embedded />}
                 {activeTab === 'ai' && <AIAssistantPanel />}
                 {activeTab === 'publish' && (
@@ -141,6 +166,7 @@ export default function WorkbenchPanel() {
                         currentMapName={mapState.hdMapFile}
                         report={report}
                         onOpenQuality={() => setActiveTab('quality')}
+                        onOpenDeploy={openEdgeDeploy}
                     />
                 )}
             </div>

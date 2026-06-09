@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { message } from 'antd';
 import { AlertCircle, CheckCircle2, CircleDot, FileJson, GitBranch, RefreshCw, Route } from 'lucide-react';
 import { Badge } from 'src/components/ui/badge';
 import { Button } from 'src/components/ui/button';
@@ -9,6 +10,7 @@ interface ReleaseGatePanelProps {
     currentMapName?: string;
     report: MapQualityReport;
     onOpenQuality: () => void;
+    onOpenDeploy: () => void;
 }
 
 const normalizeMapName = (value?: string) =>
@@ -96,7 +98,7 @@ function getHeroCopy(state: string) {
     if (state === 'ready') {
         return {
             title: '发布包可部署',
-            detail: '后端质量门禁通过，可以进入边缘部署预检。',
+            detail: '后端质量门禁通过，可以直接进入边缘部署；边缘设备侧负责仿真和实车验证。',
             badge: 'ready',
             variant: 'outline' as const,
         };
@@ -186,7 +188,44 @@ function getSelectedMap(maps: any[], currentMapName?: string, selectedMapName?: 
     );
 }
 
-export default function ReleaseGatePanel({ currentMapName, report, onOpenQuality }: ReleaseGatePanelProps) {
+function buildReleaseCertificate(map: any, report: MapQualityReport) {
+    if (!map) {
+        return '';
+    }
+    const checks = getQualityChecks(map);
+    const certificate = {
+        type: 'landing-mapeditor-release-certificate',
+        generatedAt: new Date().toISOString(),
+        mapName: map.mapName,
+        ready: Boolean(map.ready && map.qualityGate?.ready !== false),
+        status: map.status,
+        modifiedAt: map.modifiedAt,
+        sizeBytes: map.sizeBytes,
+        coordinateTransform: map.coordinateTransform || null,
+        routeArtifacts: Boolean(map.routeArtifacts),
+        files: map.files || [],
+        qualityGate: {
+            ready: map.qualityGate?.ready,
+            errors: checks.filter((check: any) => check.status === 'error').length,
+            warnings: checks.filter((check: any) => check.status === 'warning').length,
+            checks,
+        },
+        editorQuality: {
+            errors: report.summary.errors,
+            warnings: report.summary.warnings,
+            lanes: report.summary.lanes,
+        },
+        deploymentPolicy: 'deploy_to_edge_device_directly; edge_device_runs_simulation',
+    };
+    return JSON.stringify(certificate, null, 2);
+}
+
+export default function ReleaseGatePanel({
+    currentMapName,
+    report,
+    onOpenQuality,
+    onOpenDeploy,
+}: ReleaseGatePanelProps) {
     const [loading, setLoading] = useState(false);
     const [loadError, setLoadError] = useState('');
     const [releasedMaps, setReleasedMaps] = useState<any[]>([]);
@@ -203,6 +242,18 @@ export default function ReleaseGatePanel({ currentMapName, report, onOpenQuality
     const readyForDeploy = Boolean(selectedMap?.ready && selectedMap?.qualityGate?.ready !== false);
     const heroState = getHeroState(readyForDeploy, readyForRelease);
     const heroCopy = getHeroCopy(heroState);
+    const copyReleaseCertificate = async () => {
+        if (!selectedMap) {
+            return;
+        }
+        const certificate = buildReleaseCertificate(selectedMap, report);
+        if (!navigator.clipboard?.writeText) {
+            message.warning('当前浏览器不支持自动复制发布证书');
+            return;
+        }
+        await navigator.clipboard.writeText(certificate);
+        message.success('发布证书已复制');
+    };
 
     const loadReleasedMaps = useCallback(async () => {
         setLoading(true);
@@ -238,6 +289,16 @@ export default function ReleaseGatePanel({ currentMapName, report, onOpenQuality
                 <Badge variant={heroCopy.variant}>{heroCopy.badge}</Badge>
             </section>
 
+            <section className="release-deploy-action">
+                <div>
+                    <strong>部署路径</strong>
+                    <span>发布包通过后直接推送到边缘设备；仿真和实车验证在边缘设备侧完成。</span>
+                </div>
+                <Button type="button" variant="default" onClick={onOpenDeploy} disabled={!readyForDeploy}>
+                    边缘部署
+                </Button>
+            </section>
+
             <section className="release-edit-gate">
                 <div>
                     <span>编辑态质检</span>
@@ -259,6 +320,11 @@ export default function ReleaseGatePanel({ currentMapName, report, onOpenQuality
                         <RefreshCw data-icon="inline-start" />
                         刷新
                     </Button>
+                    {selectedMap && (
+                        <Button type="button" variant="outline" size="sm" onClick={copyReleaseCertificate}>
+                            复制证书
+                        </Button>
+                    )}
                 </div>
 
                 {loadError && <div className="release-error">{loadError}</div>}

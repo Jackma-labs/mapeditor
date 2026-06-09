@@ -1,6 +1,7 @@
 import PubSub from 'pubsub-js';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, Modal, Progress, Space, Table, Tag, message } from 'antd';
+import { Button, Dropdown, Input, Modal, Progress, Space, Table, Tag, message } from 'antd';
+import type { MenuProps } from 'antd';
 import { ModalProps } from 'antd/lib/modal';
 import FileService from 'src/service/index';
 
@@ -9,7 +10,7 @@ interface AssetManagerDialogProps extends Omit<ModalProps, 'visible'> {
     onCancel?: () => void;
 }
 
-type WorkStage = 'idle' | 'uploading' | 'uploaded' | 'building' | 'ready';
+type WorkStage = 'idle' | 'uploading' | 'analyzing' | 'uploaded' | 'building' | 'ready';
 
 const stripExtension = (name: string) => name.replace(/\.[^.]+$/i, '');
 
@@ -176,6 +177,36 @@ const formatPackageAnalysis = (packageInfo: any) => {
     return lines.join('\n');
 };
 
+const sleep = (ms: number) =>
+    new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+
+const waitForRuntimeJob = async (
+    jobId: string,
+    label: string,
+    onProgress?: (message: string, job?: any) => void,
+    attempt = 0,
+): Promise<any> => {
+    if (attempt >= 1200) {
+        throw new Error(`${label}等待超时`);
+    }
+    const response = await FileService.getRuntimeJob(jobId, true);
+    if (response?.code !== 0) {
+        throw new Error(response?.message || '读取后台任务失败');
+    }
+    const job = response?.data?.job;
+    onProgress?.(job?.message || label, job);
+    if (job?.status === 'succeeded') {
+        return job;
+    }
+    if (job?.status === 'failed') {
+        throw new Error(job?.message || `${label}失败`);
+    }
+    await sleep(2500);
+    return waitForRuntimeJob(jobId, label, onProgress, attempt + 1);
+};
+
 export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetManagerDialogProps) {
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const [packages, setPackages] = useState<any[]>([]);
@@ -184,6 +215,8 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     const [working, setWorking] = useState(false);
     const [workingText, setWorkingText] = useState('');
     const [uploadProgress, setUploadProgress] = useState(0);
+    const [uploadDetail, setUploadDetail] = useState('');
+    const [activeJob, setActiveJob] = useState<any>(null);
     const [selectedPackageId, setSelectedPackageId] = useState<string>('');
     const [stage, setStage] = useState<WorkStage>('idle');
 
@@ -215,19 +248,19 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             if (!selectedPackageId && nextPackages[0]?.packageId) {
                 setSelectedPackageId(nextPackages[0].packageId);
             }
+            return nextPackages;
         } catch (error) {
             Modal.error({
                 title: '读取点云资产失败',
                 content: error instanceof Error ? error.message : '读取点云资产失败',
             });
+            return [];
         } finally {
             setLoading(false);
         }
     }, [selectedPackageId]);
 
-    const refreshPackages = useCallback(async () => {
-        await loadPackages();
-    }, [loadPackages]);
+    const refreshPackages = useCallback(async () => loadPackages(), [loadPackages]);
 
     const uploadFiles = async (files: File[]) => {
         if (files.length === 0) {
@@ -235,26 +268,41 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
         const packageName = buildPackageName(files);
         setUploading(true);
-        setWorkingText(`正在上传 ${packageName}，大文件上传期间不要关闭页面`);
+        setWorkingText(`正在上传 ${packageName}`);
+        setUploadDetail('大文件采用分片上传，上传完成后服务器会自动合并并识别。');
         setUploadProgress(0);
+        setActiveJob(null);
         setStage('uploading');
         try {
-            const response = await FileService.analyzeDataPackageWithProgress(
+            const response = await FileService.uploadDataPackageResumable(
                 files.length === 1 ? files[0] : files,
                 packageName,
-                (percent: number) => setUploadProgress(percent),
+                (percent: number, detail?: string) => {
+                    setUploadProgress(percent);
+                    setUploadDetail(detail || '');
+                },
             );
             if (response?.code !== 0) {
-                throw new Error(response?.message || '上传并识别 LAS 包失败');
+                throw new Error(response?.message || '提交采图包分析任务失败');
             }
-            const uploadedPackageId = response?.data?.packageId;
+            const jobId = response?.data?.job?.id;
+            if (!jobId) {
+                throw new Error('后台任务没有返回 jobId');
+            }
+            setStage('analyzing');
+            setWorkingText('服务器正在合并并识别采图包');
+            const job = await waitForRuntimeJob(jobId, '采图包识别', (jobMessage, nextJob) => {
+                setActiveJob(nextJob);
+                setWorkingText(jobMessage || '服务器正在识别采图包');
+            });
+            const uploadedPackageId = job?.result?.packageId;
             if (uploadedPackageId) {
                 setSelectedPackageId(uploadedPackageId);
             }
             setStage('uploaded');
             setUploadProgress(100);
             await refreshPackages();
-            message.success('LAS 包已上传并识别');
+            message.success('LAS 包已上传并识别，可以生成点云资产');
         } catch (error) {
             setStage('idle');
             Modal.error({
@@ -264,6 +312,7 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         } finally {
             setUploading(false);
             setWorkingText('');
+            setUploadDetail('');
         }
     };
 
@@ -287,29 +336,46 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
     const handleGenerateAsset = async (packageInfo: any = selectedPackage) => {
         if (!packageInfo) {
             message.warning('先选择一个 LAS 点云包');
-            return;
+            return null;
         }
         if (Number(packageInfo.summary?.pointCloudFiles || 0) <= 0) {
             message.warning('这个资产没有可用点云文件');
-            return;
+            return null;
         }
         const mapName = getMapName(packageInfo);
         setWorking(true);
         setWorkingText(`正在生成可编辑点云资产：${mapName}`);
+        setUploadDetail('');
+        setActiveJob(null);
         setStage('building');
         try {
-            const response = await FileService.importDataPackageBaseMap(packageInfo.packageId, mapName, true);
+            const response = await FileService.startDataPackageBaseMapJob(packageInfo.packageId, mapName, true);
             if (response?.code !== 0) {
-                throw new Error(response?.message || '生成点云资产失败');
+                throw new Error(response?.message || '提交点云资产生成任务失败');
             }
+            const jobId = response?.data?.job?.id;
+            if (!jobId) {
+                throw new Error('后台任务没有返回 jobId');
+            }
+            await waitForRuntimeJob(jobId, '生成点云资产', (jobMessage, nextJob) => {
+                setActiveJob(nextJob);
+                setWorkingText(jobMessage || `正在生成可编辑点云资产：${mapName}`);
+            });
             setStage('ready');
-            await refreshPackages();
+            const nextPackages = await refreshPackages();
             message.success(`点云资产已生成：${mapName}`);
+            return (
+                nextPackages.find((item: any) => item.packageId === packageInfo.packageId) || {
+                    ...packageInfo,
+                    baseMapExists: true,
+                }
+            );
         } catch (error) {
             Modal.error({
                 title: '生成点云资产失败',
                 content: error instanceof Error ? error.message : '生成点云资产失败',
             });
+            return null;
         } finally {
             setWorking(false);
             setWorkingText('');
@@ -350,11 +416,15 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             message.warning('先选择一个 LAS 点云包');
             return;
         }
+        let packageToOpen = selectedPackage;
         if (!selectedPackage.baseMapExists) {
-            await handleGenerateAsset(selectedPackage);
-            await refreshPackages();
+            const generatedPackage = await handleGenerateAsset(selectedPackage);
+            if (!generatedPackage) {
+                return;
+            }
+            packageToOpen = generatedPackage;
         }
-        await handleOpenBaseMap(selectedPackage);
+        await handleOpenBaseMap(packageToOpen);
     };
 
     const handleRenamePackage = (packageInfo: any) => {
@@ -483,6 +553,8 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             refreshPackages();
         } else {
             setWorkingText('');
+            setUploadDetail('');
+            setActiveJob(null);
             setUploadProgress(0);
             setStage('idle');
         }
@@ -494,6 +566,60 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         }
         setSelectedPackageId(packages[0]?.packageId || '');
     }, [packages, selectedPackageId]);
+
+    const handlePrimaryRowAction = async (record: any) => {
+        if (record.baseMapExists) {
+            await handleOpenBaseMap(record);
+            return;
+        }
+        await handleGenerateAsset(record);
+    };
+
+    const getRowMenuItems = (record: any): MenuProps['items'] => {
+        const items: MenuProps['items'] = [
+            {
+                key: 'details',
+                label: '查看详情',
+            },
+            {
+                key: 'rename',
+                label: '重命名',
+                disabled: working,
+            },
+            {
+                key: 'delete',
+                label: '删除采图包',
+                danger: true,
+                disabled: working,
+            },
+        ];
+        if (record.baseMapExists) {
+            items.push({
+                key: 'regenerate',
+                label: '重新生成点云资产',
+                disabled: working,
+            });
+        }
+        return items;
+    };
+
+    const handleRowMenuClick = async (key: React.Key, record: any) => {
+        if (key === 'details') {
+            showDetails(record);
+            return;
+        }
+        if (key === 'rename') {
+            handleRenamePackage(record);
+            return;
+        }
+        if (key === 'delete') {
+            handleDeletePackage(record);
+            return;
+        }
+        if (key === 'regenerate') {
+            await handleGenerateAsset(record);
+        }
+    };
 
     const columns = [
         {
@@ -562,28 +688,45 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
         {
             title: '操作',
             key: 'actions',
-            width: 220,
+            width: 164,
             render: (_value: string, record: any) => (
                 <Space size={6} className="asset-manager-actions">
-                    <Button size="small" type="primary" onClick={() => handleGenerateAsset(record)} disabled={working}>
-                        生成资产
+                    <Button
+                        size="small"
+                        type="primary"
+                        onClick={() => handlePrimaryRowAction(record)}
+                        disabled={
+                            working ||
+                            uploading ||
+                            (!record.baseMapExists && Number(record.summary?.pointCloudFiles || 0) <= 0)
+                        }
+                    >
+                        {record.baseMapExists ? '打开标注' : '生成资产'}
                     </Button>
-                    <Button size="small" onClick={() => handleOpenBaseMap(record)} disabled={!record.baseMapExists}>
-                        打开标注
-                    </Button>
-                    <Button size="small" onClick={() => showDetails(record)}>
-                        详情
-                    </Button>
-                    <Button size="small" onClick={() => handleRenamePackage(record)} disabled={working}>
-                        重命名
-                    </Button>
-                    <Button size="small" danger onClick={() => handleDeletePackage(record)} disabled={working}>
-                        删除
-                    </Button>
+                    <Dropdown
+                        trigger={['click']}
+                        menu={{
+                            items: getRowMenuItems(record),
+                            onClick: ({ key }) => handleRowMenuClick(key, record),
+                        }}
+                    >
+                        <Button size="small" disabled={uploading}>
+                            更多
+                        </Button>
+                    </Dropdown>
                 </Space>
             ),
         },
     ];
+    const progressDetailText = (() => {
+        if (uploading) {
+            return `${Math.round(uploadProgress)}%${uploadDetail ? ` · ${uploadDetail}` : ''}`;
+        }
+        if (activeJob?.id) {
+            return `任务 ${activeJob.id} · ${activeJob.status}`;
+        }
+        return uploadDetail || workingText;
+    })();
 
     return (
         <Modal
@@ -620,15 +763,15 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             </div>
 
             <div className="asset-lite-steps">
-                <div className={`asset-lite-step ${stage === 'uploading' ? 'active' : ''}`}>
+                <div className={`asset-lite-step ${stage === 'uploading' || stage === 'analyzing' ? 'active' : ''}`}>
                     <span>1</span>
                     <strong>上传最新 LAS 包</strong>
-                    <em>只从网页手工上传，不再扫描或同步旧目录。</em>
+                    <em>只从网页手工上传，分片落盘后由服务器识别，不再扫描或同步旧目录。</em>
                 </div>
                 <div className={`asset-lite-step ${stage === 'building' ? 'active' : ''}`}>
                     <span>2</span>
                     <strong>生成点云资产</strong>
-                    <em>一键切片为 MapEditor 可编辑的高清点云底图。</em>
+                    <em>后台任务切片为 MapEditor 可编辑的高清点云底图。</em>
                 </div>
                 <div className={`asset-lite-step ${stage === 'ready' ? 'active' : ''}`}>
                     <span>3</span>
@@ -640,20 +783,33 @@ export default function AssetManagerDialog({ open, onCancel, ...rest }: AssetMan
             <div className="asset-upload-zone" onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
                 <div>
                     <strong>上传最新采集结果</strong>
-                    <span>支持 `.las`、`.laz` 或包含 LAS 的 `.zip`，可一次选择多个文件。大文件上传会显示进度。</span>
+                    <span>
+                        支持 `.las`、`.laz` 或包含 LAS 的
+                        `.zip`，可一次选择多个文件。大文件采用分片上传，完成后自动识别。
+                    </span>
                 </div>
                 <Button type="primary" onClick={() => uploadInputRef.current?.click()} loading={uploading}>
                     选择文件
                 </Button>
             </div>
 
-            {(uploading || uploadProgress > 0 || workingText) && (
+            {(uploading || uploadProgress > 0 || workingText || activeJob) && (
                 <div className="asset-lite-progress">
                     <div>
                         <strong>{workingText || (uploading ? '正在上传' : '处理中')}</strong>
-                        <span>{uploading ? `${Math.round(uploadProgress)}%` : workingText}</span>
+                        <span>{progressDetailText}</span>
                     </div>
                     {uploading && <Progress percent={Math.round(uploadProgress)} status="active" />}
+                </div>
+            )}
+
+            {activeJob && !uploading && (
+                <div className={`asset-manager-job ${activeJob.status === 'running' ? 'is-active' : ''}`}>
+                    <div className="asset-manager-job-main">
+                        <strong>{activeJob.type}</strong>
+                        <span className="asset-manager-job-message">{activeJob.message || '处理中'}</span>
+                    </div>
+                    <div className="asset-manager-job-meta">{`Job ${activeJob.id} · ${activeJob.status}`}</div>
                 </div>
             )}
 

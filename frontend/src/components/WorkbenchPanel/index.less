@@ -39,7 +39,7 @@
 
 .workbench-flow {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 8px;
     padding: 10px;
     border-bottom: 1px solid #303849;
@@ -74,7 +74,7 @@
 
         strong {
             color: #dce7f7;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 650;
             line-height: 17px;
         }
@@ -82,7 +82,7 @@
         span {
             margin-top: 2px;
             color: #8491a7;
-            font-size: 11px;
+            font-size: 10px;
             line-height: 15px;
         }
 
@@ -676,12 +676,41 @@
 }
 
 .release-edit-gate,
+.release-deploy-action,
 .release-package-section {
     margin-top: 10px;
     padding: 12px;
     border: 1px solid #303849;
     border-radius: 8px;
     background: #1d2330;
+}
+
+.release-deploy-action {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    border-color: #36527c;
+    background: #1d2940;
+
+    strong,
+    span {
+        display: block;
+        min-width: 0;
+    }
+
+    strong {
+        color: #ffffff;
+        font-size: 14px;
+        line-height: 20px;
+    }
+
+    span {
+        margin-top: 3px;
+        color: #a9bad2;
+        font-size: 12px;
+        line-height: 18px;
+    }
 }
 
 .release-edit-gate {

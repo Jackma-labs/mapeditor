@@ -45,7 +45,7 @@ const objectTypeLabel: Record<string, string> = {
 const starterPrompts = [
     '先看当前地图最影响发布的问题',
     '这些质检警告哪些必须处理',
-    '没有前驱或后继应该怎么判断',
+    '前驱/后继警告怎么判断',
     '转弯半径小和车道偏窄怎么修',
 ];
 
@@ -97,7 +97,7 @@ function buildPublishGate(report: MapQualityReport) {
         return {
             status: 'warning',
             title: '可发布但需确认',
-            reason: `剩余 ${report.summary.warnings} 个黄色警告，建议仿真验证`,
+            reason: `剩余 ${report.summary.warnings} 个黄色警告，建议边缘设备验证`,
         };
     }
     return {
@@ -121,8 +121,8 @@ function compactIssue(issue: MapQualityIssue) {
 
 function getIssueCategory(issue: MapQualityIssue) {
     const text = `${issue.id} ${issue.title} ${issue.description} ${issue.suggestion}`;
-    if (text.includes('没有前驱')) return '入口/前驱';
-    if (text.includes('没有后继')) return '出口/后继';
+    if (text.includes('没有前驱') || text.includes('疑似缺少前驱')) return '入口/前驱';
+    if (text.includes('没有后继') || text.includes('疑似缺少后继')) return '出口/后继';
     if (text.includes('转弯半径')) return '转弯半径';
     if (text.includes('偏窄') || text.includes('宽度')) return '车道宽度';
     if (text.includes('疑似断点') || text.includes('孤立') || text.includes('拓扑')) return '拓扑断点';
@@ -133,10 +133,10 @@ function getIssueCategory(issue: MapQualityIssue) {
 function getIssueAction(issue: MapQualityIssue) {
     const category = getIssueCategory(issue);
     if (category === '入口/前驱') {
-        return '确认它是否是合法地图入口；不是入口就连接到上一段车道，并检查两段行驶方向。';
+        return '系统已找到近距离同向候选前驱；确认它是否属于上一段路线，是就智能修复或手动连接。';
     }
     if (category === '出口/后继') {
-        return '确认它是否是合法地图出口；不是出口就连接到下一段车道，并检查后继方向。';
+        return '系统已找到近距离同向候选后继；确认它是否属于下一段路线，是就智能修复或手动连接。';
     }
     if (category === '转弯半径') {
         return '拉开端点或重建弯道；低速场景可降限速后在 Dreamview 里验证不压线、不抖动。';

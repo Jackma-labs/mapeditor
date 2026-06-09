@@ -218,6 +218,28 @@ async function main() {
   assert.strictEqual(autoCoordinateMetadata.captureTrajectoryCenter.enforcement, 'advisory');
   assert.ok(autoCoordinateMetadata.captureTrajectoryCenter.distanceToMapCenterMeters < 100);
 
+  const originJsonPath = path.join(tmpDir, 'editor_map_origin_anchor.json');
+  const originReleaseDir = path.join(tmpDir, 'release-origin-anchor');
+  const originEditorMap = JSON.parse(JSON.stringify(editorMap));
+  delete originEditorMap.coordinateCenter;
+  originEditorMap.sourceCrs = 'LOCAL_ENU_METERS';
+  originEditorMap.apolloOrigin = { x: 500000, y: 4300000, z: 0 };
+  originEditorMap.anchor = {
+    source: 'base_map_coordinate_metadata:center_as_local_origin',
+    utm: originEditorMap.apolloOrigin,
+  };
+  await fs.writeFile(originJsonPath, JSON.stringify(originEditorMap), 'utf8');
+  await convertEditorMapToApolloPackage({
+    mapName: 'origin-anchor-test',
+    jsonPath: originJsonPath,
+    releaseDir: originReleaseDir,
+  });
+  const originManifest = JSON.parse(await fs.readFile(path.join(originReleaseDir, 'manifest.json'), 'utf8'));
+  const originBaseMapText = await fs.readFile(path.join(originReleaseDir, 'base_map.txt'), 'utf8');
+  assert.strictEqual(originManifest.coordinateTransform.source, 'base_map_coordinate_metadata:center_as_local_origin');
+  assert.deepStrictEqual(originManifest.coordinateTransform.offset, { x: 500000, y: 4300000, z: 0 });
+  assert.match(originBaseMapText, /x:\s*500000(?:\.0+)?\s*\n\s*y:\s*4300002(?:\.0+)?/);
+
   console.log(
     JSON.stringify({
       releaseDir,

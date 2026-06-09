@@ -7,10 +7,13 @@ import { MapQualityIssue, MapQualityReport, inspectMapQuality } from 'src/qualit
 import { useManagerStore } from 'src/store';
 
 type GuideTargetTab = 'attr' | 'quality' | 'ai' | 'publish';
+type GuideAction = 'assets' | 'deploy';
 type GuideStatus = 'done' | 'active' | 'warning' | 'blocked' | 'idle';
 
 interface AnnotationGuidePanelProps {
     onOpenTab: (tab: GuideTargetTab) => void;
+    onOpenAssets: () => void;
+    onOpenDeploy: () => void;
 }
 
 interface GuideStep {
@@ -19,6 +22,7 @@ interface GuideStep {
     detail: string;
     action?: string;
     tab?: GuideTargetTab;
+    actionTarget?: GuideAction;
 }
 
 const pickTypeLabels: Partial<Record<ThreeElementType, string>> = {
@@ -95,7 +99,7 @@ function getSelectionPlaybook(items: PickElementInfo[]) {
     if (laneCount === 1 && items.length === 1) {
         return [
             '右侧属性里确认限速、方向、车道类型和左右边界。',
-            '检查“拓扑关系”里的前驱/后继，缺失但不是入口/出口时要补连接。',
+            '检查“拓扑关系”里的前驱/后继，质检提示疑似缺连接时优先用智能修复。',
             '需要扩展车道时用下方“增加车道”，不要手工复制散点。',
         ];
     }
@@ -136,7 +140,7 @@ function getTopologyStatus(hasLane: boolean, topologyBlocked: boolean): GuideSta
 
 function getTopologyDetail(report: MapQualityReport, hasLane: boolean, topologyBlocked: boolean) {
     if (topologyBlocked) {
-        return `当前有 ${report.summary.laneComponents} 个拓扑区域，发布前需要确认是否都是合法入口/出口。`;
+        return `当前有 ${report.summary.laneComponents} 个拓扑区域，优先处理质检标出的疑似断点。`;
     }
     if (hasLane) {
         return '车道拓扑未发现明显分裂。';
@@ -189,8 +193,9 @@ function buildGuideSteps(report: MapQualityReport, hasBaseMap: boolean): GuideSt
         {
             label: '底图与采图资产',
             status: hasBaseMap ? 'done' : 'active',
-            detail: hasBaseMap ? '底图已加载，可以开始标注。' : '先导入底图或地图包，否则后续质量检查缺少参照。',
-            action: hasBaseMap ? undefined : '打开文件菜单',
+            detail: hasBaseMap ? '底图已加载，可以开始标注。' : '先上传最新 LAS 包并生成可编辑点云资产。',
+            action: hasBaseMap ? undefined : '上传 LAS',
+            actionTarget: hasBaseMap ? undefined : 'assets',
         },
         {
             label: '基础车道',
@@ -214,11 +219,12 @@ function buildGuideSteps(report: MapQualityReport, hasBaseMap: boolean): GuideSt
             tab: hasIssue ? 'quality' : undefined,
         },
         {
-            label: '发布与部署',
+            label: '发布与边缘部署',
             status: getPublishStatus(report, hasLane),
             detail: getPublishDetail(report),
-            action: '发布检查',
+            action: report.summary.errors > 0 ? '发布检查' : '部署边缘',
             tab: 'publish',
+            actionTarget: report.summary.errors > 0 ? undefined : 'deploy',
         },
     ];
 }
@@ -226,9 +232,9 @@ function buildGuideSteps(report: MapQualityReport, hasBaseMap: boolean): GuideSt
 function getPrimaryAction(report: MapQualityReport, hasBaseMap: boolean) {
     if (!hasBaseMap) {
         return {
-            title: '先导入底图',
-            detail: '没有底图时不建议继续做拓扑和发布判断。',
-            tab: 'attr' as GuideTargetTab,
+            title: '先上传最新采图包',
+            detail: '从采图包工作台上传 LAS/LAZ/ZIP，生成可编辑点云资产后再标注。',
+            actionTarget: 'assets' as GuideAction,
         };
     }
     if (report.summary.lanes === 0) {
@@ -254,12 +260,12 @@ function getPrimaryAction(report: MapQualityReport, hasBaseMap: boolean) {
     }
     return {
         title: '进入发布检查',
-        detail: '当前地图质量门禁通过，下一步确认发布包和部署目标。',
+        detail: '当前地图质量门禁通过，下一步确认发布包并直接部署到边缘设备。',
         tab: 'publish' as GuideTargetTab,
     };
 }
 
-export default function AnnotationGuidePanel({ onOpenTab }: AnnotationGuidePanelProps) {
+export default function AnnotationGuidePanel({ onOpenTab, onOpenAssets, onOpenDeploy }: AnnotationGuidePanelProps) {
     const [mapState] = useManagerStore((state) => [state.mapState]);
     const report = useMemo(() => inspectMapQuality(mapState), [mapState]);
     const prioritizedIssues = useMemo(
@@ -273,6 +279,19 @@ export default function AnnotationGuidePanel({ onOpenTab }: AnnotationGuidePanel
     const completedCount = steps.filter((step) => step.status === 'done').length;
     const progress = Math.round((completedCount / steps.length) * 100);
     const operationLabel = mapState.operationType ? operationLabels[mapState.operationType] || '操作中' : '选择/编辑';
+    const runGuideAction = (target?: GuideAction, tab?: GuideTargetTab) => {
+        if (target === 'assets') {
+            onOpenAssets();
+            return;
+        }
+        if (target === 'deploy') {
+            onOpenDeploy();
+            return;
+        }
+        if (tab) {
+            onOpenTab(tab);
+        }
+    };
 
     return (
         <div className="annotation-guide-panel">
@@ -282,7 +301,11 @@ export default function AnnotationGuidePanel({ onOpenTab }: AnnotationGuidePanel
                     <h2>{primaryAction.title}</h2>
                     <p>{primaryAction.detail}</p>
                 </div>
-                <Button type="button" variant="secondary" onClick={() => onOpenTab(primaryAction.tab)}>
+                <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => runGuideAction(primaryAction.actionTarget, primaryAction.tab)}
+                >
                     <MousePointer2 data-icon="inline-start" />
                     去处理
                 </Button>
@@ -325,8 +348,8 @@ export default function AnnotationGuidePanel({ onOpenTab }: AnnotationGuidePanel
                             type="button"
                             key={step.label}
                             className={`annotation-step ${step.status}`}
-                            disabled={!step.tab}
-                            onClick={() => step.tab && onOpenTab(step.tab)}
+                            disabled={!step.tab && !step.actionTarget}
+                            onClick={() => runGuideAction(step.actionTarget, step.tab)}
                         >
                             <span className="annotation-step-icon">
                                 {step.status === 'done' ? <CheckCircle2 /> : <AlertCircle />}

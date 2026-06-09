@@ -237,6 +237,19 @@ export default function Index(prop: ToolbarProps) {
         setVisibleVal({ map: false, operate: false, message: false, assets: false, edge: false });
     };
 
+    useEffect(() => {
+        const assetToken = PubSub.subscribe('openAssetManager', () => {
+            setVisibleVal((current) => ({ ...current, assets: true }));
+        });
+        const edgeToken = PubSub.subscribe('openEdgeDeploy', () => {
+            setVisibleVal((current) => ({ ...current, edge: true }));
+        });
+        return () => {
+            PubSub.unsubscribe(assetToken);
+            PubSub.unsubscribe(edgeToken);
+        };
+    }, []);
+
     const waitForRuntimeJob = async (jobId: string, label: string, attempt = 0): Promise<any> => {
         if (attempt >= 600) {
             throw new Error(`${label}等待超时`);
@@ -665,9 +678,7 @@ export default function Index(prop: ToolbarProps) {
                         </div>
                         <div className="help-doc-step">
                             <span>5</span>
-                            <p>
-                                发布成功后执行 ApolloLite 仿真验证；仿真通过后再部署到边缘设备，必要时从部署历史中回滚。
-                            </p>
+                            <p>发布成功后直接部署到边缘设备；边缘设备侧负责仿真和实车验证，必要时从部署历史中回滚。</p>
                         </div>
                     </section>
                     <section>
@@ -1053,7 +1064,7 @@ export default function Index(prop: ToolbarProps) {
                             label: (
                                 <FileMenuLabel
                                     title="生产工作流"
-                                    description="查看采图、标注、发布、仿真、部署的标准步骤"
+                                    description="查看采图、标注、发布、边缘部署的标准步骤"
                                 />
                             ),
                             key: 'help-doc',
@@ -1063,6 +1074,177 @@ export default function Index(prop: ToolbarProps) {
             ],
         },
     ];
+    const productionMenusForRender = productionMenus
+        .filter((menu) => menu.key !== 'device')
+        .map((menu) => {
+            if (menu.key === 'delivery') {
+                return {
+                    key: 'delivery',
+                    label: '发布部署',
+                    items: [
+                        {
+                            type: 'group' as const,
+                            label: '发布到边缘设备',
+                            children: [
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="发布地图包"
+                                            description={
+                                                canEdit ? '把已保存标注生成 Apollo 可部署产物' : '需要编辑权限'
+                                            }
+                                        />
+                                    ),
+                                    key: '4',
+                                    icon: <RenderIcon url={IssueIcon} />,
+                                    disabled: !canEdit,
+                                },
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="边缘设备部署"
+                                            description={
+                                                canDeploy
+                                                    ? '选择发布包、执行坐标预检并推送到 Apollo 边缘设备'
+                                                    : '需要管理员权限'
+                                            }
+                                        />
+                                    ),
+                                    key: 'edge-device',
+                                    disabled: !canDeploy,
+                                },
+                            ],
+                        },
+                    ],
+                };
+            }
+            if (menu.key === 'system') {
+                return {
+                    key: 'system',
+                    label: '系统诊断',
+                    items: [
+                        {
+                            type: 'group' as const,
+                            label: '系统',
+                            children: [
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="运行状态"
+                                            description="查看导入、转换、底图生成和边缘部署状态"
+                                        />
+                                    ),
+                                    key: 'runtime-status',
+                                },
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="生产工作流"
+                                            description="查看采图、标注、发布、边缘部署的标准步骤"
+                                        />
+                                    ),
+                                    key: 'help-doc',
+                                },
+                            ],
+                        },
+                        {
+                            type: 'group' as const,
+                            label: '高级调试',
+                            children: [
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="ApolloLite 诊断修复"
+                                            description={
+                                                canDeploy
+                                                    ? '仅用于本机调试：检查 Dreamview 地图数据和 map_dir'
+                                                    : '需要管理员权限'
+                                            }
+                                        />
+                                    ),
+                                    key: 'apollolite-diagnose',
+                                    disabled: !canDeploy,
+                                },
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="ApolloLite 工作流"
+                                            description="仅用于本机调试：查看同步、Dreamview、PNC、Routing 状态"
+                                        />
+                                    ),
+                                    key: 'apollolite-workflow',
+                                },
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="同步到本机 ApolloLite"
+                                            description={
+                                                canDeploy
+                                                    ? '仅用于开发机本地验证，不属于生产部署链路'
+                                                    : '需要管理员权限'
+                                            }
+                                        />
+                                    ),
+                                    key: 'apollolite-stage-latest',
+                                    disabled: !canDeploy,
+                                },
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="本机仿真跑图"
+                                            description={
+                                                canEdit ? '仅用于开发机调试，边缘设备部署不依赖该步骤' : '需要编辑权限'
+                                            }
+                                        />
+                                    ),
+                                    key: 'apollolite-sim-smoke-test',
+                                    disabled: !canEdit,
+                                },
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="重置本机仿真会话"
+                                            description={
+                                                canEdit
+                                                    ? '清理开发机上一条 Routing 和 Sim Control 状态'
+                                                    : '需要编辑权限'
+                                            }
+                                        />
+                                    ),
+                                    key: 'apollolite-reset-simulation',
+                                    disabled: !canEdit,
+                                },
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="启动绿灯仿真"
+                                            description={
+                                                canEdit
+                                                    ? '仅用于开发机测试连续跑图，生产部署不依赖该功能'
+                                                    : '需要编辑权限'
+                                            }
+                                        />
+                                    ),
+                                    key: 'apollolite-traffic-light-green',
+                                    disabled: !canEdit,
+                                },
+                                {
+                                    label: (
+                                        <FileMenuLabel
+                                            title="停止绿灯仿真"
+                                            description={canEdit ? '停止开发机红绿灯状态发布器' : '需要编辑权限'}
+                                        />
+                                    ),
+                                    key: 'apollolite-traffic-light-stop',
+                                    disabled: !canEdit,
+                                },
+                            ],
+                        },
+                    ],
+                };
+            }
+            return menu;
+        });
     useEffect(() => {
         if (!viewstate.currentPickElement || viewstate.currentPickElement.length === 0) {
             setRotateStatus(RotateStatus.Disable);
@@ -1113,7 +1295,7 @@ export default function Index(prop: ToolbarProps) {
                 }}
             >
                 <div className="production-menu-bar">
-                    {productionMenus.map((menu) => (
+                    {productionMenusForRender.map((menu) => (
                         <Dropdown
                             key={menu.key}
                             menu={{ items: menu.items, onClick: handleMenuClick }}
