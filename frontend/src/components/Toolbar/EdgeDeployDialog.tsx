@@ -140,6 +140,7 @@ const checkTitleMap: Record<string, string> = {
     'edge-dreamview-hmi': 'Dreamview 当前地图',
     'edge-dreamview-runtime-sync': 'Dreamview/运行时一致性',
     'selected-map-coordinates': '发布包坐标',
+    'selected-map-edge-reference': '边缘参考地图',
     'selected-map-vehicle-pose': '车辆位置',
 };
 
@@ -171,7 +172,43 @@ const getLocalizationIssueText = (item: any) => {
     return issueMessage || item?.id || '';
 };
 
+const getEdgeReferenceIssueText = (item: any) => {
+    const details = item?.details || {};
+    const trustedCount = Number(details.trustedReferencesChecked || 0);
+    const legacyCount = Number(details.legacyReferencesChecked || 0);
+    const totalCount = Number(details.referencesChecked || 0);
+    const nearest = details.nearestTrustedReference || details.nearestReference || {};
+    const nearestText = nearest?.mapName
+        ? `最近参考 ${nearest.mapName}，距离 ${formatMeters(nearest.distanceMeters)}`
+        : '';
+    if (item?.status === 'ok') {
+        return [`已找到 ${trustedCount} 个同坐标链路可信参考地图`, nearestText].filter(Boolean).join('；');
+    }
+    if (trustedCount === 0 && totalCount > 0) {
+        return [
+            `边缘设备上有 ${legacyCount || totalCount} 个旧参考地图，但没有同坐标链路可信参考`,
+            nearestText,
+            '这不阻断部署，系统按当前发布包的投影、坐标元数据和质检结果放行。',
+        ]
+            .filter(Boolean)
+            .join('；');
+    }
+    if (trustedCount > 0) {
+        return [
+            '可信参考地图距离超过阈值，需确认是否跨场地或新场地部署',
+            nearestText,
+            `阈值 ${formatMeters(details.maxDistanceMeters)}`,
+        ]
+            .filter(Boolean)
+            .join('；');
+    }
+    return item?.message || '没有可用于对照的边缘参考地图，已按发布包自身坐标门禁放行。';
+};
+
 const getCheckDisplayMessage = (item: any) => {
+    if (item?.name === 'selected-map-edge-reference') {
+        return getEdgeReferenceIssueText(item);
+    }
     if (item?.name === 'selected-map-vehicle-pose') {
         const details = item?.details || {};
         const distance = details?.nearest?.distanceMeters;
@@ -434,8 +471,16 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                 job.result?.dreamviewSwitchResult?.verification ||
                 job.result?.deployment?.dreamviewSwitch?.verification ||
                 null;
+            const postDeployVerification =
+                job.result?.postDeployVerification || job.result?.deployment?.postDeployVerification || null;
             let dreamviewText = '';
-            if (dreamviewVerification) {
+            if (postDeployVerification?.passed && !postDeployVerification?.skipped) {
+                dreamviewText = `，边缘运行时已确认加载 ${
+                    postDeployVerification.hmiCurrentMap ||
+                    postDeployVerification.runtimeMapName ||
+                    postDeployVerification.expectedMapName
+                }`;
+            } else if (dreamviewVerification) {
                 dreamviewText = `，Dreamview 已确认加载 ${
                     dreamviewVerification.hmiCurrentMap || dreamviewVerification.expectedMapName
                 }`;
@@ -785,7 +830,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                         <Tag color={checkColor(item.status)}>{item.status}</Tag>
                                         <div>
                                             <strong>{checkTitleMap[item.name] || item.name}</strong>
-                                            <span>{item.message}</span>
+                                            <span>{getCheckDisplayMessage(item)}</span>
                                         </div>
                                     </div>
                                 ))}

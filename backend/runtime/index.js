@@ -1251,13 +1251,62 @@ root = os.environ.get('MAP_ROOT', '/apollo/modules/map/data')
 current = os.environ.get('CURRENT_MAP', '')
 pattern = re.compile(r'\\b([xy]):\\s*(-?\\d+(?:\\.\\d+)?)')
 items = []
+
+def read_json(path):
+    try:
+        if os.path.exists(path):
+            return json.load(open(path, encoding='utf-8'))
+    except Exception:
+        return None
+    return None
+
+def metadata_target(metadata):
+    if not isinstance(metadata, dict):
+        return {}
+    return metadata.get('targetCrs') or metadata.get('frames', {}).get('targetCrs') or {}
+
+def bounds_from_metadata(metadata):
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get('bounds')
+    if not isinstance(raw, dict):
+        return None
+    try:
+        min_x = float(raw.get('minX', raw.get('xMin', raw.get('left'))))
+        max_x = float(raw.get('maxX', raw.get('xMax', raw.get('right'))))
+        min_y = float(raw.get('minY', raw.get('yMin', raw.get('bottom'))))
+        max_y = float(raw.get('maxY', raw.get('yMax', raw.get('top'))))
+        return {
+            'minX': min_x,
+            'maxX': max_x,
+            'minY': min_y,
+            'maxY': max_y,
+            'centerX': (min_x + max_x) / 2.0,
+            'centerY': (min_y + max_y) / 2.0,
+        }
+    except Exception:
+        return None
+
+def max_bounds_delta(left, right):
+    if not left or not right:
+        return None
+    keys = ['minX', 'maxX', 'minY', 'maxY', 'centerX', 'centerY']
+    try:
+        return max(abs(float(left[k]) - float(right[k])) for k in keys)
+    except Exception:
+        return None
+
 for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
     if not name or name == current or name.startswith('.'):
         continue
-    path = os.path.join(root, name, 'base_map.txt')
+    map_dir = os.path.join(root, name)
+    path = os.path.join(map_dir, 'base_map.txt')
     if not os.path.exists(path):
         continue
     text = open(path, encoding='utf-8', errors='ignore').read()
+    projection_match = re.search(r'\\bprojection\\s*\\{\\s*proj:\\s*"([^"]+)"', text)
+    projection = projection_match.group(1).strip() if projection_match else ''
+    projection_ok = all(token in projection.lower() for token in ['+proj=utm', '+zone=50', '+datum=wgs84', '+units=m'])
     xs, ys, pending_x = [], [], None
     for axis, raw in pattern.findall(text):
         value = float(raw)
@@ -1268,15 +1317,37 @@ for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
             ys.append(value)
             pending_x = None
     if xs and ys:
-        items.append({
-            'mapName': name,
+        bounds = {
             'minX': min(xs), 'maxX': max(xs),
             'minY': min(ys), 'maxY': max(ys),
             'spanX': max(xs) - min(xs),
             'spanY': max(ys) - min(ys),
             'centerX': (min(xs) + max(xs)) / 2.0,
             'centerY': (min(ys) + max(ys)) / 2.0,
+        }
+        coordinate_metadata = read_json(os.path.join(map_dir, 'coordinate_metadata.json'))
+        quality_gate = read_json(os.path.join(map_dir, 'quality_gate.json'))
+        target = metadata_target(coordinate_metadata)
+        target_ok = (
+            str(target.get('epsg', '')).upper() == 'EPSG:32650'
+            and int(target.get('zone', 0) or 0) == 50
+            and str(target.get('datum', '')).upper() == 'WGS84'
+        )
+        metadata_bounds = bounds_from_metadata(coordinate_metadata)
+        metadata_delta = max_bounds_delta(bounds, metadata_bounds)
+        metadata_bounds_ok = metadata_delta is not None and metadata_delta <= 1.0
+        quality_ready = isinstance(quality_gate, dict) and quality_gate.get('ready') is True
+        trusted = bool(projection_ok and target_ok and metadata_bounds_ok and quality_ready)
+        items.append({
+            'mapName': name,
+            **bounds,
             'pointCount': len(xs),
+            'projectionOk': projection_ok,
+            'coordinateMetadataTargetOk': target_ok,
+            'coordinateMetadataBoundsOk': metadata_bounds_ok,
+            'coordinateMetadataBoundsDeltaMeters': metadata_delta,
+            'qualityGateReady': quality_ready,
+            'trustedCoordinateReference': trusted,
         })
 print(json.dumps(items))
 `;
@@ -1318,47 +1389,68 @@ async function validateReleasedMapCoordinatesForEdge(config, mapName, sourceDir,
   }
   const allReferences = await fetchEdgeReferenceMapBounds(config, remoteRoot, mapName);
   const references = allReferences.filter(isGlobalApolloCoordinateBounds);
+  const trustedReferences = references.filter((reference) => reference.trustedCoordinateReference === true);
+  const legacyReferences = references.filter((reference) => reference.trustedCoordinateReference !== true);
   const maxDistanceMeters = Number(config.edgeDeploy.coordinateValidationMaxDistanceMeters || 1000);
   let nearestReference = null;
+  let nearestTrustedReference = null;
   let referenceValidation = {
     status: 'warning',
-    message: `no global-coordinate reference maps were found on edge under ${remoteRoot}; trusting released map coordinate metadata`,
+    message: `边缘设备 ${remoteRoot} 下没有可用于对照的全局坐标地图，已按发布包自身坐标元数据和质检门禁放行。`,
   };
-  if (references.length > 0) {
+  if (trustedReferences.length > 0) {
+    nearestTrustedReference = trustedReferences
+      .map((reference) => ({
+        ...reference,
+        distanceMeters: coordinateDistance(localBounds, reference),
+      }))
+      .sort((left, right) => left.distanceMeters - right.distanceMeters)[0];
+    nearestReference = nearestTrustedReference;
+    if (nearestTrustedReference.distanceMeters <= maxDistanceMeters) {
+      referenceValidation = {
+        status: 'ok',
+        message: `${mapName} 与最近可信边缘参考地图 ${nearestTrustedReference.mapName} 相距 ${nearestTrustedReference.distanceMeters.toFixed(
+          1,
+        )}m。`,
+      };
+    } else {
+      referenceValidation = {
+        status: 'warning',
+        message: [
+          `${mapName} 与最近可信边缘参考地图 ${nearestTrustedReference.mapName} 相距 ${nearestTrustedReference.distanceMeters.toFixed(
+            1,
+          )}m，超过 ${maxDistanceMeters}m`,
+          '如果这是新场地或跨场地部署，请确认后继续',
+          '本次仍以发布包自身坐标元数据和质检门禁作为主门禁',
+          `new=${formatCoordinateBounds(localBounds)}`,
+          `reference=${formatCoordinateBounds(nearestTrustedReference)}`,
+        ].join('; '),
+      };
+    }
+  } else if (references.length > 0) {
     nearestReference = references
       .map((reference) => ({
         ...reference,
         distanceMeters: coordinateDistance(localBounds, reference),
       }))
       .sort((left, right) => left.distanceMeters - right.distanceMeters)[0];
-    if (nearestReference.distanceMeters <= maxDistanceMeters) {
-      referenceValidation = {
-        status: 'ok',
-        message: `${mapName} is ${nearestReference.distanceMeters.toFixed(
-          1,
-        )}m from nearest edge reference map ${nearestReference.mapName}`,
-      };
-    } else {
-      referenceValidation = {
-        status: 'warning',
-        message: [
-          `${mapName} is ${nearestReference.distanceMeters.toFixed(
-            1,
-          )}m from nearest edge reference map ${nearestReference.mapName}`,
-          'edge reference maps may have been produced by an older coordinate pipeline',
-          'trusting released map coordinate metadata for deployment',
-          `new=${formatCoordinateBounds(localBounds)}`,
-          `reference=${formatCoordinateBounds(nearestReference)}`,
-          `maxDistanceMeters=${maxDistanceMeters}`,
-        ].join('; '),
-      };
-    }
+    referenceValidation = {
+      status: 'warning',
+      message: [
+        `边缘设备上有 ${references.length} 个全局坐标参考地图，但没有带 coordinate_metadata.json + quality_gate.json 的可信新链路参考`,
+        `最近旧参考 ${nearestReference.mapName} 相距 ${nearestReference.distanceMeters.toFixed(1)}m`,
+        '旧参考只用于提示，不阻断本次部署；主门禁以发布包自身坐标元数据、投影和质检结果为准',
+      ].join('; '),
+    };
   }
   return {
     localBounds,
     apolloMetadataValidation,
     referencesChecked: references.length,
+    trustedReferencesChecked: trustedReferences.length,
+    legacyReferencesChecked: legacyReferences.length,
     nearestReference,
+    nearestTrustedReference,
     maxDistanceMeters,
     referenceValidation,
     vehiclePoseValidation: await validateReleasedMapAgainstEdgePose(config, sourceDir, localBounds).catch((error) => ({
@@ -10060,7 +10152,10 @@ async function preflightEdgeDeploy(config, params = {}) {
         validation.referenceValidation.message,
         {
           referencesChecked: validation.referencesChecked,
+          trustedReferencesChecked: validation.trustedReferencesChecked,
+          legacyReferencesChecked: validation.legacyReferencesChecked,
           nearestReference: validation.nearestReference,
+          nearestTrustedReference: validation.nearestTrustedReference,
           maxDistanceMeters: validation.maxDistanceMeters,
         },
       );
@@ -10365,6 +10460,64 @@ async function switchEdgeDreamviewMap(config, mapDir, progress = async () => {})
   };
 }
 
+async function verifyEdgeDeploymentCurrentMap(config, mapName, mapDir, progress = async () => {}) {
+  const expectedMapName = path.posix.basename(String(mapDir || '').replace(/\/+$/u, '')) || mapName;
+  const expectedNormalized = normalizeDreamviewName(expectedMapName || mapName);
+  if (config.edgeDeploy.autoSwitchDreamview === false) {
+    return {
+      expectedMapName,
+      expectedMapDir: String(mapDir || '').replace(/\/+$/u, ''),
+      skipped: true,
+      passed: true,
+      message: 'Dreamview auto switch is disabled; runtime map switch verification was skipped',
+    };
+  }
+
+  await progress(`Verifying edge runtime current map after deployment: ${expectedMapName}`);
+  const runtime = await readEdgeRuntimeCurrentMap(config);
+  const runtimeMapName =
+    runtime.map_name ||
+    path.posix.basename(String(runtime.resolved_map_dir || runtime.flag_map_dir || '').replace(/\/+$/u, ''));
+  const runtimeMatches = Boolean(runtimeMapName && normalizeDreamviewName(runtimeMapName) === expectedNormalized);
+  if (!runtimeMatches) {
+    throw new Error(
+      `edge deploy verification failed: runtime current map is ${runtimeMapName || 'unknown'}, expected ${expectedMapName}`,
+    );
+  }
+
+  let hmi = null;
+  let hmiError = '';
+  try {
+    hmi = await readEdgeDreamviewHmiStatus(config);
+  } catch (error) {
+    hmiError = error.message;
+    await progress(`Dreamview HMI status was not reachable after deployment: ${hmiError}`);
+  }
+  const hmiCurrentMap = getDreamviewCurrentMap(hmi?.status);
+  const hmiMatches = hmiCurrentMap ? normalizeDreamviewName(hmiCurrentMap) === expectedNormalized : false;
+  if (hmiCurrentMap && !hmiMatches) {
+    throw new Error(
+      `edge deploy verification failed: Dreamview current map is ${hmiCurrentMap}, expected ${expectedMapName}`,
+    );
+  }
+
+  return {
+    expectedMapName,
+    expectedMapDir: String(mapDir || '').replace(/\/+$/u, ''),
+    runtimeMapName,
+    runtimeMatches,
+    flagMapDir: runtime.flag_map_dir || '',
+    resolvedMapDir: runtime.resolved_map_dir || '',
+    dreamviewHttp: runtime.dreamview_http || '',
+    hmiCurrentMap: hmiCurrentMap || '',
+    hmiMatches: hmiCurrentMap ? hmiMatches : null,
+    hmiMapCount: getDreamviewStatusMaps(hmi?.status).length,
+    hmiUrl: hmi?.wsUrl || buildEdgeDreamviewWebSocketUrl(config),
+    hmiError,
+    passed: true,
+  };
+}
+
 async function runEdgeNativeMapTools(config, mapDir, progress = async () => {}) {
   const container = String(config.edgeDeploy.dockerContainer || '').trim();
   if (!container || config.edgeDeploy.nativeMapTools === false) {
@@ -10623,6 +10776,7 @@ async function deployReleasedMap(config, params = {}) {
       await progress('Running post-deploy command on edge');
       postDeployResult = await runEdgeSshCommand(config, config.edgeDeploy.postDeployCommand);
     }
+    const postDeployVerification = await verifyEdgeDeploymentCurrentMap(config, mapName, remoteMapDir, progress);
     await progress('Recording deployment result');
     const record = await appendDeploymentRecord(config, {
       ...baseRecord,
@@ -10671,6 +10825,7 @@ async function deployReleasedMap(config, params = {}) {
             stderr: postDeployResult.stderr,
           }
         : null,
+      postDeployVerification,
     });
     await progress(`Deployment succeeded: ${mapName}`);
     return {
@@ -10683,6 +10838,7 @@ async function deployReleasedMap(config, params = {}) {
       nativeMapToolsResult,
       dreamviewSwitchResult,
       postDeployResult,
+      postDeployVerification,
     };
   } catch (error) {
     await appendDeploymentRecord(config, {
