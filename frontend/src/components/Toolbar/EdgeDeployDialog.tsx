@@ -266,6 +266,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         [releasedMaps, selectedMapName],
     );
     const selectableMaps = useMemo(() => releasedMaps.filter((item: any) => item.selectable), [releasedMaps]);
+    const deployableMaps = useMemo(() => selectableMaps.filter((item: any) => item.ready), [selectableMaps]);
     const preflightChecks = useMemo(() => getChecks(preflight), [preflight]);
     const runtimeCheck = useMemo(() => getCheck(preflight, 'edge-runtime-status'), [preflight]);
     const dreamviewCheck = useMemo(() => getCheck(preflight, 'edge-dreamview-hmi'), [preflight]);
@@ -312,10 +313,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             const data = response.data || {};
             const maps = Array.isArray(mapsResponse?.data?.maps) ? mapsResponse.data.maps : [];
             const currentMapName = form.getFieldValue('mapName');
-            const defaultMapName =
-                maps.find((item: any) => item.selectable && item.ready)?.mapName ||
-                maps.find((item: any) => item.selectable)?.mapName ||
-                '';
+            const currentReadyExists = maps.some(
+                (item: any) => item.mapName === currentMapName && item.selectable && item.ready,
+            );
+            const defaultMapName = maps.find((item: any) => item.selectable && item.ready)?.mapName || '';
             setReleasedMaps(maps);
             form.setFieldsValue({
                 host: data.host || '',
@@ -327,7 +328,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                 nativeMapTools: data.nativeMapTools !== false,
                 autoSwitchDreamview: data.autoSwitchDreamview !== false,
                 postDeployCommand: data.postDeployCommand || '',
-                mapName: currentMapName || defaultMapName,
+                mapName: currentReadyExists ? currentMapName : defaultMapName,
             });
         } catch (error: any) {
             Modal.error({
@@ -349,7 +350,9 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             const maps = Array.isArray(response?.data?.maps) ? response.data.maps : [];
             setReleasedMaps(maps);
             const currentMapName = form.getFieldValue('mapName');
-            const currentStillExists = maps.some((item: any) => item.mapName === currentMapName && item.selectable);
+            const currentStillExists = maps.some(
+                (item: any) => item.mapName === currentMapName && item.selectable && item.ready,
+            );
             if (!currentStillExists) {
                 form.setFieldValue('mapName', maps.find((item: any) => item.selectable && item.ready)?.mapName || '');
             }
@@ -437,6 +440,16 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const deploySelected = async () => {
         const values = await form.validateFields();
         const { mapName } = values;
+        const deployableMap = releasedMaps.find(
+            (item: any) => item.mapName === mapName && item.selectable && item.ready,
+        );
+        if (!deployableMap) {
+            Modal.error({
+                title: '发布包不可部署',
+                content: selectedMap?.statusMessage || '请选择状态为 ready 的发布包后再部署。',
+            });
+            return;
+        }
         setLoading(true);
         setJobText(`正在保存配置并预检：${mapName}`);
         try {
@@ -709,6 +722,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             return {
                                                 value: item.mapName,
                                                 title: `${item.mapName} ${item.statusMessage || ''}`,
+                                                disabled: !item.ready,
                                                 label: (
                                                     <div
                                                         className={`edge-deploy-option ${
@@ -720,6 +734,9 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                                             {optionStatus}
                                                             {index === 0 ? ' · 最新修改' : ''}
                                                             {optionTime}
+                                                            {!item.ready && item.statusMessage
+                                                                ? ` · ${item.statusMessage}`
+                                                                : ''}
                                                         </small>
                                                     </div>
                                                 ),
@@ -752,6 +769,11 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                     <span>大小</span>
                                     <strong>{`${Math.round((Number(selectedMap.sizeBytes) || 0) / 1024)} KB`}</strong>
                                 </div>
+                            </div>
+                        )}
+                        {deployableMaps.length === 0 && (
+                            <div className="edge-deploy-empty">
+                                暂无可部署发布包。请先从当前地图重新发布，发布包必须通过坐标和质量门禁。
                             </div>
                         )}
                     </section>

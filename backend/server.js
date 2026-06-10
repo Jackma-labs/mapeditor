@@ -1855,6 +1855,39 @@ async function saveEditorMap(mapName, data) {
   return filePath;
 }
 
+function editorMapArrayCount(map, ...keys) {
+  for (const key of keys) {
+    const value = map?.[key];
+    if (Array.isArray(value)) {
+      return value.length;
+    }
+  }
+  return 0;
+}
+
+function getEditorMapPublishStats(map) {
+  return {
+    points: editorMapArrayCount(map, "point", "points"),
+    lanes: editorMapArrayCount(map, "lane", "lanes"),
+    boundaries: editorMapArrayCount(map, "boundary", "boundaries", "laneBoundary", "laneBoundaries"),
+  };
+}
+
+function assertEditorMapPublishable(mapName, map) {
+  const stats = getEditorMapPublishStats(map);
+  if (stats.points === 0 && stats.lanes === 0) {
+    throw new Error(
+      `地图 ${mapName} 是空图，不能发布。请先打开包含车道和标注的地图，再执行发布。`,
+    );
+  }
+  if (stats.points === 0) {
+    throw new Error(`地图 ${mapName} 没有点数据，不能生成 Apollo 地图。`);
+  }
+  if (stats.lanes === 0) {
+    throw new Error(`地图 ${mapName} 没有车道，不能作为可部署地图发布。`);
+  }
+}
+
 function getWebsocketClientInfo(ws) {
   if (!ws.mapeditorClientId) {
     websocketClientSeq += 1;
@@ -1942,10 +1975,24 @@ async function prepareReleaseDir(mapName, allowOverwrite) {
     if (!allowOverwrite) {
       return { exists: true, dir: releaseDir };
     }
-    await fsp.rm(releaseDir, { recursive: true, force: true });
+    const backupDir = `${releaseDir}.bak-release-${Date.now()}`;
+    await fsp.rename(releaseDir, backupDir);
+    await ensureDir(releaseDir);
+    return { exists: false, dir: releaseDir, backupDir };
   }
   await ensureDir(releaseDir);
   return { exists: false, dir: releaseDir };
+}
+
+async function restoreReleaseDirOnFailure(preparedReleaseDir) {
+  if (!preparedReleaseDir?.backupDir) {
+    return;
+  }
+  if (!(await pathExists(preparedReleaseDir.backupDir))) {
+    return;
+  }
+  await fsp.rm(preparedReleaseDir.dir, { recursive: true, force: true }).catch(() => {});
+  await fsp.rename(preparedReleaseDir.backupDir, preparedReleaseDir.dir).catch(() => {});
 }
 
 function sendWsResponse(ws, requestId, info) {
@@ -2067,20 +2114,10 @@ async function handleReleaseMapFile(ws, requestId, info) {
     });
     return;
   }
+  let preparedReleaseDir = null;
   try {
     const lock = ensureEditorMapLockForWrite(mapName, ws);
-    await ensureDir(config.releaseRoot);
-    const { exists, dir } = await prepareReleaseDir(
-      mapName,
-      !ifCheckFileDuplicated,
-    );
-    if (exists && ifCheckFileDuplicated) {
-      sendWsResponse(ws, requestId, {
-        code: 15017,
-        message: "发布目录已存在，需确认覆盖",
-      });
-      return;
-    }
+    assertEditorMapPublishable(mapName, map);
     const coordinateEnrichment = await enrichEditorMapCoordinateFromBaseMap(mapName, map);
     if (coordinateEnrichment.enriched) {
       log(
@@ -2095,8 +2132,28 @@ async function handleReleaseMapFile(ws, requestId, info) {
         anchorInference.inferred,
       );
     }
+    await ensureDir(config.releaseRoot);
+    preparedReleaseDir = await prepareReleaseDir(
+      mapName,
+      !ifCheckFileDuplicated,
+    );
+    const { exists, dir } = preparedReleaseDir;
+    if (exists && ifCheckFileDuplicated) {
+      sendWsResponse(ws, requestId, {
+        code: 15017,
+        message: "发布目录已存在，需确认覆盖",
+      });
+      return;
+    }
     const jsonPath = await saveEditorMap(mapName, anchorInference.map);
     const result = await runConverter(mapName, jsonPath, dir);
+    const releasedMaps = await runtime.listReleasedMaps(config);
+    const releaseSummary = releasedMaps.find((item) => item.mapName === mapName);
+    if (!releaseSummary?.ready) {
+      throw new Error(
+        `发布包未通过可部署检查: ${releaseSummary?.statusMessage || "未知错误"}`,
+      );
+    }
     let apolloLiteStage = null;
     let apolloLiteStageError = null;
     if (config.apolloLite?.enabled && config.apolloLite?.autoStageOnRelease) {
@@ -2125,6 +2182,7 @@ async function handleReleaseMapFile(ws, requestId, info) {
       },
     });
   } catch (error) {
+    await restoreReleaseDirOnFailure(preparedReleaseDir);
     log("ReleaseMapFile failed:", error);
     sendWsResponse(ws, requestId, {
       code: 15018,
