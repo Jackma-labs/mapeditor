@@ -10127,7 +10127,7 @@ async function preflightEdgeDeploy(config, params = {}) {
       addCheck(
         'edge-dreamview-switch',
         true,
-        'error',
+        'warning',
         'Dreamview switch target is writable and restartable',
         result.stderr || null,
       );
@@ -10135,8 +10135,8 @@ async function preflightEdgeDeploy(config, params = {}) {
       addCheck(
         'edge-dreamview-switch',
         false,
-        'error',
-        'Dreamview cannot be switched automatically after deployment',
+        'warning',
+        'Dreamview auto-switch probe failed; deployment can continue and post-deploy verification will confirm the loaded map',
         error.message,
       );
     }
@@ -10325,8 +10325,10 @@ function buildEdgeDreamviewPreflightCommand() {
   return [
     'set -e',
     'if [ -x /apollo/scripts/landing_edge_runtime.sh ]; then',
-    '  /apollo/scripts/landing_edge_runtime.sh status >/dev/null',
-    '  exit 0',
+    '  if timeout 5 /apollo/scripts/landing_edge_runtime.sh status >/dev/null 2>&1; then',
+    '    exit 0',
+    '  fi',
+    '  echo "landing_edge_runtime status timed out or failed; falling back to Apollo file checks" >&2',
     'fi',
     'test -f /apollo/cyber/setup.bash',
     'test -d /apollo/modules/common/data',
@@ -10348,8 +10350,10 @@ function buildEdgeDreamviewSwitchCommand(mapDir) {
     'BIN=/apollo/bazel-bin/modules/dreamview/dreamview',
     'LOG=/apollo/data/log/mapeditor_dreamview_restart.log',
     'if [ -x /apollo/scripts/landing_edge_runtime.sh ]; then',
-    '  /apollo/scripts/landing_edge_runtime.sh switch-map "$MAP_DIR"',
-    '  exit 0',
+    '  if timeout 45 /apollo/scripts/landing_edge_runtime.sh switch-map "$MAP_DIR"; then',
+    '    exit 0',
+    '  fi',
+    '  echo "landing_edge_runtime switch-map timed out or failed; falling back to flagfile restart" >&2',
     'fi',
     '. "$SETUP"',
     '[ -d "$MAP_DIR" ] || { echo "missing map dir: $MAP_DIR" >&2; exit 2; }',
