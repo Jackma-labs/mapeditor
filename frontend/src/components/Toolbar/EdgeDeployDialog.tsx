@@ -1,19 +1,83 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import {
-    CloudUploadOutlined,
-    HistoryOutlined,
-    ReloadOutlined,
-    RollbackOutlined,
-    SaveOutlined,
-    SearchOutlined,
-} from '@ant-design/icons';
-import { Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Tag, message } from 'antd';
+    AlertTriangleIcon,
+    BoxIcon,
+    CheckCircle2Icon,
+    CloudUploadIcon,
+    HistoryIcon,
+    InfoIcon,
+    MapIcon,
+    PencilIcon,
+    RefreshCwIcon,
+    RotateCcwIcon,
+    SaveIcon,
+    SearchIcon,
+    ServerIcon,
+    ShieldCheckIcon,
+    WifiIcon,
+    XCircleIcon,
+} from 'lucide-react';
+import { Alert, AlertDescription, AlertTitle } from 'src/components/ui/alert';
+import { Badge } from 'src/components/ui/badge';
+import { Button } from 'src/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from 'src/components/ui/card';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from 'src/components/ui/dialog';
+import { Input } from 'src/components/ui/input';
+import { Label } from 'src/components/ui/label';
+import { ScrollArea } from 'src/components/ui/scroll-area';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from 'src/components/ui/select';
+import { Separator } from 'src/components/ui/separator';
+import { Switch } from 'src/components/ui/switch';
+import { cn } from 'src/lib/utils';
 import FileService from 'src/service/index';
 
 interface EdgeDeployDialogProps {
     open: boolean;
     onCancel: () => void;
 }
+
+type StatusLevel = 'ok' | 'warning' | 'error' | 'idle';
+
+type NoticeType = 'success' | 'warning' | 'error' | 'info';
+
+interface NoticeState {
+    type: NoticeType;
+    title: string;
+    description?: ReactNode;
+}
+
+interface DeployValues {
+    host: string;
+    user: string;
+    password: string;
+    port: number;
+    targetMapRoot: string;
+    dockerContainer: string;
+    nativeMapTools: boolean;
+    autoSwitchDreamview: boolean;
+    postDeployCommand: string;
+    mapName: string;
+}
+
+const DEFAULT_VALUES: DeployValues = {
+    host: '',
+    user: 'apollo',
+    password: '',
+    port: 22,
+    targetMapRoot: '/apollo/modules/map/data',
+    dockerContainer: '',
+    nativeMapTools: true,
+    autoSwitchDreamview: true,
+    postDeployCommand: '',
+    mapName: '',
+};
 
 const sleep = (ms: number) =>
     new Promise((resolve) => {
@@ -52,15 +116,32 @@ const waitForRuntimeJob = async (
     return waitForRuntimeJob(jobId, label, onProgress, attempt + 1);
 };
 
-const checkColor = (status: string) => {
-    if (status === 'ok') {
-        return 'green';
+const normalizeStatus = (status: any): StatusLevel => {
+    if (status === 'ok' || status === 'warning' || status === 'error') {
+        return status;
     }
-    if (status === 'warning') {
-        return 'gold';
-    }
-    return 'red';
+    return 'idle';
 };
+
+const statusRank: Record<StatusLevel, number> = {
+    idle: 0,
+    ok: 1,
+    warning: 2,
+    error: 3,
+};
+
+const combineStatus = (items: StatusLevel[]): StatusLevel => {
+    if (items.length === 0) {
+        return 'idle';
+    }
+    return items.reduce((current, next) => (statusRank[next] > statusRank[current] ? next : current), 'idle');
+};
+
+const getChecks = (preflight: any) => (Array.isArray(preflight?.checks) ? preflight.checks : []);
+
+const getCheck = (preflight: any, name: string) => getChecks(preflight).find((item: any) => item.name === name);
+
+const getCheckLevel = (preflight: any, name: string): StatusLevel => normalizeStatus(getCheck(preflight, name)?.status);
 
 const formatModifiedTime = (value: string) => {
     if (!value) {
@@ -73,19 +154,13 @@ const formatModifiedTime = (value: string) => {
     return date.toLocaleString();
 };
 
-const mapStatusColor = (map: any) => {
-    if (map?.ready) {
-        return 'green';
+const formatBytes = (value: any) => {
+    const bytes = Number(value) || 0;
+    if (bytes >= 1024 * 1024) {
+        return `${(bytes / 1024 / 1024).toFixed(bytes >= 1024 * 1024 * 1024 ? 1 : 2)} MB`;
     }
-    if (map?.status === 'invalid') {
-        return 'red';
-    }
-    return 'gold';
+    return `${Math.round(bytes / 1024)} KB`;
 };
-
-const getChecks = (preflight: any) => (Array.isArray(preflight?.checks) ? preflight.checks : []);
-
-const getCheck = (preflight: any, name: string) => getChecks(preflight).find((item: any) => item.name === name);
 
 const formatMeters = (value: any) => {
     const number = Number(value);
@@ -102,7 +177,17 @@ const formatBoundsCenter = (bounds: any) => {
     return `${Number(bounds.centerX).toFixed(3)}, ${Number(bounds.centerY).toFixed(3)}`;
 };
 
-const getOverviewStatusText = (status: string, hasPreflight: boolean) => {
+const mapStatusColor = (map: any): StatusLevel => {
+    if (map?.ready) {
+        return 'ok';
+    }
+    if (map?.status === 'invalid') {
+        return 'error';
+    }
+    return 'warning';
+};
+
+const getOverviewStatusText = (status: StatusLevel, hasPreflight: boolean) => {
     if (!hasPreflight) {
         return '待预检';
     }
@@ -110,22 +195,9 @@ const getOverviewStatusText = (status: string, hasPreflight: boolean) => {
         return '可部署';
     }
     if (status === 'warning') {
-        return '有警告';
+        return '可部署，有警告';
     }
-    return '需处理';
-};
-
-const getOverviewStatusTagColor = (status: string) => {
-    if (status === 'ok') {
-        return 'green';
-    }
-    if (status === 'warning') {
-        return 'gold';
-    }
-    if (status === 'error') {
-        return 'red';
-    }
-    return 'default';
+    return '不可部署';
 };
 
 const checkTitleMap: Record<string, string> = {
@@ -195,7 +267,7 @@ const getEdgeReferenceIssueText = (item: any) => {
     }
     if (trustedCount > 0) {
         return [
-            '可信参考地图距离超过阈值，需确认是否跨场地或新场地部署',
+            '可信参考地图距离超过阈值，需要确认是否跨场地或新场地部署',
             nearestText,
             `阈值 ${formatMeters(details.maxDistanceMeters)}`,
         ]
@@ -234,36 +306,114 @@ const getCheckDisplayMessage = (item: any) => {
 const getPreflightIssues = (preflight: any, statuses: string[]) =>
     getChecks(preflight).filter((item: any) => statuses.includes(item.status));
 
-const renderPreflightIssues = (preflight: any, fallback: string, statuses: string[] = ['error']) => {
-    const issues = getPreflightIssues(preflight, statuses);
-    if (issues.length === 0) {
-        return <div className="edge-deploy-issue-list">{fallback}</div>;
-    }
-    return (
-        <div className="edge-deploy-issue-list">
-            <ul>
-                {issues.map((item: any) => (
-                    <li key={`${item.name}-${item.status}`}>
-                        <strong>{checkTitleMap[item.name] || item.name}</strong>
-                        <span>{getCheckDisplayMessage(item)}</span>
-                    </li>
-                ))}
-            </ul>
-        </div>
-    );
+const statusDotClass: Record<StatusLevel, string> = {
+    ok: 'bg-[var(--landing-success)] shadow-[0_0_0_4px_rgba(34,197,94,0.14)]',
+    warning: 'bg-[var(--landing-warning)] shadow-[0_0_0_4px_rgba(245,158,11,0.14)]',
+    error: 'bg-destructive shadow-[0_0_0_4px_rgba(239,68,68,0.14)]',
+    idle: 'bg-muted-foreground/45',
 };
 
+const statusTextMap: Record<StatusLevel, string> = {
+    ok: '正常',
+    warning: '需关注',
+    error: '异常',
+    idle: '未检查',
+};
+
+function StatusLight({ level, label }: { level: StatusLevel; label: string }) {
+    return (
+        <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-2">
+            <span className={cn('h-2.5 w-2.5 shrink-0 rounded-full', statusDotClass[level])} />
+            <div className="min-w-0">
+                <div className="truncate text-xs text-muted-foreground">{label}</div>
+                <div className="truncate text-sm font-medium text-foreground">{statusTextMap[level]}</div>
+            </div>
+        </div>
+    );
+}
+
+function NoticeAlert({ notice, onClear }: { notice: NoticeState; onClear: () => void }) {
+    let Icon = InfoIcon;
+    if (notice.type === 'error') {
+        Icon = XCircleIcon;
+    } else if (notice.type === 'warning') {
+        Icon = AlertTriangleIcon;
+    }
+    return (
+        <Alert
+            variant={notice.type === 'error' ? 'destructive' : 'default'}
+            className={cn(
+                'border-border bg-card',
+                notice.type === 'success' && 'border-[rgba(34,197,94,0.45)]',
+                notice.type === 'warning' && 'border-[rgba(245,158,11,0.5)]',
+            )}
+        >
+            <Icon />
+            <AlertTitle className="flex items-center justify-between gap-3">
+                <span>{notice.title}</span>
+                <Button type="button" variant="ghost" size="xs" onClick={onClear}>
+                    关闭
+                </Button>
+            </AlertTitle>
+            {notice.description ? <AlertDescription>{notice.description}</AlertDescription> : null}
+        </Alert>
+    );
+}
+
+function FieldBlock({
+    label,
+    htmlFor,
+    children,
+    hint,
+}: {
+    label: string;
+    htmlFor?: string;
+    children: ReactNode;
+    hint?: string;
+}) {
+    return (
+        <div className="flex min-w-0 flex-col gap-2">
+            <Label htmlFor={htmlFor}>{label}</Label>
+            {children}
+            {hint ? <div className="text-xs leading-5 text-muted-foreground">{hint}</div> : null}
+        </div>
+    );
+}
+
+function InfoPair({ label, value }: { label: string; value: ReactNode }) {
+    return (
+        <div className="min-w-0 rounded-lg border border-border bg-muted/25 px-3 py-2">
+            <div className="truncate text-xs text-muted-foreground">{label}</div>
+            <div className="mt-1 truncate text-sm font-medium text-foreground">{value || '-'}</div>
+        </div>
+    );
+}
+
 export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogProps) {
-    const [form] = Form.useForm();
+    const [values, setValues] = useState<DeployValues>(DEFAULT_VALUES);
+    const [deployConfig, setDeployConfig] = useState<any>(null);
+    const [editingDevice, setEditingDevice] = useState(false);
     const [loading, setLoading] = useState(false);
     const [preflight, setPreflight] = useState<any>(null);
     const [jobText, setJobText] = useState('');
+    const [notice, setNotice] = useState<NoticeState | null>(null);
     const [releasedMaps, setReleasedMaps] = useState<any[]>([]);
     const [deploymentRecords, setDeploymentRecords] = useState<any[]>([]);
-    const selectedMapName = Form.useWatch('mapName', form);
+    const [rollbackCandidate, setRollbackCandidate] = useState<any>(null);
+
+    const updateValue = useCallback(<K extends keyof DeployValues>(key: K, value: DeployValues[K]) => {
+        setValues((current) => ({
+            ...current,
+            [key]: value,
+        }));
+        if (key !== 'mapName') {
+            setPreflight(null);
+        }
+    }, []);
+
     const selectedMap = useMemo(
-        () => releasedMaps.find((item: any) => item.mapName === selectedMapName) || null,
-        [releasedMaps, selectedMapName],
+        () => releasedMaps.find((item: any) => item.mapName === values.mapName) || null,
+        [releasedMaps, values.mapName],
     );
     const selectableMaps = useMemo(() => releasedMaps.filter((item: any) => item.selectable), [releasedMaps]);
     const deployableMaps = useMemo(() => selectableMaps.filter((item: any) => item.ready), [selectableMaps]);
@@ -282,15 +432,32 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         () => deploymentRecords.filter((item: any) => item?.type === 'deploy' || item?.type === 'rollback').slice(0, 6),
         [deploymentRecords],
     );
-    let overviewStatus = 'idle';
-    if (errorCheckCount > 0) {
-        overviewStatus = 'error';
-    } else if (warningCheckCount > 0) {
-        overviewStatus = 'warning';
-    } else if (preflight) {
-        overviewStatus = 'ok';
-    }
-    const overviewStatusText = getOverviewStatusText(overviewStatus, Boolean(preflight));
+
+    const overviewStatus: StatusLevel = useMemo(() => {
+        if (errorCheckCount > 0) {
+            return 'error';
+        }
+        if (warningCheckCount > 0) {
+            return 'warning';
+        }
+        return preflight ? 'ok' : 'idle';
+    }, [errorCheckCount, preflight, warningCheckCount]);
+
+    const hasSavedDevice = Boolean(deployConfig?.enabled && values.host && values.user && values.targetMapRoot);
+    const passwordConfigured = Boolean(deployConfig?.passwordConfigured || values.password);
+    const sshStatus = getCheckLevel(preflight, 'ssh-connectivity');
+    const dockerStatus = getCheckLevel(preflight, 'edge-docker-container');
+    const dreamviewStatus = combineStatus(
+        [getCheckLevel(preflight, 'edge-dreamview-switch'), getCheckLevel(preflight, 'edge-dreamview-hmi')].filter(
+            (item) => item !== 'idle',
+        ),
+    );
+    const packageStatus = combineStatus(
+        [
+            getCheckLevel(preflight, 'selected-map-coordinates'),
+            getCheckLevel(preflight, 'selected-map-edge-reference'),
+        ].filter((item) => item !== 'idle'),
+    );
 
     const loadDeployments = useCallback(async () => {
         const response = await FileService.getDeployments();
@@ -312,13 +479,15 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             }
             const data = response.data || {};
             const maps = Array.isArray(mapsResponse?.data?.maps) ? mapsResponse.data.maps : [];
-            const currentMapName = form.getFieldValue('mapName');
+            const currentMapName = values.mapName;
             const currentReadyExists = maps.some(
                 (item: any) => item.mapName === currentMapName && item.selectable && item.ready,
             );
             const defaultMapName = maps.find((item: any) => item.selectable && item.ready)?.mapName || '';
             setReleasedMaps(maps);
-            form.setFieldsValue({
+            setDeployConfig(data);
+            setValues((current) => ({
+                ...current,
                 host: data.host || '',
                 user: data.user || 'apollo',
                 password: '',
@@ -329,16 +498,19 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                 autoSwitchDreamview: data.autoSwitchDreamview !== false,
                 postDeployCommand: data.postDeployCommand || '',
                 mapName: currentReadyExists ? currentMapName : defaultMapName,
-            });
+            }));
+            setEditingDevice(!(data.enabled && data.host && data.user));
+            setNotice(null);
         } catch (error: any) {
-            Modal.error({
+            setNotice({
+                type: 'error',
                 title: '读取边缘设备配置失败',
-                content: error?.message || 'Unknown error',
+                description: error?.message || 'Unknown error',
             });
         } finally {
             setLoading(false);
         }
-    }, [form]);
+    }, [values.mapName]);
 
     const refreshReleasedMaps = async () => {
         setLoading(true);
@@ -349,17 +521,17 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             }
             const maps = Array.isArray(response?.data?.maps) ? response.data.maps : [];
             setReleasedMaps(maps);
-            const currentMapName = form.getFieldValue('mapName');
             const currentStillExists = maps.some(
-                (item: any) => item.mapName === currentMapName && item.selectable && item.ready,
+                (item: any) => item.mapName === values.mapName && item.selectable && item.ready,
             );
             if (!currentStillExists) {
-                form.setFieldValue('mapName', maps.find((item: any) => item.selectable && item.ready)?.mapName || '');
+                updateValue('mapName', maps.find((item: any) => item.selectable && item.ready)?.mapName || '');
             }
         } catch (error: any) {
-            Modal.error({
+            setNotice({
+                type: 'error',
                 title: '读取发布包失败',
-                content: error?.message || 'Unknown error',
+                description: error?.message || 'Unknown error',
             });
         } finally {
             setLoading(false);
@@ -374,62 +546,159 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             });
         } else {
             setJobText('');
+            setRollbackCandidate(null);
+            setNotice(null);
         }
     }, [loadConfig, loadDeployments, open]);
 
-    const discoverMapRoot = async () => {
-        const values = await form.validateFields(['host', 'user', 'port']);
-        setLoading(true);
-        try {
-            const response = await FileService.discoverEdgeMapRoot({
-                ...form.getFieldsValue(),
-                ...values,
+    const validateValues = (requireMap = true) => {
+        const errors: string[] = [];
+        if (!values.host.trim()) {
+            errors.push('请输入边缘设备 IP');
+        }
+        if (!values.user.trim()) {
+            errors.push('请输入 SSH 用户');
+        }
+        if (!Number.isFinite(Number(values.port)) || Number(values.port) <= 0) {
+            errors.push('请输入有效 SSH 端口');
+        }
+        if (!values.targetMapRoot.trim()) {
+            errors.push('请输入 Apollo 地图目录');
+        }
+        if (requireMap && !values.mapName) {
+            errors.push('请选择发布包');
+        }
+        return errors;
+    };
+
+    const buildDeployPayload = () => ({
+        ...values,
+        mode: 'ssh',
+        autoDiscover: false,
+    });
+
+    const runPreflight = async (saveConfig: boolean) => {
+        const errors = validateValues(true);
+        if (errors.length > 0) {
+            setNotice({
+                type: 'error',
+                title: '配置不完整',
+                description: errors.join('；'),
             });
+            return false;
+        }
+        const response = saveConfig
+            ? await FileService.configureEdgeDeploy(buildDeployPayload())
+            : await FileService.preflightDeploy(values.mapName);
+        const nextPreflight = saveConfig ? response?.data?.preflight : response?.data;
+        setPreflight(nextPreflight || null);
+        if (saveConfig) {
+            setDeployConfig(
+                response?.data?.deployConfig || {
+                    ...deployConfig,
+                    host: values.host,
+                    user: values.user,
+                    port: values.port,
+                    mode: 'ssh',
+                    enabled: true,
+                    targetMapRoot: values.targetMapRoot,
+                    dockerContainer: values.dockerContainer,
+                    nativeMapTools: values.nativeMapTools,
+                    autoSwitchDreamview: values.autoSwitchDreamview,
+                    postDeployCommand: values.postDeployCommand,
+                    passwordConfigured: passwordConfigured || Boolean(values.password),
+                },
+            );
+            setEditingDevice(false);
+        }
+        if (response?.code === 0) {
+            const warnings = getPreflightIssues(nextPreflight, ['warning']);
+            const warningText = warnings
+                .slice(0, 3)
+                .map((item: any) => `${checkTitleMap[item.name] || item.name}：${getCheckDisplayMessage(item)}`)
+                .join('；');
+            setNotice({
+                type: warnings.length > 0 ? 'warning' : 'success',
+                title: warnings.length > 0 ? '预检通过，但存在上线前警告' : '预检通过，可以部署',
+                description: warnings.length > 0 ? warningText : '设备连接、容器、坐标和发布包检查已通过。',
+            });
+            return true;
+        }
+        const errorsOrWarnings = getPreflightIssues(nextPreflight, ['error']);
+        const errorText = errorsOrWarnings
+            .slice(0, 4)
+            .map((item: any) => `${checkTitleMap[item.name] || item.name}：${getCheckDisplayMessage(item)}`)
+            .join('；');
+        setNotice({
+            type: 'error',
+            title: saveConfig ? '设备已保存，但预检未通过' : '预检未通过',
+            description: errorsOrWarnings.length > 0 ? errorText : response?.message || '预检未通过',
+        });
+        return false;
+    };
+
+    const discoverMapRoot = async () => {
+        const errors = validateValues(false).filter((item) => !item.includes('地图目录'));
+        if (errors.length > 0) {
+            setNotice({
+                type: 'error',
+                title: '无法自动发现',
+                description: errors.join('；'),
+            });
+            return;
+        }
+        setLoading(true);
+        setJobText('正在发现 Apollo 地图目录');
+        try {
+            const response = await FileService.discoverEdgeMapRoot(buildDeployPayload());
             if (response?.code !== 0) {
                 throw new Error(response?.message || '自动发现地图目录失败');
             }
-            form.setFieldValue('targetMapRoot', response.data?.targetMapRoot || '/apollo/modules/map/data');
-            message.success('已发现 Apollo 地图目录');
+            updateValue('targetMapRoot', response.data?.targetMapRoot || '/apollo/modules/map/data');
+            setNotice({
+                type: 'success',
+                title: '已发现 Apollo 地图目录',
+                description: response.data?.targetMapRoot || '/apollo/modules/map/data',
+            });
         } catch (error: any) {
-            Modal.error({
+            setNotice({
+                type: 'error',
                 title: '自动发现地图目录失败',
-                content: error?.message || '请确认服务器到边缘设备已配置免密 SSH，且 Apollo 目录可访问。',
+                description: error?.message || '请确认服务器到边缘设备 SSH 可用，且 Apollo 目录可访问。',
             });
         } finally {
             setLoading(false);
+            setJobText('');
         }
     };
 
     const saveAndPreflight = async () => {
-        const values = await form.validateFields();
         setLoading(true);
-        setJobText(`正在预检：${values.mapName || '所选发布包'}`);
+        setJobText(`正在保存设备并预检：${values.mapName || '所选发布包'}`);
         try {
-            const response = await FileService.configureEdgeDeploy({
-                ...values,
-                mode: 'ssh',
-                autoDiscover: false,
-            });
-            const result = response?.data;
-            setPreflight(result?.preflight || null);
-            if (response?.code === 0) {
-                const warnings = getPreflightIssues(result?.preflight, ['warning']);
-                if (warnings.length > 0) {
-                    message.warning('边缘设备配置已保存，预检通过但存在上线前警告');
-                } else {
-                    message.success('边缘设备配置已保存，预检通过');
-                }
-                return;
-            }
-            Modal.warning({
-                title: '配置已保存，但预检未通过',
-                width: 680,
-                content: renderPreflightIssues(result?.preflight, response?.message || '预检未通过'),
-            });
+            await runPreflight(true);
         } catch (error: any) {
-            Modal.error({
+            setNotice({
+                type: 'error',
                 title: '保存边缘设备配置失败',
-                content: error?.message || 'Unknown error',
+                description: error?.message || 'Unknown error',
+            });
+        } finally {
+            setLoading(false);
+            setJobText('');
+        }
+    };
+
+    const refreshStatus = async () => {
+        setLoading(true);
+        setJobText(`正在刷新边缘设备状态：${values.mapName || '所选发布包'}`);
+        try {
+            await runPreflight(editingDevice || !hasSavedDevice);
+        } catch (error: any) {
+            setNotice({
+                type: 'error',
+                title: '刷新状态失败',
+                description: error?.message || 'Unknown error',
             });
         } finally {
             setLoading(false);
@@ -438,40 +707,26 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     };
 
     const deploySelected = async () => {
-        const values = await form.validateFields();
-        const { mapName } = values;
         const deployableMap = releasedMaps.find(
-            (item: any) => item.mapName === mapName && item.selectable && item.ready,
+            (item: any) => item.mapName === values.mapName && item.selectable && item.ready,
         );
         if (!deployableMap) {
-            Modal.error({
+            setNotice({
+                type: 'error',
                 title: '发布包不可部署',
-                content: selectedMap?.statusMessage || '请选择状态为 ready 的发布包后再部署。',
+                description: selectedMap?.statusMessage || '请选择状态为 ready 的发布包后再部署。',
             });
             return;
         }
         setLoading(true);
-        setJobText(`正在保存配置并预检：${mapName}`);
+        setJobText(`正在预检：${values.mapName}`);
         try {
-            const configResponse = await FileService.configureEdgeDeploy({
-                ...values,
-                mode: 'ssh',
-                autoDiscover: false,
-            });
-            setPreflight(configResponse?.data?.preflight || null);
-            if (configResponse?.code !== 0) {
-                Modal.error({
-                    title: '部署失败：预检未通过',
-                    width: 720,
-                    content: renderPreflightIssues(
-                        configResponse?.data?.preflight,
-                        configResponse?.message || '预检未通过，已停止部署',
-                    ),
-                });
+            const preflightOk = await runPreflight(editingDevice || !hasSavedDevice);
+            if (!preflightOk) {
                 return;
             }
-            setJobText(`正在提交部署任务：${mapName}`);
-            const response = await FileService.startDeployReleasedMapJob(mapName);
+            setJobText(`正在提交部署任务：${values.mapName}`);
+            const response = await FileService.startDeployReleasedMapJob(values.mapName);
             if (response?.code !== 0) {
                 throw new Error(response?.message || '提交部署任务失败');
             }
@@ -479,7 +734,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             if (!jobId) {
                 throw new Error('后台任务没有返回 jobId');
             }
-            const job = await waitForRuntimeJob(jobId, `部署地图 ${mapName}`, setJobText);
+            const job = await waitForRuntimeJob(jobId, `部署地图 ${values.mapName}`, setJobText);
             const dreamviewSwitched = Boolean(
                 job.result?.dreamviewSwitchResult || job.result?.deployment?.dreamviewSwitch,
             );
@@ -503,17 +758,20 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             } else if (dreamviewSwitched) {
                 dreamviewText = '，Dreamview 已执行切换';
             }
-            Modal.success({
+            setNotice({
+                type: 'success',
                 title: '部署完成',
-                content: `地图 ${
-                    job.result?.mapName || job.result?.deployment?.mapName || ''
+                description: `地图 ${
+                    job.result?.mapName || job.result?.deployment?.mapName || values.mapName
                 } 已部署到边缘设备${dreamviewText}。`,
             });
             await loadDeployments();
+            await runPreflight(false);
         } catch (error: any) {
-            Modal.error({
+            setNotice({
+                type: 'error',
                 title: '部署失败',
-                content: error?.message || 'Unknown error',
+                description: error?.message || 'Unknown error',
             });
         } finally {
             setLoading(false);
@@ -521,11 +779,14 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         }
     };
 
-    const rollbackDeployment = async (record: any) => {
+    const rollbackDeployment = async () => {
+        if (!rollbackCandidate) {
+            return;
+        }
         setLoading(true);
-        setJobText(`正在回滚部署：${record.mapName || record.id}`);
+        setJobText(`正在回滚部署：${rollbackCandidate.mapName || rollbackCandidate.id}`);
         try {
-            const response = await FileService.startRollbackDeploymentJob(record.id);
+            const response = await FileService.startRollbackDeploymentJob(rollbackCandidate.id);
             if (response?.code !== 0) {
                 throw new Error(response?.message || '提交回滚任务失败');
             }
@@ -533,17 +794,22 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             if (!jobId) {
                 throw new Error('后台任务没有返回 jobId');
             }
-            const job = await waitForRuntimeJob(jobId, `回滚地图 ${record.mapName || ''}`, setJobText);
-            Modal.success({
+            const job = await waitForRuntimeJob(jobId, `回滚地图 ${rollbackCandidate.mapName || ''}`, setJobText);
+            setNotice({
+                type: 'success',
                 title: '回滚完成',
-                content: `地图 ${job.result?.deployment?.mapName || record.mapName || ''} 已恢复到上一份备份。`,
+                description: `地图 ${
+                    job.result?.deployment?.mapName || rollbackCandidate.mapName || ''
+                } 已恢复到上一份备份。`,
             });
             setPreflight(null);
+            setRollbackCandidate(null);
             await loadDeployments();
         } catch (error: any) {
-            Modal.error({
+            setNotice({
+                type: 'error',
                 title: '回滚失败',
-                content: error?.message || 'Unknown error',
+                description: error?.message || 'Unknown error',
             });
         } finally {
             setLoading(false);
@@ -551,324 +817,549 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         }
     };
 
-    const confirmRollbackDeployment = (record: any) => {
-        Modal.confirm({
-            title: '确认回滚边缘设备地图？',
-            width: 620,
-            okText: '确认回滚',
-            okButtonProps: { danger: true },
-            cancelText: '取消',
-            content: (
-                <div className="edge-deploy-confirm">
-                    <p>{`将把 ${record.mapName || '-'} 回滚到部署前备份。`}</p>
-                    <p>{`备份目录：${record.backupDir || '-'}`}</p>
-                </div>
-            ),
-            onOk: () => rollbackDeployment(record),
-        });
-    };
-
     const refreshDeployments = () => {
-        loadDeployments().catch((error: any) =>
-            Modal.error({ title: '读取部署历史失败', content: error?.message || 'Unknown error' }),
-        );
+        setLoading(true);
+        loadDeployments()
+            .then(() => {
+                setNotice({
+                    type: 'success',
+                    title: '部署历史已刷新',
+                });
+            })
+            .catch((error: any) =>
+                setNotice({
+                    type: 'error',
+                    title: '读取部署历史失败',
+                    description: error?.message || 'Unknown error',
+                }),
+            )
+            .finally(() => setLoading(false));
     };
 
-    const footer = (
-        <Space className="edge-deploy-footer" wrap>
-            <Button onClick={onCancel}>关闭</Button>
-            <Button icon={<SaveOutlined />} onClick={saveAndPreflight} loading={loading}>
-                保存并预检
-            </Button>
-            <Button icon={<HistoryOutlined />} onClick={refreshDeployments} loading={loading}>
-                刷新历史
-            </Button>
-            <Button type="primary" icon={<CloudUploadOutlined />} onClick={deploySelected} loading={loading}>
-                部署所选地图
-            </Button>
-        </Space>
-    );
+    const selectedMapStatusValue = selectedMap ? (
+        <span className="inline-flex items-center gap-2">
+            <span className={cn('h-2 w-2 rounded-full', statusDotClass[mapStatusColor(selectedMap)])} />
+            {selectedMap.ready ? 'ready' : selectedMap.status || 'invalid'}
+        </span>
+    ) : null;
 
     return (
-        <Modal
-            title="边缘设备部署"
+        <Dialog
             open={open}
-            onCancel={onCancel}
-            width={960}
-            footer={footer}
-            centered
-            className="edge-deploy-dialog"
+            onOpenChange={(nextOpen) => {
+                if (!nextOpen) {
+                    onCancel();
+                }
+            }}
         >
-            <Form form={form} layout="vertical" className="edge-deploy-form">
-                <div className={`edge-deploy-intro ${overviewStatus}`}>
-                    <div className="edge-deploy-intro-main">
-                        <span>部署流程</span>
-                        <strong>{selectedMap?.mapName || '选择发布包后开始预检'}</strong>
-                    </div>
-                    <div className="edge-deploy-intro-desc">
-                        保存并预检后，再执行地图部署；预检会覆盖 SSH、容器、Dreamview 和坐标一致性。
-                    </div>
-                    <Tag color={getOverviewStatusTagColor(overviewStatus)}>{overviewStatusText}</Tag>
-                </div>
-                <div className="edge-deploy-overview">
-                    <div className={`edge-deploy-metric ${runtimeCheck?.status || 'idle'}`}>
-                        <span>边缘实际加载</span>
-                        <strong>{runtimeDetails?.map_name || runtimeDetails?.flag_map_dir || '待预检'}</strong>
-                    </div>
-                    <div className={`edge-deploy-metric ${dreamviewCheck?.status || 'idle'}`}>
-                        <span>Dreamview 当前地图</span>
-                        <strong>{dreamviewCheck?.details?.currentMap || '待预检'}</strong>
-                    </div>
-                    <div className={`edge-deploy-metric ${vehiclePoseCheck?.status || 'idle'}`}>
-                        <span>车辆到中心线</span>
-                        <strong>{formatMeters(vehiclePoseDetails?.nearest?.distanceMeters)}</strong>
-                    </div>
-                    <div className={`edge-deploy-metric ${coordinateCheck?.status || 'idle'}`}>
-                        <span>发布包中心</span>
-                        <strong>{formatBoundsCenter(coordinateBounds)}</strong>
-                    </div>
-                    <div className={`edge-deploy-metric ${overviewStatus}`}>
-                        <span>预检概况</span>
-                        <strong>
-                            {preflight
-                                ? `${readyCheckCount} 通过 / ${warningCheckCount} 警告 / ${errorCheckCount} 错误`
-                                : '待预检'}
-                        </strong>
-                    </div>
-                </div>
-                <div className="edge-deploy-grid">
-                    <section className="edge-deploy-section edge-deploy-section-device">
-                        <div className="edge-deploy-section-title">目标设备</div>
-                        <div className="edge-deploy-section-desc">边缘设备 SSH 连接信息。</div>
-                        <div className="edge-deploy-field-grid compact">
-                            <Form.Item
-                                label="边缘设备 IP"
-                                name="host"
-                                rules={[{ required: true, message: '请输入边缘设备 IP' }]}
-                            >
-                                <Input placeholder="192.168.110.50" />
-                            </Form.Item>
-                            <Form.Item
-                                label="SSH 端口"
-                                name="port"
-                                rules={[{ required: true, message: '请输入 SSH 端口' }]}
-                            >
-                                <InputNumber min={1} max={65535} style={{ width: '100%' }} />
-                            </Form.Item>
-                            <Form.Item
-                                label="SSH 用户"
-                                name="user"
-                                rules={[{ required: true, message: '请输入 SSH 用户' }]}
-                            >
-                                <Input placeholder="apollo / nvidia" />
-                            </Form.Item>
-                            <Form.Item label="SSH 密码" name="password">
-                                <Input.Password placeholder="留空使用已保存密码或密钥" autoComplete="new-password" />
-                            </Form.Item>
+            <DialogContent className="flex h-[min(880px,calc(100vh-32px))] max-w-[min(1220px,calc(100vw-32px))] grid-rows-none flex-col gap-0 overflow-hidden border border-border bg-popover p-0 text-popover-foreground">
+                <DialogHeader className="border-b border-border px-5 py-4">
+                    <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                            <DialogTitle className="text-lg font-semibold">边缘设备部署</DialogTitle>
+                            <DialogDescription className="mt-2">
+                                固定边缘设备配置后，后续只需要选择发布包、刷新状态、部署地图。
+                            </DialogDescription>
                         </div>
-                    </section>
+                        <Badge variant={overviewStatus === 'error' ? 'destructive' : 'secondary'} className="shrink-0">
+                            {getOverviewStatusText(overviewStatus, Boolean(preflight))}
+                        </Badge>
+                    </div>
+                </DialogHeader>
 
-                    <section className="edge-deploy-section edge-deploy-section-apollo">
-                        <div className="edge-deploy-section-title">Apollo 目标</div>
-                        <div className="edge-deploy-section-desc">地图目录、容器和部署后动作。</div>
-                        <Form.Item label="地图目录" required>
-                            <Space.Compact className="edge-deploy-input-action" style={{ width: '100%' }}>
-                                <Form.Item name="targetMapRoot" noStyle>
-                                    <Input placeholder="/apollo/modules/map/data" />
-                                </Form.Item>
-                                <Button icon={<SearchOutlined />} onClick={discoverMapRoot} loading={loading}>
-                                    自动发现
-                                </Button>
-                            </Space.Compact>
-                        </Form.Item>
-                        <div className="edge-deploy-field-grid">
-                            <Form.Item label="Docker 容器" name="dockerContainer">
-                                <Input placeholder="apollo_dev_nvidia" />
-                            </Form.Item>
-                            <Form.Item label="生成原生地图文件" name="nativeMapTools" valuePropName="checked">
-                                <Switch checkedChildren="开" unCheckedChildren="关" />
-                            </Form.Item>
-                        </div>
-                        <Form.Item label="部署后切换 Dreamview" name="autoSwitchDreamview" valuePropName="checked">
-                            <Switch checkedChildren="开" unCheckedChildren="关" />
-                        </Form.Item>
-                        <Form.Item label="额外部署后命令" name="postDeployCommand">
-                            <Input placeholder="可选，高级命令；默认已自动切换 Dreamview" />
-                        </Form.Item>
-                    </section>
-
-                    <section className="edge-deploy-section edge-deploy-section-package">
-                        <div className="edge-deploy-section-title">发布包</div>
-                        <div className="edge-deploy-section-desc">选择已发布且可部署的地图包。</div>
-                        <Form.Item label="选择发布包" required>
-                            <Space.Compact className="edge-deploy-input-action" style={{ width: '100%' }}>
-                                <Form.Item
-                                    name="mapName"
-                                    noStyle
-                                    rules={[{ required: true, message: '请选择要部署的发布包' }]}
-                                >
-                                    <Select
-                                        showSearch
-                                        placeholder="选择发布包"
-                                        optionFilterProp="title"
-                                        optionLabelProp="value"
-                                        popupClassName="edge-deploy-map-select-dropdown"
-                                        onChange={() => setPreflight(null)}
-                                        options={selectableMaps.map((item: any, index: number) => {
-                                            const optionStatus = item.ready ? 'ready' : item.status || 'invalid';
-                                            const optionTime = item.modifiedAt
-                                                ? ` · ${formatModifiedTime(item.modifiedAt)}`
-                                                : '';
-                                            return {
-                                                value: item.mapName,
-                                                title: `${item.mapName} ${item.statusMessage || ''}`,
-                                                disabled: !item.ready,
-                                                label: (
-                                                    <div
-                                                        className={`edge-deploy-option ${
-                                                            item.ready ? 'is-ready' : 'is-not-ready'
-                                                        }`}
-                                                    >
-                                                        <span>{item.mapName}</span>
-                                                        <small>
-                                                            {optionStatus}
-                                                            {index === 0 ? ' · 最新修改' : ''}
-                                                            {optionTime}
-                                                            {!item.ready && item.statusMessage
-                                                                ? ` · ${item.statusMessage}`
-                                                                : ''}
-                                                        </small>
-                                                    </div>
-                                                ),
-                                            };
-                                        })}
-                                    />
-                                </Form.Item>
-                                <Button icon={<ReloadOutlined />} onClick={refreshReleasedMaps} loading={loading}>
-                                    刷新
-                                </Button>
-                            </Space.Compact>
-                        </Form.Item>
-                        {selectedMap && (
-                            <div className="edge-deploy-map-summary">
-                                <div className="wide">
-                                    <span>发布包</span>
-                                    <strong>{selectedMap.mapName}</strong>
-                                </div>
-                                <div>
-                                    <span>状态</span>
-                                    <Tag color={mapStatusColor(selectedMap)}>
-                                        {selectedMap.ready ? 'ready' : selectedMap.status || 'invalid'}
-                                    </Tag>
-                                </div>
-                                <div>
-                                    <span>修改时间</span>
-                                    <strong>{formatModifiedTime(selectedMap.modifiedAt)}</strong>
-                                </div>
-                                <div>
-                                    <span>大小</span>
-                                    <strong>{`${Math.round((Number(selectedMap.sizeBytes) || 0) / 1024)} KB`}</strong>
-                                </div>
-                            </div>
-                        )}
-                        {deployableMaps.length === 0 && (
-                            <div className="edge-deploy-empty">
-                                暂无可部署发布包。请先从当前地图重新发布，发布包必须通过坐标和质量门禁。
-                            </div>
-                        )}
-                    </section>
-
-                    <section className="edge-deploy-section edge-deploy-section-history">
-                        <div className="edge-deploy-section-heading">
-                            <div className="edge-deploy-section-title">最近部署</div>
-                            <Button
-                                size="small"
-                                icon={<ReloadOutlined />}
-                                onClick={refreshDeployments}
-                                loading={loading}
-                            >
-                                刷新
-                            </Button>
-                        </div>
-                        {recentDeploymentRecords.length > 0 ? (
-                            <div className="edge-deploy-history-list">
-                                {recentDeploymentRecords.map((item: any) => {
-                                    const rollbackable =
-                                        item.type === 'deploy' &&
-                                        item.status === 'succeeded' &&
-                                        Boolean(item.backupDir);
-                                    return (
-                                        <div className="edge-deploy-history-row" key={item.id}>
-                                            <div className="edge-deploy-history-main">
-                                                <strong>{item.mapName || '-'}</strong>
-                                                <span>
-                                                    {`${item.type || 'deploy'} / ${item.status || '-'} / ${formatModifiedTime(
-                                                        item.finishedAt || item.startedAt,
-                                                    )}`}
+                <ScrollArea className="min-h-0 flex-1">
+                    <div className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
+                        <div className="flex min-w-0 flex-col gap-4">
+                            <Card>
+                                <CardHeader className="gap-3">
+                                    <div className="flex items-start justify-between gap-4">
+                                        <div className="min-w-0">
+                                            <CardTitle className="flex items-center gap-2">
+                                                <ServerIcon data-icon="inline-start" />
+                                                <span className="truncate">
+                                                    {hasSavedDevice
+                                                        ? `${values.user}@${values.host}`
+                                                        : '尚未配置边缘设备'}
                                                 </span>
-                                                <span>{item.remoteMapDir || item.target?.target || '-'}</span>
-                                            </div>
-                                            <Button
-                                                size="small"
-                                                danger
-                                                disabled={!rollbackable || loading}
-                                                icon={<RollbackOutlined />}
-                                                onClick={() => confirmRollbackDeployment(item)}
-                                            >
-                                                回滚
-                                            </Button>
+                                            </CardTitle>
+                                            <CardDescription className="mt-1 truncate">
+                                                {hasSavedDevice
+                                                    ? `SSH ${values.port} / ${values.targetMapRoot}`
+                                                    : '第一次配置后会保存为固定设备卡片'}
+                                            </CardDescription>
                                         </div>
-                                    );
-                                })}
-                            </div>
-                        ) : (
-                            <div className="edge-deploy-empty">暂无部署记录。</div>
-                        )}
-                    </section>
-
-                    <section className="edge-deploy-section edge-deploy-section-status">
-                        <div className="edge-deploy-section-title">执行状态</div>
-                        {jobText ? <div className="edge-deploy-job">{jobText}</div> : null}
-                        {runtimeDetails ? (
-                            <div className="edge-deploy-runtime-summary">
-                                <div>
-                                    <span>flag map_dir</span>
-                                    <strong>{runtimeDetails.flag_map_dir || '-'}</strong>
-                                </div>
-                                <div>
-                                    <span>Dreamview HTTP</span>
-                                    <strong>{runtimeDetails.dreamview_http || '-'}</strong>
-                                </div>
-                                <div>
-                                    <span>坐标范围</span>
-                                    <strong>{runtimeDetails.coordinate_bounds || '-'}</strong>
-                                </div>
-                            </div>
-                        ) : null}
-                        {preflight ? (
-                            <div className="edge-deploy-checks">
-                                <div className="edge-deploy-checks-title">
-                                    <span>预检结果</span>
-                                    {preflight.ready ? <Tag color="green">通过</Tag> : <Tag color="red">未通过</Tag>}
-                                </div>
-                                {preflightChecks.map((item: any) => (
-                                    <div className="edge-deploy-check-row" key={item.name}>
-                                        <Tag color={checkColor(item.status)}>{item.status}</Tag>
-                                        <div>
-                                            <strong>{checkTitleMap[item.name] || item.name}</strong>
-                                            <span>{getCheckDisplayMessage(item)}</span>
-                                        </div>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={() => setEditingDevice((current) => !current)}
+                                            disabled={loading}
+                                        >
+                                            <PencilIcon data-icon="inline-start" />
+                                            {editingDevice ? '收起配置' : '编辑配置'}
+                                        </Button>
                                     </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <div className="edge-deploy-empty">
-                                保存并预检后显示 SSH、容器、Dreamview 切换和所选发布包坐标校验结果。
-                            </div>
-                        )}
-                    </section>
-                </div>
-            </Form>
-        </Modal>
+                                </CardHeader>
+                                <CardContent className="flex flex-col gap-4">
+                                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                                        <StatusLight level={sshStatus} label="设备在线" />
+                                        <StatusLight level={dockerStatus} label="容器可用" />
+                                        <StatusLight level={dreamviewStatus} label="Dreamview" />
+                                        <StatusLight level={overviewStatus} label="是否可部署" />
+                                    </div>
+                                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                                        <InfoPair label="Docker 容器" value={values.dockerContainer || '宿主机模式'} />
+                                        <InfoPair label="密码状态" value={passwordConfigured ? '已保存' : '未保存'} />
+                                        <InfoPair label="当前加载" value={runtimeDetails?.map_name || '待预检'} />
+                                        <InfoPair label="发布包中心" value={formatBoundsCenter(coordinateBounds)} />
+                                    </div>
+                                    {jobText ? (
+                                        <Alert className="border-[rgba(47,127,247,0.45)] bg-card">
+                                            <RefreshCwIcon className="animate-spin" />
+                                            <AlertTitle>任务进行中</AlertTitle>
+                                            <AlertDescription>{jobText}</AlertDescription>
+                                        </Alert>
+                                    ) : null}
+                                </CardContent>
+                            </Card>
+
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2">
+                                        <MapIcon data-icon="inline-start" />
+                                        发布包
+                                    </CardTitle>
+                                    <CardDescription>
+                                        只显示当前可以选择的发布包；不可部署的包会保留原因。
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent className="flex flex-col gap-4">
+                                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                                        <Select
+                                            value={values.mapName}
+                                            onValueChange={(mapName) => {
+                                                updateValue('mapName', mapName);
+                                                setPreflight(null);
+                                            }}
+                                            disabled={loading || selectableMaps.length === 0}
+                                        >
+                                            <SelectTrigger className="h-10 w-full">
+                                                <SelectValue placeholder="选择发布包" />
+                                            </SelectTrigger>
+                                            <SelectContent className="z-[10000] max-h-[360px] min-w-[520px]">
+                                                <SelectGroup>
+                                                    {selectableMaps.map((item: any, index: number) => {
+                                                        const optionStatus = item.ready
+                                                            ? 'ready'
+                                                            : item.status || 'invalid';
+                                                        const optionTime = item.modifiedAt
+                                                            ? ` / ${formatModifiedTime(item.modifiedAt)}`
+                                                            : '';
+                                                        return (
+                                                            <SelectItem
+                                                                key={item.mapName}
+                                                                value={item.mapName}
+                                                                disabled={!item.ready}
+                                                            >
+                                                                <span className="flex min-w-0 flex-col">
+                                                                    <span className="truncate">{item.mapName}</span>
+                                                                    <span className="truncate text-xs text-muted-foreground">
+                                                                        {optionStatus}
+                                                                        {index === 0 ? ' / 最新修改' : ''}
+                                                                        {optionTime}
+                                                                        {!item.ready && item.statusMessage
+                                                                            ? ` / ${item.statusMessage}`
+                                                                            : ''}
+                                                                    </span>
+                                                                </span>
+                                                            </SelectItem>
+                                                        );
+                                                    })}
+                                                </SelectGroup>
+                                            </SelectContent>
+                                        </Select>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={refreshReleasedMaps}
+                                            disabled={loading}
+                                        >
+                                            <RefreshCwIcon data-icon="inline-start" />
+                                            刷新发布包
+                                        </Button>
+                                    </div>
+
+                                    {selectedMap ? (
+                                        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                                            <InfoPair label="发布包" value={selectedMap.mapName} />
+                                            <InfoPair label="状态" value={selectedMapStatusValue} />
+                                            <InfoPair
+                                                label="修改时间"
+                                                value={formatModifiedTime(selectedMap.modifiedAt)}
+                                            />
+                                            <InfoPair label="大小" value={formatBytes(selectedMap.sizeBytes)} />
+                                        </div>
+                                    ) : (
+                                        <Alert>
+                                            <InfoIcon />
+                                            <AlertTitle>没有可部署发布包</AlertTitle>
+                                            <AlertDescription>
+                                                请先从当前地图生成发布包，并确保发布检查通过。
+                                            </AlertDescription>
+                                        </Alert>
+                                    )}
+                                </CardContent>
+                            </Card>
+
+                            {editingDevice ? (
+                                <Card>
+                                    <CardHeader>
+                                        <CardTitle className="flex items-center gap-2">
+                                            <ShieldCheckIcon data-icon="inline-start" />
+                                            设备配置
+                                        </CardTitle>
+                                        <CardDescription>
+                                            首次输入会保存到后端配置；后续密码留空会继续使用已保存密码。
+                                        </CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="flex flex-col gap-4">
+                                        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_140px]">
+                                            <FieldBlock label="边缘设备 IP" htmlFor="edge-host">
+                                                <Input
+                                                    id="edge-host"
+                                                    value={values.host}
+                                                    placeholder="192.168.110.187"
+                                                    onChange={(event) => updateValue('host', event.target.value)}
+                                                />
+                                            </FieldBlock>
+                                            <FieldBlock label="SSH 端口" htmlFor="edge-port">
+                                                <Input
+                                                    id="edge-port"
+                                                    type="number"
+                                                    min={1}
+                                                    max={65535}
+                                                    value={values.port}
+                                                    onChange={(event) => {
+                                                        updateValue('port', Number(event.target.value) || 22);
+                                                    }}
+                                                />
+                                            </FieldBlock>
+                                        </div>
+                                        <div className="grid gap-4 md:grid-cols-2">
+                                            <FieldBlock label="SSH 用户" htmlFor="edge-user">
+                                                <Input
+                                                    id="edge-user"
+                                                    value={values.user}
+                                                    placeholder="nvidia"
+                                                    onChange={(event) => updateValue('user', event.target.value)}
+                                                />
+                                            </FieldBlock>
+                                            <FieldBlock
+                                                label="SSH 密码"
+                                                htmlFor="edge-password"
+                                                hint={
+                                                    passwordConfigured
+                                                        ? '留空继续使用已保存密码。'
+                                                        : '首次配置需要输入密码。'
+                                                }
+                                            >
+                                                <Input
+                                                    id="edge-password"
+                                                    type="password"
+                                                    value={values.password}
+                                                    autoComplete="new-password"
+                                                    placeholder={
+                                                        passwordConfigured ? '已保存，留空即可' : '请输入 SSH 密码'
+                                                    }
+                                                    onChange={(event) => updateValue('password', event.target.value)}
+                                                />
+                                            </FieldBlock>
+                                        </div>
+                                        <Separator />
+                                        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+                                            <FieldBlock label="Apollo 地图目录" htmlFor="edge-map-root">
+                                                <Input
+                                                    id="edge-map-root"
+                                                    value={values.targetMapRoot}
+                                                    placeholder="/apollo/modules/map/data"
+                                                    onChange={(event) => {
+                                                        updateValue('targetMapRoot', event.target.value);
+                                                    }}
+                                                />
+                                            </FieldBlock>
+                                            <div className="flex items-end">
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    onClick={discoverMapRoot}
+                                                    disabled={loading}
+                                                >
+                                                    <SearchIcon data-icon="inline-start" />
+                                                    自动发现
+                                                </Button>
+                                            </div>
+                                        </div>
+                                        <div className="grid gap-4 md:grid-cols-2">
+                                            <FieldBlock label="Docker 容器" htmlFor="edge-container">
+                                                <Input
+                                                    id="edge-container"
+                                                    value={values.dockerContainer}
+                                                    placeholder="apollo_dev_nvidia"
+                                                    onChange={(event) => {
+                                                        updateValue('dockerContainer', event.target.value);
+                                                    }}
+                                                />
+                                            </FieldBlock>
+                                            <FieldBlock label="额外部署后命令" htmlFor="edge-post-command">
+                                                <Input
+                                                    id="edge-post-command"
+                                                    value={values.postDeployCommand}
+                                                    placeholder="可选，高级命令"
+                                                    onChange={(event) => {
+                                                        updateValue('postDeployCommand', event.target.value);
+                                                    }}
+                                                />
+                                            </FieldBlock>
+                                        </div>
+                                        <div className="grid gap-3 md:grid-cols-2">
+                                            <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/25 px-3 py-3">
+                                                <div>
+                                                    <Label>生成 Apollo 原生地图文件</Label>
+                                                    <div className="mt-1 text-xs text-muted-foreground">
+                                                        部署后在边缘容器内生成 routing/二进制地图产物。
+                                                    </div>
+                                                </div>
+                                                <Switch
+                                                    checked={values.nativeMapTools}
+                                                    onCheckedChange={(checked) => {
+                                                        updateValue('nativeMapTools', checked);
+                                                    }}
+                                                />
+                                            </div>
+                                            <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/25 px-3 py-3">
+                                                <div>
+                                                    <Label>部署后切换 Dreamview</Label>
+                                                    <div className="mt-1 text-xs text-muted-foreground">
+                                                        部署完成后自动写入 map_dir 并验证当前地图。
+                                                    </div>
+                                                </div>
+                                                <Switch
+                                                    checked={values.autoSwitchDreamview}
+                                                    onCheckedChange={(checked) => {
+                                                        updateValue('autoSwitchDreamview', checked);
+                                                    }}
+                                                />
+                                            </div>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            ) : null}
+                        </div>
+
+                        <div className="flex min-w-0 flex-col gap-4">
+                            {notice ? <NoticeAlert notice={notice} onClear={() => setNotice(null)} /> : null}
+
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2">
+                                        <CheckCircle2Icon data-icon="inline-start" />
+                                        发布预检
+                                    </CardTitle>
+                                    <CardDescription>当前地图是否能安全下发到固定边缘设备。</CardDescription>
+                                </CardHeader>
+                                <CardContent className="flex flex-col gap-4">
+                                    <div className="grid gap-2 sm:grid-cols-2">
+                                        <InfoPair label="通过" value={preflight ? readyCheckCount : '待预检'} />
+                                        <InfoPair
+                                            label="警告/错误"
+                                            value={preflight ? `${warningCheckCount} / ${errorCheckCount}` : '待预检'}
+                                        />
+                                        <InfoPair
+                                            label="车辆到中心线"
+                                            value={formatMeters(vehiclePoseDetails?.nearest?.distanceMeters)}
+                                        />
+                                        <InfoPair label="坐标链路" value={statusTextMap[packageStatus]} />
+                                    </div>
+
+                                    <ScrollArea className="h-[290px] rounded-lg border border-border">
+                                        {preflightChecks.length > 0 ? (
+                                            <div className="flex flex-col p-2">
+                                                {preflightChecks.map((item: any) => {
+                                                    const level = normalizeStatus(item.status);
+                                                    return (
+                                                        <div
+                                                            className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 rounded-lg px-2 py-2"
+                                                            key={item.name}
+                                                        >
+                                                            <span
+                                                                className={cn(
+                                                                    'mt-1 h-2.5 w-2.5 rounded-full',
+                                                                    statusDotClass[level],
+                                                                )}
+                                                            />
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center justify-between gap-2">
+                                                                    <strong className="truncate text-sm text-foreground">
+                                                                        {checkTitleMap[item.name] || item.name}
+                                                                    </strong>
+                                                                    <Badge
+                                                                        variant={
+                                                                            level === 'error'
+                                                                                ? 'destructive'
+                                                                                : 'outline'
+                                                                        }
+                                                                    >
+                                                                        {item.status}
+                                                                    </Badge>
+                                                                </div>
+                                                                <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                                                                    {getCheckDisplayMessage(item)}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        ) : (
+                                            <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
+                                                点击“刷新状态”或“保存设备并预检”后，这里会显示 SSH、Docker、Dreamview
+                                                和坐标检查结果。
+                                            </div>
+                                        )}
+                                    </ScrollArea>
+                                </CardContent>
+                            </Card>
+
+                            <Card>
+                                <CardHeader>
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                            <CardTitle className="flex items-center gap-2">
+                                                <HistoryIcon data-icon="inline-start" />
+                                                最近部署
+                                            </CardTitle>
+                                            <CardDescription>只保留操作需要看的部署和回滚记录。</CardDescription>
+                                        </div>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={refreshDeployments}
+                                            disabled={loading}
+                                        >
+                                            <RefreshCwIcon data-icon="inline-start" />
+                                            刷新
+                                        </Button>
+                                    </div>
+                                </CardHeader>
+                                <CardContent>
+                                    <ScrollArea className="h-[230px]">
+                                        {recentDeploymentRecords.length > 0 ? (
+                                            <div className="flex flex-col gap-2 pr-3">
+                                                {recentDeploymentRecords.map((item: any) => {
+                                                    const rollbackable =
+                                                        item.type === 'deploy' &&
+                                                        item.status === 'succeeded' &&
+                                                        Boolean(item.backupDir);
+                                                    return (
+                                                        <div
+                                                            className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border bg-muted/25 px-3 py-2"
+                                                            key={item.id}
+                                                        >
+                                                            <div className="min-w-0">
+                                                                <div className="truncate text-sm font-medium text-foreground">
+                                                                    {item.mapName || '-'}
+                                                                </div>
+                                                                <div className="truncate text-xs text-muted-foreground">
+                                                                    {`${item.type || 'deploy'} / ${item.status || '-'} / ${formatModifiedTime(
+                                                                        item.finishedAt || item.startedAt,
+                                                                    )}`}
+                                                                </div>
+                                                                <div className="truncate text-xs text-muted-foreground">
+                                                                    {item.remoteMapDir || item.target?.target || '-'}
+                                                                </div>
+                                                            </div>
+                                                            <Button
+                                                                type="button"
+                                                                variant="destructive"
+                                                                size="sm"
+                                                                disabled={!rollbackable || loading}
+                                                                onClick={() => setRollbackCandidate(item)}
+                                                            >
+                                                                <RotateCcwIcon data-icon="inline-start" />
+                                                                回滚
+                                                            </Button>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        ) : (
+                                            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                                                暂无部署记录。
+                                            </div>
+                                        )}
+                                    </ScrollArea>
+                                </CardContent>
+                            </Card>
+
+                            {rollbackCandidate ? (
+                                <Alert variant="destructive">
+                                    <AlertTriangleIcon />
+                                    <AlertTitle>确认回滚边缘设备地图？</AlertTitle>
+                                    <AlertDescription>
+                                        <div className="flex flex-col gap-3">
+                                            <span>
+                                                <span>将把</span>
+                                                <strong className="mx-1">{rollbackCandidate.mapName || '-'}</strong>
+                                                <span>回滚到部署前备份：</span>
+                                                <code className="ml-1 rounded bg-background px-1 py-0.5">
+                                                    {rollbackCandidate.backupDir || '-'}
+                                                </code>
+                                            </span>
+                                            <div className="flex justify-end gap-2">
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    onClick={() => setRollbackCandidate(null)}
+                                                    disabled={loading}
+                                                >
+                                                    取消
+                                                </Button>
+                                                <Button
+                                                    type="button"
+                                                    variant="destructive"
+                                                    onClick={rollbackDeployment}
+                                                    disabled={loading}
+                                                >
+                                                    <RotateCcwIcon data-icon="inline-start" />
+                                                    确认回滚
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </AlertDescription>
+                                </Alert>
+                            ) : null}
+                        </div>
+                    </div>
+                </ScrollArea>
+
+                <DialogFooter className="border-t border-border bg-muted/40 px-5 py-4">
+                    <Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
+                        关闭
+                    </Button>
+                    <Button type="button" variant="outline" onClick={refreshStatus} disabled={loading}>
+                        <WifiIcon data-icon="inline-start" />
+                        刷新状态
+                    </Button>
+                    <Button type="button" variant="secondary" onClick={saveAndPreflight} disabled={loading}>
+                        <SaveIcon data-icon="inline-start" />
+                        保存设备并预检
+                    </Button>
+                    <Button type="button" onClick={deploySelected} disabled={loading || !selectedMap?.ready}>
+                        <CloudUploadIcon data-icon="inline-start" />
+                        部署所选地图
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     );
 }
