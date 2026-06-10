@@ -44,6 +44,10 @@ const APOLLO_SIM_CENTER_SMOOTH_MIN_LENGTH = 5;
 const APOLLO_SIM_CENTER_SMOOTH_MAX_DEVIATION = 3.5;
 const APOLLO_SIM_CENTER_SMOOTH_SAMPLE_COUNT = 17;
 const APOLLO_SIM_CENTER_HEADING_RELAX_DEGREES = [-12, -8, -4, 0, 4, 8, 12];
+const APOLLO_CURVE_MIN_SAMPLE_COUNT = 17;
+const APOLLO_CURVE_MAX_SAMPLE_COUNT = 97;
+const APOLLO_CURVE_TARGET_SEGMENT_LENGTH_METERS = 0.4;
+const APOLLO_CURVE_EXCESS_LENGTH_PER_EXTRA_SAMPLE_METERS = 0.25;
 const APOLLO_TARGET_CRS = {
   datum: 'WGS84',
   ellipsoid: 'WGS84',
@@ -798,6 +802,23 @@ function cubicBezier(p0, p1, p2, p3, t) {
   };
 }
 
+function cubicBezierSampleCount(p0, p1, p2, p3) {
+  const controlLength = distance(p0, p1) + distance(p1, p2) + distance(p2, p3);
+  const chordLength = distance(p0, p3);
+  const excessLength = Math.max(0, controlLength - chordLength);
+  const lengthBased = Math.ceil(controlLength / APOLLO_CURVE_TARGET_SEGMENT_LENGTH_METERS) + 1;
+  const curvatureBased =
+    APOLLO_CURVE_MIN_SAMPLE_COUNT +
+    Math.ceil(excessLength / APOLLO_CURVE_EXCESS_LENGTH_PER_EXTRA_SAMPLE_METERS);
+  return Math.round(
+    clamp(
+      Math.max(APOLLO_CURVE_MIN_SAMPLE_COUNT, lengthBased, curvatureBased),
+      APOLLO_CURVE_MIN_SAMPLE_COUNT,
+      APOLLO_CURVE_MAX_SAMPLE_COUNT,
+    ),
+  );
+}
+
 function headingBetween(start, end) {
   return Math.atan2(number(end.y) - number(start.y), number(end.x) - number(start.x));
 }
@@ -960,11 +981,13 @@ function pointsFromBoundary(boundary, pointIndex, reverse = false, transform = n
   const points = boundaryPointIds(boundary)
     .map((pointId) => pointIndex.get(String(pointId)))
     .filter(Boolean);
-  const ordered = reverse ? points.reverse() : points;
-  const controls = arr(boundary.controlsPosition).map((point) => pointFromEditor(point, transform));
+  const ordered = reverse ? points.slice().reverse() : points.slice();
+  const rawControls = arr(boundary.controlsPosition).map((point) => pointFromEditor(point, transform));
+  const controls = reverse ? rawControls.slice().reverse() : rawControls;
   if (ordered.length >= 2 && controls.length >= 2) {
-    return Array.from({ length: 17 }, (_unused, index) =>
-      cubicBezier(ordered[0], controls[0], controls[1], ordered[ordered.length - 1], index / 16),
+    const sampleCount = cubicBezierSampleCount(ordered[0], controls[0], controls[1], ordered[ordered.length - 1]);
+    return Array.from({ length: sampleCount }, (_unused, index) =>
+      cubicBezier(ordered[0], controls[0], controls[1], ordered[ordered.length - 1], index / (sampleCount - 1)),
     );
   }
   return ordered;
@@ -1085,8 +1108,12 @@ function cubicCenterCandidate(start, end, startHeading, endHeading, startControl
     y: end.y - endTangent.y * endControl,
     z: end.z,
   };
-  return Array.from({ length: APOLLO_SIM_CENTER_SMOOTH_SAMPLE_COUNT }, (_unused, index) =>
-    cubicBezier(start, control1, control2, end, index / (APOLLO_SIM_CENTER_SMOOTH_SAMPLE_COUNT - 1)),
+  const sampleCount = Math.max(
+    APOLLO_SIM_CENTER_SMOOTH_SAMPLE_COUNT,
+    cubicBezierSampleCount(start, control1, control2, end),
+  );
+  return Array.from({ length: sampleCount }, (_unused, index) =>
+    cubicBezier(start, control1, control2, end, index / (sampleCount - 1)),
   );
 }
 
