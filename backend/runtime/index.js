@@ -5,6 +5,7 @@ const http = require('http');
 const https = require('https');
 const path = require('path');
 const readline = require('readline');
+const { execFileSync } = require('child_process');
 const { Writable } = require('stream');
 const { pipeline } = require('stream/promises');
 const unzipper = require('unzipper');
@@ -9897,6 +9898,7 @@ async function importPointCloudFilesBaseMap(config, params) {
 
 async function getRuntimeDoctor(config) {
   const status = await getStatus(config);
+  const frontendBuild = await getFrontendBuildInfo(config);
   const checks = [];
   const addCheck = (name, ok, severity, message) => {
     checks.push({
@@ -10006,9 +10008,68 @@ async function getRuntimeDoctor(config) {
   return {
     ready: !hasError,
     hasWarning,
+    frontendBuildHash: frontendBuild.hash,
+    frontendBuildTime: frontendBuild.buildTime,
+    frontendCommit: frontendBuild.commit,
+    frontendBuild,
     status,
     checks,
   };
+}
+
+async function getRuntimeGitCommit(appRoot) {
+  if (!appRoot) {
+    return '';
+  }
+  try {
+    return String(
+      execFileSync('git', ['-C', appRoot, 'rev-parse', '--short', 'HEAD'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 2000,
+      }),
+    ).trim();
+  } catch (_error) {
+    return '';
+  }
+}
+
+async function getFrontendBuildInfo(config) {
+  const buildRoot = config.frontendBuildRoot;
+  const result = {
+    hash: '',
+    buildTime: '',
+    commit: await getRuntimeGitCommit(config.appRoot),
+    mainScript: '',
+    indexHtml: path.join(buildRoot || '', 'index.html'),
+  };
+  if (!buildRoot) {
+    return result;
+  }
+  try {
+    const indexStat = await fsp.stat(result.indexHtml);
+    result.buildTime = indexStat.mtime.toISOString();
+  } catch (_error) {
+    return result;
+  }
+  try {
+    const manifestPath = path.join(buildRoot, 'asset-manifest.json');
+    const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
+    result.mainScript = manifest?.files?.['main.js'] || '';
+  } catch (_error) {
+    result.mainScript = '';
+  }
+  if (!result.mainScript) {
+    try {
+      const html = await fsp.readFile(result.indexHtml, 'utf8');
+      result.mainScript = html.match(/\/static\/js\/main\.[^"']+\.js/u)?.[0] || '';
+    } catch (_error) {
+      result.mainScript = '';
+    }
+  }
+  const hashMatch = result.mainScript.match(/main\.([a-f0-9]+)\.js/iu);
+  result.hash = hashMatch?.[1] || '';
+  return result;
 }
 
 function getDeployConfig(config) {

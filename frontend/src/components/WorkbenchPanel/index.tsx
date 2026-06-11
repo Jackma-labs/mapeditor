@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import PubSub from 'pubsub-js';
 import { Bot, ClipboardCheck, ListChecks, Map, MousePointer2 } from 'lucide-react';
 import { Button } from 'src/components/ui/button';
@@ -37,6 +37,17 @@ export default function WorkbenchPanel() {
     );
     const openAssetManager = useCallback(() => PubSub.publish('openAssetManager'), []);
     const openEdgeDeploy = useCallback(() => PubSub.publish('openEdgeDeploy'), []);
+
+    useEffect(() => {
+        const token = PubSub.subscribe('openWorkbenchTab', (_message, tab: WorkbenchTab) => {
+            if (tabs.some((item) => item.key === tab)) {
+                setActiveTab(tab);
+            }
+        });
+        return () => {
+            PubSub.unsubscribe(token);
+        };
+    }, []);
     const nextAction = useMemo(() => {
         if (!hasMapContext) {
             return {

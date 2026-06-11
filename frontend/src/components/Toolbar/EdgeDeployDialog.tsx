@@ -1,9 +1,11 @@
 import React, { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import PubSub from 'pubsub-js';
 import {
     AlertTriangleIcon,
     BoxIcon,
     CheckCircle2Icon,
     CloudUploadIcon,
+    ExternalLinkIcon,
     HistoryIcon,
     InfoIcon,
     MapIcon,
@@ -55,6 +57,8 @@ interface EdgeDeployDialogProps {
 type StatusLevel = 'ok' | 'warning' | 'error' | 'idle';
 
 type NoticeType = 'success' | 'warning' | 'error' | 'info';
+
+type PreflightGroupKey = 'blocking' | 'confirm' | 'passed';
 
 interface NoticeState {
     type: NoticeType;
@@ -186,6 +190,25 @@ const formatBoundsCenter = (bounds: any) => {
     return `${Number(bounds.centerX).toFixed(3)}, ${Number(bounds.centerY).toFixed(3)}`;
 };
 
+const getReleaseMapIssueLines = (map: any) => {
+    const lines: string[] = [];
+    if (map?.statusMessage) {
+        lines.push(String(map.statusMessage));
+    }
+    const missingFiles = Array.isArray(map?.missingExpectedFiles) ? map.missingExpectedFiles : [];
+    if (missingFiles.length > 0) {
+        lines.push(`缺失文件：${missingFiles.slice(0, 8).join('、')}${missingFiles.length > 8 ? ' 等' : ''}`);
+    }
+    const conversionErrors = Array.isArray(map?.conversionErrors) ? map.conversionErrors : [];
+    conversionErrors.slice(0, 3).forEach((item: any) => {
+        lines.push(String(item?.message || item));
+    });
+    if (lines.length === 0) {
+        lines.push('发布检查未通过，请重新执行发布检查。');
+    }
+    return lines;
+};
+
 const mapStatusColor = (map: any): StatusLevel => {
     if (map?.ready) {
         return 'ok';
@@ -315,6 +338,16 @@ const getCheckDisplayMessage = (item: any) => {
 const getPreflightIssues = (preflight: any, statuses: string[]) =>
     getChecks(preflight).filter((item: any) => statuses.includes(item.status));
 
+const getPreflightGroup = (item: any): PreflightGroupKey => {
+    if (item?.status === 'error') {
+        return 'blocking';
+    }
+    if (item?.status === 'warning') {
+        return 'confirm';
+    }
+    return 'passed';
+};
+
 const retryablePreflightChecks = new Set([
     'ssh-connectivity',
     'host-upload-root',
@@ -331,6 +364,16 @@ const isRetryablePreflightCheck = (item: any) => {
         retryablePreflightChecks.has(item?.name) ||
         /timed out|timeout|handshake|connection closed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|network/i.test(message)
     );
+};
+
+const getCheckStatusLabel = (item: any) => {
+    if (item?.status === 'ok') {
+        return '已通过';
+    }
+    if (item?.status === 'warning') {
+        return item?.name === 'selected-map-vehicle-pose' ? '动态定位未验证' : '部署后确认';
+    }
+    return isRetryablePreflightCheck(item) ? '可重试' : '需处理';
 };
 
 const getPreflightNextAction = (item: any) => {
@@ -491,14 +534,120 @@ function FieldBlock({
     );
 }
 
-function InfoPair({ label, value }: { label: string; value: ReactNode }) {
+function InfoPair({ label, value, wrap = false }: { label: string; value: ReactNode; wrap?: boolean }) {
     return (
         <div className="min-w-0 rounded-lg border border-border bg-muted/25 px-3 py-2">
             <div className="truncate text-xs text-muted-foreground">{label}</div>
-            <div className="mt-1 truncate text-sm font-medium text-foreground">{value || '-'}</div>
+            <div
+                className={cn('mt-1 text-sm font-medium text-foreground', wrap ? 'break-words leading-5' : 'truncate')}
+            >
+                {value || '-'}
+            </div>
         </div>
     );
 }
+
+function PreflightCheckRow({ item, group }: { item: any; group: PreflightGroupKey }) {
+    const level = normalizeStatus(item.status);
+    const isBlocking = group === 'blocking';
+    const label = getCheckStatusLabel(item);
+    return (
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 rounded-lg border border-border bg-muted/20 px-3 py-2">
+            <span className={cn('mt-1 size-2.5 rounded-full', statusDotClass[level])} />
+            <div className="min-w-0">
+                <div className="flex items-start justify-between gap-2">
+                    <strong className="min-w-0 truncate text-sm text-foreground">
+                        {checkTitleMap[item.name] || item.name}
+                    </strong>
+                    <Badge variant={level === 'error' ? 'destructive' : 'outline'} className="shrink-0">
+                        {label}
+                    </Badge>
+                </div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                    <span>{isBlocking ? '失败原因：' : '检查结果：'}</span>
+                    <span>{getCheckDisplayMessage(item)}</span>
+                </div>
+                {isBlocking || group === 'confirm' ? (
+                    <div className="mt-1 text-xs leading-5 text-foreground">
+                        <span>{isBlocking ? '下一步：' : '现场确认：'}</span>
+                        <span>{getPreflightNextAction(item)}</span>
+                    </div>
+                ) : null}
+            </div>
+        </div>
+    );
+}
+
+function PreflightGroup({
+    title,
+    description,
+    items,
+    group,
+    defaultOpen,
+    emptyText,
+}: {
+    title: string;
+    description: string;
+    items: any[];
+    group: PreflightGroupKey;
+    defaultOpen: boolean;
+    emptyText: string;
+}) {
+    return (
+        <details className="rounded-lg border border-border bg-card" open={defaultOpen}>
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+                <span className="min-w-0">
+                    <strong className="block truncate text-sm text-foreground">{title}</strong>
+                    <span className="block truncate text-xs text-muted-foreground">{description}</span>
+                </span>
+                <Badge variant={group === 'blocking' && items.length > 0 ? 'destructive' : 'outline'}>
+                    {items.length}
+                </Badge>
+            </summary>
+            <div className="flex flex-col gap-2 border-t border-border p-2">
+                {items.length > 0 ? (
+                    items.map((item: any) => <PreflightCheckRow key={item.name} item={item} group={group} />)
+                ) : (
+                    <div className="rounded-lg bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                        {emptyText}
+                    </div>
+                )}
+            </div>
+        </details>
+    );
+}
+
+const buildDeploymentVerification = (job: any, fallbackMapName: string) => {
+    const result = job?.result || {};
+    const deployment = result.deployment || {};
+    const verification =
+        result.postDeployVerification ||
+        deployment.postDeployVerification ||
+        result.dreamviewSwitchResult?.verification ||
+        deployment.dreamviewSwitch?.verification ||
+        {};
+    return {
+        jobId: job?.id || '',
+        expectedMapName: verification.expectedMapName || deployment.mapName || result.mapName || fallbackMapName,
+        expectedMapDir:
+            verification.expectedMapDir ||
+            verification.resolvedMapDir ||
+            verification.flagMapDir ||
+            deployment.remoteMapDir ||
+            result.remoteMapDir ||
+            '',
+        runtimeMapName: verification.runtimeMapName || '',
+        hmiCurrentMap: verification.hmiCurrentMap || '',
+        flagMapDir: verification.flagMapDir || '',
+        resolvedMapDir: verification.resolvedMapDir || deployment.remoteMapDir || result.remoteMapDir || '',
+        remoteMapDir: deployment.remoteMapDir || result.remoteMapDir || verification.expectedMapDir || '',
+        runtimeMatches: verification.runtimeMatches,
+        hmiMatches: verification.hmiMatches,
+        passed: Boolean(verification.passed),
+        skipped: Boolean(verification.skipped),
+        verifiedAt: new Date().toISOString(),
+    };
+};
 
 export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogProps) {
     const [values, setValues] = useState<DeployValues>(DEFAULT_VALUES);
@@ -511,6 +660,8 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const [releasedMaps, setReleasedMaps] = useState<any[]>([]);
     const [deploymentRecords, setDeploymentRecords] = useState<any[]>([]);
     const [rollbackCandidate, setRollbackCandidate] = useState<any>(null);
+    const [runtimeDoctor, setRuntimeDoctor] = useState<any>(null);
+    const [lastDeployVerification, setLastDeployVerification] = useState<any>(null);
 
     const updateValue = useCallback(<K extends keyof DeployValues>(key: K, value: DeployValues[K]) => {
         setValues((current) => ({
@@ -553,9 +704,19 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const readyCheckCount = preflightChecks.filter((item: any) => item.status === 'ok').length;
     const warningCheckCount = preflightChecks.filter((item: any) => item.status === 'warning').length;
     const errorCheckCount = preflightChecks.filter((item: any) => item.status === 'error').length;
+    const blockingPreflightChecks = preflightChecks.filter((item: any) => getPreflightGroup(item) === 'blocking');
+    const confirmPreflightChecks = preflightChecks.filter((item: any) => getPreflightGroup(item) === 'confirm');
+    const passedPreflightChecks = preflightChecks.filter((item: any) => getPreflightGroup(item) === 'passed');
     const recentDeploymentRecords = useMemo(
         () => deploymentRecords.filter((item: any) => item?.type === 'deploy' || item?.type === 'rollback').slice(0, 6),
         [deploymentRecords],
+    );
+    const rollbackableDeployment = useMemo(
+        () =>
+            recentDeploymentRecords.find(
+                (item: any) => item.type === 'deploy' && item.status === 'succeeded' && Boolean(item.backupDir),
+            ) || null,
+        [recentDeploymentRecords],
     );
 
     const overviewStatus: StatusLevel = useMemo(() => {
@@ -570,6 +731,14 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
 
     const hasSavedDevice = Boolean(deployConfig?.enabled && values.host && values.user && values.targetMapRoot);
     const passwordConfigured = Boolean(deployConfig?.passwordConfigured || values.password);
+    const hasReadyMaps = readyMaps.length > 0;
+    const hasSelectedReadyMap = Boolean(selectedMap?.ready);
+    const releaseGateStatus: StatusLevel = hasReadyMaps ? 'ok' : 'error';
+    const deviceGateStatus: StatusLevel = hasSavedDevice ? 'ok' : 'error';
+    const buildHash = runtimeDoctor?.frontendBuildHash || runtimeDoctor?.frontendBuild?.hash || '';
+    const buildTime = runtimeDoctor?.frontendBuildTime || runtimeDoctor?.frontendBuild?.buildTime || '';
+    const buildCommit = runtimeDoctor?.frontendCommit || runtimeDoctor?.frontendBuild?.commit || '';
+    const buildTimeLabel = buildTime ? formatModifiedTime(buildTime) : 'unknown';
     const sshStatus = getCheckLevel(preflight, 'ssh-connectivity');
     const dockerStatus = getCheckLevel(preflight, 'edge-docker-container');
     const dreamviewStatus = combineStatus(
@@ -583,6 +752,51 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             getCheckLevel(preflight, 'selected-map-edge-reference'),
         ].filter((item) => item !== 'idle'),
     );
+    const dreamviewHttpUrl = useMemo(() => {
+        const wsUrl =
+            getCheck(preflight, 'edge-dreamview-runtime-sync')?.details?.wsUrl ||
+            getCheck(preflight, 'edge-dreamview-hmi')?.details?.wsUrl ||
+            '';
+        if (typeof wsUrl === 'string' && wsUrl.startsWith('ws://')) {
+            return wsUrl.replace(/^ws:\/\//u, 'http://').replace(/\/websocket.*$/u, '');
+        }
+        if (typeof wsUrl === 'string' && wsUrl.startsWith('wss://')) {
+            return wsUrl.replace(/^wss:\/\//u, 'https://').replace(/\/websocket.*$/u, '');
+        }
+        return values.host ? `http://${values.host}:8888` : '';
+    }, [preflight, values.host]);
+    let dynamicPoseLabel = '待设备预检后读取 localization pose。';
+    if (preflight && vehiclePoseDetails?.available) {
+        dynamicPoseLabel = getCheckDisplayMessage(vehiclePoseCheck);
+    } else if (preflight) {
+        dynamicPoseLabel = '动态定位未验证：当前没有 localization pose，不能承诺定位不飘。';
+    }
+    let deployVerificationStatus: StatusLevel = 'idle';
+    if (lastDeployVerification?.passed) {
+        deployVerificationStatus = 'ok';
+    } else if (lastDeployVerification) {
+        deployVerificationStatus = 'warning';
+    }
+    let deployVerificationBadgeText = '待部署';
+    if (lastDeployVerification?.passed) {
+        deployVerificationBadgeText = '一致';
+    } else if (lastDeployVerification) {
+        deployVerificationBadgeText = '待复核';
+    }
+    const verificationExpectedMap = lastDeployVerification?.expectedMapName || values.mapName || '待部署';
+    const verificationDreamviewMap =
+        lastDeployVerification?.hmiCurrentMap || dreamviewCheck?.details?.currentMap || '待验证';
+    const verificationRuntimeMap = lastDeployVerification?.runtimeMapName || runtimeDetails?.map_name || '待验证';
+    const verificationTime = lastDeployVerification?.verifiedAt
+        ? formatModifiedTime(lastDeployVerification.verifiedAt)
+        : '待部署';
+    const verificationTargetDir =
+        lastDeployVerification?.resolvedMapDir ||
+        lastDeployVerification?.flagMapDir ||
+        runtimeDetails?.resolved_map_dir ||
+        runtimeDetails?.flag_map_dir ||
+        values.targetMapRoot ||
+        '待验证';
 
     const loadDeployments = useCallback(async () => {
         const response = await FileService.getDeployments();
@@ -595,9 +809,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const loadConfig = useCallback(async () => {
         setLoading(true);
         try {
-            const [response, mapsResponse] = await Promise.all([
+            const [response, mapsResponse, doctorResponse] = await Promise.all([
                 FileService.getDeployConfig(),
                 FileService.getReleasedMaps(),
+                FileService.getRuntimeDoctor(),
             ]);
             if (response?.code !== 0) {
                 throw new Error(response?.message || '读取边缘设备配置失败');
@@ -605,6 +820,9 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             const data = response.data || {};
             const maps = Array.isArray(mapsResponse?.data?.maps) ? mapsResponse.data.maps : [];
             const defaultMapName = resolveDefaultMapName(maps);
+            if (doctorResponse?.code === 0) {
+                setRuntimeDoctor(doctorResponse.data || null);
+            }
             setReleasedMaps(maps);
             setDeployConfig(data);
             setValues((current) => ({
@@ -885,6 +1103,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             } else if (dreamviewSwitched) {
                 dreamviewText = '，Dreamview 已执行切换';
             }
+            setLastDeployVerification(buildDeploymentVerification(job, values.mapName));
             setNotice({
                 type: 'success',
                 title: '部署完成',
@@ -966,6 +1185,13 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             .finally(() => setLoading(false));
     };
 
+    const goToPublishCheck = () => {
+        onCancel();
+        window.setTimeout(() => {
+            PubSub.publish('openWorkbenchTab', 'publish');
+        }, 0);
+    };
+
     const selectedMapStatusValue = selectedMap ? (
         <span className="inline-flex items-center gap-2">
             <span className={cn('size-2 rounded-full', statusDotClass[mapStatusColor(selectedMap)])} />
@@ -980,6 +1206,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         }
         updateValue('mapName', latestReadyMapName);
         setPreflight(null);
+        setLastDeployVerification(null);
     };
 
     const renderMapOption = (item: any, optionIndex: number) => {
@@ -1006,36 +1233,94 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         );
     };
 
+    const renderBlockedMapCard = (item: any) => (
+        <div key={item.mapName} className="rounded-lg border border-destructive/35 bg-destructive/5 p-3">
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-foreground">{item.mapName}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                        {item.status || 'validation_failed'}
+                        {item.modifiedAt ? ` / ${formatModifiedTime(item.modifiedAt)}` : ''}
+                    </div>
+                </div>
+                <Badge variant="destructive" className="shrink-0">
+                    不可部署
+                </Badge>
+            </div>
+            <ul className="mt-2 flex list-disc flex-col gap-1 pl-4 text-xs leading-5 text-muted-foreground">
+                {getReleaseMapIssueLines(item).map((line) => (
+                    <li key={line}>{line}</li>
+                ))}
+            </ul>
+        </div>
+    );
+
     let releasePackageSummary: ReactNode;
     if (selectedMap) {
         releasePackageSummary = (
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                <InfoPair label="发布包" value={selectedMap.mapName} />
-                <InfoPair label="状态" value={selectedMapStatusValue} />
-                <InfoPair label="修改时间" value={formatModifiedTime(selectedMap.modifiedAt)} />
-                <InfoPair label="大小" value={formatBytes(selectedMap.sizeBytes)} />
+            <div className="flex flex-col gap-3">
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                    <InfoPair label="发布包" value={selectedMap.mapName} />
+                    <InfoPair label="状态" value={selectedMapStatusValue} />
+                    <InfoPair label="修改时间" value={formatModifiedTime(selectedMap.modifiedAt)} />
+                    <InfoPair label="大小" value={formatBytes(selectedMap.sizeBytes)} />
+                </div>
+                {!selectedMap.ready ? renderBlockedMapCard(selectedMap) : null}
             </div>
         );
     } else if (primaryBlockedMap) {
-        const blockedMessage = `${primaryBlockedMap.mapName}：${
-            primaryBlockedMap.statusMessage || '发布检查未通过，请先修复后重新生成发布包。'
-        }`;
         releasePackageSummary = (
-            <Alert>
-                <AlertTriangleIcon />
-                <AlertTitle>没有可部署发布包</AlertTitle>
-                <AlertDescription>{blockedMessage}</AlertDescription>
-            </Alert>
+            <div className="flex flex-col gap-3">
+                <Alert variant="destructive">
+                    <AlertTriangleIcon />
+                    <AlertTitle>没有可部署发布包</AlertTitle>
+                    <AlertDescription>
+                        下面这些发布包还不能下发。先进入“发布检查”修复并重新生成 ready 发布包。
+                    </AlertDescription>
+                </Alert>
+                <div className="flex flex-col gap-2">{nonReadyMaps.slice(0, 5).map(renderBlockedMapCard)}</div>
+                <Button type="button" variant="secondary" onClick={goToPublishCheck} disabled={loading}>
+                    去发布检查
+                </Button>
+            </div>
         );
     } else {
         releasePackageSummary = (
-            <Alert>
-                <InfoIcon />
-                <AlertTitle>没有可部署发布包</AlertTitle>
-                <AlertDescription>请先从当前地图生成发布包，并确保发布检查通过。</AlertDescription>
-            </Alert>
+            <div className="flex flex-col gap-3">
+                <Alert>
+                    <InfoIcon />
+                    <AlertTitle>没有可部署发布包</AlertTitle>
+                    <AlertDescription>请先从当前地图生成发布包，并确保发布检查通过。</AlertDescription>
+                </Alert>
+                <Button type="button" variant="secondary" onClick={goToPublishCheck} disabled={loading}>
+                    去发布检查
+                </Button>
+            </div>
         );
     }
+
+    let primaryActionLabel = '部署所选地图';
+    let PrimaryActionIcon = CloudUploadIcon;
+    let primaryAction: () => void | Promise<void> = deploySelected;
+    let primaryActionDisabled = loading || !hasSelectedReadyMap;
+    if (!hasReadyMaps) {
+        primaryActionLabel = '去发布检查';
+        PrimaryActionIcon = ShieldCheckIcon;
+        primaryAction = goToPublishCheck;
+        primaryActionDisabled = loading;
+    } else if (!hasSavedDevice || editingDevice) {
+        primaryActionLabel = '保存设备并预检';
+        PrimaryActionIcon = SaveIcon;
+        primaryAction = saveAndPreflight;
+        primaryActionDisabled = loading;
+    } else if (!preflight || errorCheckCount > 0) {
+        primaryActionLabel = '刷新设备状态';
+        PrimaryActionIcon = WifiIcon;
+        primaryAction = refreshStatus;
+        primaryActionDisabled = loading || !hasSelectedReadyMap;
+    }
+    const showAuxRefresh = hasSelectedReadyMap && hasSavedDevice && primaryActionLabel !== '刷新设备状态';
+    const showAuxSave = editingDevice && hasReadyMaps && primaryActionLabel !== '保存设备并预检';
 
     return (
         <Dialog
@@ -1047,17 +1332,17 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             }}
         >
             <DialogContent
-                className="grid-rows-none flex-col gap-0 overflow-hidden border border-border bg-popover p-0 text-popover-foreground"
+                className="grid-rows-none flex-col gap-0 overflow-hidden border border-border bg-popover p-0 text-popover-foreground shadow-2xl [&_.text-xs]:text-[12px] [&_.text-xs]:leading-5"
                 style={{
                     display: 'flex',
-                    top: '16px',
-                    right: '16px',
-                    bottom: '16px',
-                    left: '16px',
-                    width: 'auto',
-                    maxWidth: 'none',
-                    height: 'auto',
-                    transform: 'none',
+                    top: 'clamp(20px, 5vh, 56px)',
+                    right: 'auto',
+                    bottom: 'auto',
+                    left: '50%',
+                    width: 'min(1120px, calc(100vw - 48px))',
+                    maxWidth: 'calc(100vw - 32px)',
+                    height: 'min(820px, calc(100vh - 80px))',
+                    transform: 'translateX(-50%)',
                 }}
             >
                 <DialogHeader className="border-b border-border px-5 py-4">
@@ -1067,6 +1352,11 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                             <DialogDescription className="mt-2">
                                 固定边缘设备配置后，后续只需要选择发布包、刷新状态、部署地图。
                             </DialogDescription>
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                                <Badge variant="outline">{`frontend ${buildHash || 'unknown'}`}</Badge>
+                                <Badge variant="outline">{`commit ${buildCommit || 'unknown'}`}</Badge>
+                                <Badge variant="outline">{`build ${buildTimeLabel}`}</Badge>
+                            </div>
                         </div>
                         <Badge variant={overviewStatus === 'error' ? 'destructive' : 'secondary'} className="shrink-0">
                             {getOverviewStatusText(overviewStatus, Boolean(preflight))}
@@ -1077,6 +1367,55 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                 <ScrollArea className="min-h-0 flex-1">
                     <div className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
                         <div className="flex min-w-0 flex-col gap-4">
+                            <div className="grid gap-3 md:grid-cols-2">
+                                <Card className={cn(releaseGateStatus === 'error' && 'border-destructive/45')}>
+                                    <CardContent className="flex items-start gap-3 p-4">
+                                        <span
+                                            className={cn(
+                                                'mt-1 size-2.5 shrink-0 rounded-full',
+                                                statusDotClass[releaseGateStatus],
+                                            )}
+                                        />
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-semibold text-foreground">发布包门禁</div>
+                                            <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                                                {hasReadyMaps
+                                                    ? `可部署 ${readyMaps.length} 个，不可部署 ${nonReadyMaps.length} 个`
+                                                    : `没有 ready 发布包，不可部署 ${nonReadyMaps.length} 个`}
+                                            </div>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                                <Card className={cn(deviceGateStatus === 'error' && 'border-destructive/45')}>
+                                    <CardContent className="flex items-start gap-3 p-4">
+                                        <span
+                                            className={cn(
+                                                'mt-1 size-2.5 shrink-0 rounded-full',
+                                                statusDotClass[deviceGateStatus],
+                                            )}
+                                        />
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-semibold text-foreground">设备门禁</div>
+                                            <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                                                {hasSavedDevice
+                                                    ? `${values.user}@${values.host}:${values.port}`
+                                                    : '先配置边缘设备 IP、SSH 用户、端口和地图目录'}
+                                            </div>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </div>
+
+                            {!hasSavedDevice ? (
+                                <Alert variant="destructive">
+                                    <AlertTriangleIcon />
+                                    <AlertTitle>先配置设备</AlertTitle>
+                                    <AlertDescription>
+                                        边缘部署未启用或缺少设备地址/SSH 用户。保存设备并预检后，系统才会允许下发地图。
+                                    </AlertDescription>
+                                </Alert>
+                            ) : null}
+
                             <Card>
                                 <CardHeader className="gap-3">
                                     <div className="flex items-start justify-between gap-4">
@@ -1146,13 +1485,14 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             onValueChange={(mapName) => {
                                                 updateValue('mapName', mapName);
                                                 setPreflight(null);
+                                                setLastDeployVerification(null);
                                             }}
                                             disabled={loading || selectableMaps.length === 0}
                                         >
                                             <SelectTrigger className="h-8 w-full">
                                                 <SelectValue placeholder="选择发布包" />
                                             </SelectTrigger>
-                                            <SelectContent className="max-h-[360px] min-w-[560px]">
+                                            <SelectContent className="max-h-[360px] w-[var(--radix-select-trigger-width)] min-w-[min(560px,calc(100vw-32px))] max-w-[calc(100vw-32px)]">
                                                 {readyMaps.length > 0 ? (
                                                     <SelectGroup>
                                                         <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
@@ -1379,52 +1719,107 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                         <InfoPair label="坐标链路" value={statusTextMap[packageStatus]} />
                                     </div>
 
-                                    <ScrollArea className="h-[290px] rounded-lg border border-border">
-                                        {preflightChecks.length > 0 ? (
-                                            <div className="flex flex-col p-2">
-                                                {preflightChecks.map((item: any) => {
-                                                    const level = normalizeStatus(item.status);
-                                                    return (
-                                                        <div
-                                                            className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 rounded-lg px-2 py-2"
-                                                            key={item.name}
-                                                        >
-                                                            <span
-                                                                className={cn(
-                                                                    'mt-1 size-2.5 rounded-full',
-                                                                    statusDotClass[level],
-                                                                )}
-                                                            />
-                                                            <div className="min-w-0">
-                                                                <div className="flex items-center justify-between gap-2">
-                                                                    <strong className="truncate text-sm text-foreground">
-                                                                        {checkTitleMap[item.name] || item.name}
-                                                                    </strong>
-                                                                    <Badge
-                                                                        variant={
-                                                                            level === 'error'
-                                                                                ? 'destructive'
-                                                                                : 'outline'
-                                                                        }
-                                                                    >
-                                                                        {item.status}
-                                                                    </Badge>
-                                                                </div>
-                                                                <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                                                                    {getCheckDisplayMessage(item)}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        ) : (
-                                            <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-                                                点击“刷新状态”或“保存设备并预检”后，这里会显示 SSH、Docker、Dreamview
-                                                和坐标检查结果。
-                                            </div>
-                                        )}
-                                    </ScrollArea>
+                                    {preflightChecks.length > 0 ? (
+                                        <div className="flex flex-col gap-3">
+                                            <PreflightGroup
+                                                title="阻断部署"
+                                                description="这些问题会直接阻止地图下发"
+                                                items={blockingPreflightChecks}
+                                                group="blocking"
+                                                defaultOpen
+                                                emptyText="没有阻断项。"
+                                            />
+                                            <PreflightGroup
+                                                title="部署后必须确认"
+                                                description="可以下发，但上线前必须现场确认"
+                                                items={confirmPreflightChecks}
+                                                group="confirm"
+                                                defaultOpen={confirmPreflightChecks.length > 0}
+                                                emptyText="没有需要现场确认的警告。"
+                                            />
+                                            <PreflightGroup
+                                                title="已通过"
+                                                description="设备、发布包和坐标链路已经检查通过"
+                                                items={passedPreflightChecks}
+                                                group="passed"
+                                                defaultOpen={blockingPreflightChecks.length === 0}
+                                                emptyText="还没有通过项。"
+                                            />
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-lg border border-border bg-muted/20 px-6 py-8 text-center text-sm text-muted-foreground">
+                                            点击“刷新设备状态”或“保存设备并预检”后，这里会按阻断、确认、通过三组显示
+                                            SSH、Docker、Dreamview、坐标和车辆位置检查结果。
+                                        </div>
+                                    )}
+                                </CardContent>
+                            </Card>
+
+                            <Card>
+                                <CardHeader>
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                            <CardTitle className="flex items-center gap-2">
+                                                <ShieldCheckIcon data-icon="inline-start" />
+                                                设备验证
+                                            </CardTitle>
+                                            <CardDescription>
+                                                部署成功后固定显示 Dreamview/runtime/map_dir
+                                                是否一致；动态定位单独标记。
+                                            </CardDescription>
+                                        </div>
+                                        <Badge
+                                            variant={deployVerificationStatus === 'ok' ? 'outline' : 'secondary'}
+                                            className="shrink-0"
+                                        >
+                                            {deployVerificationBadgeText}
+                                        </Badge>
+                                    </div>
+                                </CardHeader>
+                                <CardContent className="flex flex-col gap-4">
+                                    <div className="grid gap-2 sm:grid-cols-2">
+                                        <InfoPair label="期望地图" value={verificationExpectedMap} />
+                                        <InfoPair label="Dreamview 当前地图" value={verificationDreamviewMap} />
+                                        <InfoPair label="runtime 当前地图" value={verificationRuntimeMap} />
+                                        <InfoPair label="验证时间" value={verificationTime} />
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <InfoPair label="目标目录 / map_dir" value={verificationTargetDir} wrap />
+                                        <InfoPair label="动态定位" value={dynamicPoseLabel} wrap />
+                                    </div>
+                                    <div className="flex flex-wrap justify-end gap-2">
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={refreshStatus}
+                                            disabled={loading || !values.mapName}
+                                        >
+                                            <RefreshCwIcon data-icon="inline-start" />
+                                            重新验证
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={() => {
+                                                if (dreamviewHttpUrl) {
+                                                    window.open(dreamviewHttpUrl, '_blank', 'noreferrer');
+                                                }
+                                            }}
+                                            disabled={!dreamviewHttpUrl}
+                                        >
+                                            <ExternalLinkIcon data-icon="inline-start" />
+                                            打开 Dreamview
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="destructive"
+                                            disabled={!rollbackableDeployment || loading}
+                                            onClick={() => setRollbackCandidate(rollbackableDeployment)}
+                                        >
+                                            <RotateCcwIcon data-icon="inline-start" />
+                                            回滚
+                                        </Button>
+                                    </div>
                                 </CardContent>
                             </Card>
 
@@ -1545,17 +1940,21 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                     <Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
                         关闭
                     </Button>
-                    <Button type="button" variant="outline" onClick={refreshStatus} disabled={loading}>
-                        <WifiIcon data-icon="inline-start" />
-                        刷新状态
-                    </Button>
-                    <Button type="button" variant="secondary" onClick={saveAndPreflight} disabled={loading}>
-                        <SaveIcon data-icon="inline-start" />
-                        保存设备并预检
-                    </Button>
-                    <Button type="button" onClick={deploySelected} disabled={loading || !selectedMap?.ready}>
-                        <CloudUploadIcon data-icon="inline-start" />
-                        部署所选地图
+                    {showAuxRefresh ? (
+                        <Button type="button" variant="outline" onClick={refreshStatus} disabled={loading}>
+                            <WifiIcon data-icon="inline-start" />
+                            刷新设备状态
+                        </Button>
+                    ) : null}
+                    {showAuxSave ? (
+                        <Button type="button" variant="secondary" onClick={saveAndPreflight} disabled={loading}>
+                            <SaveIcon data-icon="inline-start" />
+                            保存设备并预检
+                        </Button>
+                    ) : null}
+                    <Button type="button" onClick={primaryAction} disabled={primaryActionDisabled}>
+                        <PrimaryActionIcon data-icon="inline-start" />
+                        {primaryActionLabel}
                     </Button>
                 </DialogFooter>
             </DialogContent>
