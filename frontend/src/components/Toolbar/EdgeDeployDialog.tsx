@@ -315,6 +315,108 @@ const getCheckDisplayMessage = (item: any) => {
 const getPreflightIssues = (preflight: any, statuses: string[]) =>
     getChecks(preflight).filter((item: any) => statuses.includes(item.status));
 
+const retryablePreflightChecks = new Set([
+    'ssh-connectivity',
+    'host-upload-root',
+    'edge-docker-container',
+    'edge-runtime-status',
+    'edge-dreamview-switch',
+    'edge-dreamview-hmi',
+    'edge-dreamview-runtime-sync',
+]);
+
+const isRetryablePreflightCheck = (item: any) => {
+    const message = `${item?.message || ''} ${item?.details || ''}`;
+    return (
+        retryablePreflightChecks.has(item?.name) ||
+        /timed out|timeout|handshake|connection closed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|network/i.test(message)
+    );
+};
+
+const getPreflightNextAction = (item: any) => {
+    switch (item?.name) {
+        case 'edge-mode':
+            return '先保存边缘设备配置，确认已启用 SSH 部署模式。';
+        case 'edge-target':
+            return '补齐设备 IP、SSH 用户、端口和密码后重新预检。';
+        case 'ssh-connectivity':
+            return '先点“刷新状态”重试一次；连续失败再检查设备在线、SSH 账号和端口。';
+        case 'host-upload-root':
+            return '先点“刷新状态”重试；若仍失败，检查边缘设备 /tmp 写权限或 SSH 握手稳定性。';
+        case 'target-map-root':
+            return '确认 Apollo 地图目录存在且可写，必要时点“自动发现”。';
+        case 'edge-docker-container':
+            return '确认 Apollo 容器正在运行；如果不用容器，就清空 Docker 容器名。';
+        case 'edge-runtime-status':
+            return '先重试刷新；连续失败时检查边缘设备上的 Dreamview/Apollo runtime 状态。';
+        case 'edge-dreamview-switch':
+        case 'edge-dreamview-hmi':
+        case 'edge-dreamview-runtime-sync':
+            return '部署文件可以先排查，启用前需要确认 Dreamview 当前地图和 runtime 加载地图一致。';
+        case 'selected-map-coordinates':
+            return '回到发布检查，修复投影元数据、轨迹中心或坐标质量门控后重新生成发布包。';
+        case 'selected-map-edge-reference':
+            return '确认这是同一场地或首次部署新场地；必要时先部署一份可信参考地图。';
+        case 'selected-map-vehicle-pose':
+            return '地图可继续下发，但实车启用前必须确认 RTK/定位链路正常。';
+        default:
+            return '按检查明细处理后，点击“刷新状态”重新预检。';
+    }
+};
+
+const buildPreflightFailureDescription = (items: any[], fallback: ReactNode) => {
+    if (items.length === 0) {
+        return fallback || '预检未通过。请刷新状态后重试；如果仍失败，检查边缘设备配置和发布包状态。';
+    }
+    return (
+        <div className="flex flex-col gap-3">
+            <div>系统没有崩溃，部署已被预检拦截。请先处理下面的阻断项。</div>
+            <div className="flex flex-col gap-2">
+                {items.slice(0, 4).map((item: any) => {
+                    const retryable = isRetryablePreflightCheck(item);
+                    return (
+                        <div key={item.name} className="rounded-md border border-border bg-background/65 p-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <strong className="truncate text-sm">{checkTitleMap[item.name] || item.name}</strong>
+                                <Badge variant={retryable ? 'outline' : 'destructive'}>
+                                    {retryable ? '可重试' : '需处理'}
+                                </Badge>
+                            </div>
+                            <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                                {getCheckDisplayMessage(item)}
+                            </div>
+                            <div className="mt-1 text-xs leading-5 text-foreground">
+                                <span>下一步：</span>
+                                <span>{getPreflightNextAction(item)}</span>
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+            {items.length > 4 ? (
+                <div className="text-xs text-muted-foreground">
+                    <span>还有 </span>
+                    <span>{items.length - 4}</span>
+                    <span> 个阻断项，请在预检列表中查看。</span>
+                </div>
+            ) : null}
+        </div>
+    );
+};
+
+const buildOperationFailureDescription = (message: ReactNode, nextAction: ReactNode) => (
+    <div className="flex flex-col gap-2">
+        <div>{message || '操作失败。'}</div>
+        <div className="text-xs leading-5 text-muted-foreground">
+            是否可重试：如果不是账号、目录或发布包质量问题，可以先点“刷新状态”再重试一次。
+        </div>
+        <div className="text-xs leading-5 text-foreground">
+            <span>下一步：</span>
+            <span>{nextAction}</span>
+        </div>
+    </div>
+);
+
 const statusDotClass: Record<StatusLevel, string> = {
     ok: 'bg-[var(--landing-success)] shadow-[0_0_0_4px_rgba(34,197,94,0.14)]',
     warning: 'bg-[var(--landing-warning)] shadow-[0_0_0_4px_rgba(245,158,11,0.14)]',
@@ -645,14 +747,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             return true;
         }
         const errorsOrWarnings = getPreflightIssues(nextPreflight, ['error']);
-        const errorText = errorsOrWarnings
-            .slice(0, 4)
-            .map((item: any) => `${checkTitleMap[item.name] || item.name}：${getCheckDisplayMessage(item)}`)
-            .join('；');
         setNotice({
             type: 'error',
             title: saveConfig ? '设备已保存，但预检未通过' : '预检未通过',
-            description: errorsOrWarnings.length > 0 ? errorText : response?.message || '预检未通过',
+            description: buildPreflightFailureDescription(errorsOrWarnings, response?.message || '预检未通过'),
         });
         return false;
     };
@@ -701,7 +799,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             setNotice({
                 type: 'error',
                 title: '保存边缘设备配置失败',
-                description: error?.message || 'Unknown error',
+                description: buildOperationFailureDescription(
+                    error?.message || 'Unknown error',
+                    '确认后端服务正常、设备配置字段完整后，再保存并预检。',
+                ),
             });
         } finally {
             setLoading(false);
@@ -718,7 +819,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             setNotice({
                 type: 'error',
                 title: '刷新状态失败',
-                description: error?.message || 'Unknown error',
+                description: buildOperationFailureDescription(
+                    error?.message || 'Unknown error',
+                    '确认后端服务可访问后重新打开弹窗；如果仍失败，查看服务日志。',
+                ),
             });
         } finally {
             setLoading(false);
@@ -734,7 +838,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             setNotice({
                 type: 'error',
                 title: '发布包不可部署',
-                description: selectedMap?.statusMessage || '请选择状态为 ready 的发布包后再部署。',
+                description: buildOperationFailureDescription(
+                    selectedMap?.statusMessage || '请选择状态为 ready 的发布包后再部署。',
+                    '回到“发布检查”修复当前地图，重新生成 ready 发布包，再回到这里选择部署。',
+                ),
             });
             return;
         }
@@ -791,7 +898,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             setNotice({
                 type: 'error',
                 title: '部署失败',
-                description: error?.message || 'Unknown error',
+                description: buildOperationFailureDescription(
+                    error?.message || 'Unknown error',
+                    '先点击“刷新状态”确认设备在线和 Dreamview 状态；如果连续失败，再查看最近部署记录和后端日志。',
+                ),
             });
         } finally {
             setLoading(false);
