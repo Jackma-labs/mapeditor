@@ -1046,7 +1046,20 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                 }
             }}
         >
-            <DialogContent className="flex h-[min(880px,calc(100vh-32px))] max-w-[min(1220px,calc(100vw-32px))] grid-rows-none flex-col gap-0 overflow-hidden border border-border bg-popover p-0 text-popover-foreground">
+            <DialogContent
+                className="grid-rows-none flex-col gap-0 overflow-hidden border border-border bg-popover p-0 text-popover-foreground"
+                style={{
+                    display: 'flex',
+                    top: '16px',
+                    right: '16px',
+                    bottom: '16px',
+                    left: '16px',
+                    width: 'auto',
+                    maxWidth: 'none',
+                    height: 'auto',
+                    transform: 'none',
+                }}
+            >
                 <DialogHeader className="border-b border-border px-5 py-4">
                     <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0">
@@ -1528,7 +1541,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                     </div>
                 </ScrollArea>
 
-                <DialogFooter className="border-t border-border bg-muted/40 px-5 py-4">
+                <DialogFooter className="mx-0 mb-0 shrink-0 rounded-none border-t border-border bg-muted/40 px-5 py-4">
                     <Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
                         关闭
                     </Button>
