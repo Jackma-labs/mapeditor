@@ -1,4 +1,4 @@
-import React, { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import PubSub from 'pubsub-js';
 import {
     AlertTriangleIcon,
@@ -662,6 +662,8 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const [rollbackCandidate, setRollbackCandidate] = useState<any>(null);
     const [runtimeDoctor, setRuntimeDoctor] = useState<any>(null);
     const [lastDeployVerification, setLastDeployVerification] = useState<any>(null);
+    const [lastCheckedAt, setLastCheckedAt] = useState('');
+    const autoPreflightInFlightRef = useRef(false);
 
     const updateValue = useCallback(<K extends keyof DeployValues>(key: K, value: DeployValues[K]) => {
         setValues((current) => ({
@@ -797,6 +799,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         runtimeDetails?.flag_map_dir ||
         values.targetMapRoot ||
         '待验证';
+    const lastCheckedLabel = lastCheckedAt ? formatModifiedTime(lastCheckedAt) : '待检查';
 
     const loadDeployments = useCallback(async () => {
         const response = await FileService.getDeployments();
@@ -888,70 +891,89 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             setJobText('');
             setRollbackCandidate(null);
             setNotice(null);
+            setLastCheckedAt('');
         }
     }, [loadConfig, loadDeployments, open]);
 
-    const validateValues = (requireMap = true) => {
+    const validateValues = (requireMap = true, nextValues: DeployValues = values) => {
         const errors: string[] = [];
-        if (!values.host.trim()) {
+        if (!nextValues.host.trim()) {
             errors.push('请输入边缘设备 IP');
         }
-        if (!values.user.trim()) {
+        if (!nextValues.user.trim()) {
             errors.push('请输入 SSH 用户');
         }
-        if (!Number.isFinite(Number(values.port)) || Number(values.port) <= 0) {
+        if (!Number.isFinite(Number(nextValues.port)) || Number(nextValues.port) <= 0) {
             errors.push('请输入有效 SSH 端口');
         }
-        if (!values.targetMapRoot.trim()) {
+        if (!nextValues.targetMapRoot.trim()) {
             errors.push('请输入 Apollo 地图目录');
         }
-        if (requireMap && !values.mapName) {
+        if (requireMap && !nextValues.mapName) {
             errors.push('请选择发布包');
         }
         return errors;
     };
 
-    const buildDeployPayload = () => ({
-        ...values,
+    const buildDeployPayload = (nextValues: DeployValues = values) => ({
+        ...nextValues,
         mode: 'ssh',
         autoDiscover: false,
     });
 
-    const runPreflight = async (saveConfig: boolean) => {
-        const errors = validateValues(true);
+    const runPreflight = async (
+        saveConfig: boolean,
+        options: {
+            silent?: boolean;
+            mapName?: string;
+            nextValues?: DeployValues;
+        } = {},
+    ) => {
+        const nextValues = options.nextValues || values;
+        const mapName = options.mapName || nextValues.mapName;
+        const errors = validateValues(true, {
+            ...nextValues,
+            mapName,
+        });
         if (errors.length > 0) {
-            setNotice({
-                type: 'error',
-                title: '配置不完整',
-                description: errors.join('；'),
-            });
+            if (!options.silent) {
+                setNotice({
+                    type: 'error',
+                    title: '配置不完整',
+                    description: errors.join('；'),
+                });
+            }
             return false;
         }
         const response = saveConfig
-            ? await FileService.configureEdgeDeploy(buildDeployPayload())
-            : await FileService.preflightDeploy(values.mapName);
+            ? await FileService.configureEdgeDeploy(buildDeployPayload(nextValues))
+            : await FileService.preflightDeploy(mapName);
         const nextPreflight = saveConfig ? response?.data?.preflight : response?.data;
         setPreflight(nextPreflight || null);
+        setLastCheckedAt(new Date().toISOString());
         if (saveConfig) {
             setDeployConfig(
                 response?.data?.deployConfig || {
                     ...deployConfig,
-                    host: values.host,
-                    user: values.user,
-                    port: values.port,
+                    host: nextValues.host,
+                    user: nextValues.user,
+                    port: nextValues.port,
                     mode: 'ssh',
                     enabled: true,
-                    targetMapRoot: values.targetMapRoot,
-                    dockerContainer: values.dockerContainer,
-                    nativeMapTools: values.nativeMapTools,
-                    autoSwitchDreamview: values.autoSwitchDreamview,
-                    postDeployCommand: values.postDeployCommand,
-                    passwordConfigured: passwordConfigured || Boolean(values.password),
+                    targetMapRoot: nextValues.targetMapRoot,
+                    dockerContainer: nextValues.dockerContainer,
+                    nativeMapTools: nextValues.nativeMapTools,
+                    autoSwitchDreamview: nextValues.autoSwitchDreamview,
+                    postDeployCommand: nextValues.postDeployCommand,
+                    passwordConfigured: passwordConfigured || Boolean(nextValues.password),
                 },
             );
             setEditingDevice(false);
         }
         if (response?.code === 0) {
+            if (options.silent) {
+                return true;
+            }
             const warnings = getPreflightIssues(nextPreflight, ['warning']);
             const warningText = warnings
                 .slice(0, 3)
@@ -965,11 +987,13 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             return true;
         }
         const errorsOrWarnings = getPreflightIssues(nextPreflight, ['error']);
-        setNotice({
-            type: 'error',
-            title: saveConfig ? '设备已保存，但预检未通过' : '预检未通过',
-            description: buildPreflightFailureDescription(errorsOrWarnings, response?.message || '预检未通过'),
-        });
+        if (!options.silent) {
+            setNotice({
+                type: 'error',
+                title: saveConfig ? '设备已保存，但预检未通过' : '预检未通过',
+                description: buildPreflightFailureDescription(errorsOrWarnings, response?.message || '预检未通过'),
+            });
+        }
         return false;
     };
 
@@ -1047,6 +1071,56 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             setJobText('');
         }
     };
+
+    useEffect(() => {
+        if (!open || !hasSavedDevice || !passwordConfigured || !hasSelectedReadyMap || editingDevice) {
+            return undefined;
+        }
+        let cancelled = false;
+        const executeAutoPreflight = async (initial: boolean) => {
+            if (autoPreflightInFlightRef.current) {
+                return;
+            }
+            autoPreflightInFlightRef.current = true;
+            if (initial) {
+                setLoading(true);
+                setJobText(`正在检查设备状态：${values.mapName}`);
+            }
+            try {
+                await runPreflight(false, {
+                    silent: !initial,
+                    mapName: values.mapName,
+                });
+            } catch (error: any) {
+                if (!cancelled && initial) {
+                    setNotice({
+                        type: 'error',
+                        title: '自动检查设备失败',
+                        description: buildOperationFailureDescription(
+                            error?.message || 'Unknown error',
+                            '可以点击“刷新设备状态”重试；如果仍失败，再检查边缘设备在线状态。',
+                        ),
+                    });
+                }
+            } finally {
+                autoPreflightInFlightRef.current = false;
+                if (!cancelled && initial) {
+                    setLoading(false);
+                    setJobText('');
+                }
+            }
+        };
+        executeAutoPreflight(true);
+        const timer = window.setInterval(() => {
+            executeAutoPreflight(false);
+        }, 30000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+        // runPreflight reads current dialog state; polling is keyed by the stable values below.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [editingDevice, hasSavedDevice, hasSelectedReadyMap, open, passwordConfigured, values.mapName]);
 
     const deploySelected = async () => {
         const deployableMap = releasedMaps.find(
@@ -1220,7 +1294,12 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         }
 
         return (
-            <SelectItem key={item.mapName} value={item.mapName} disabled={!item.ready}>
+            <SelectItem
+                key={item.mapName}
+                value={item.mapName}
+                disabled={!item.ready}
+                className="text-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:text-muted-foreground data-[disabled]:opacity-70 data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground"
+            >
                 <span className="flex min-w-0 flex-col py-0.5">
                     <span className="truncate text-sm">{`${optionIndex + 1}. ${item.mapName}`}</span>
                     <span className="truncate text-xs text-muted-foreground">
@@ -1457,6 +1536,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                         <InfoPair label="密码状态" value={passwordConfigured ? '已保存' : '未保存'} />
                                         <InfoPair label="当前加载" value={runtimeDetails?.map_name || '待预检'} />
                                         <InfoPair label="发布包中心" value={formatBoundsCenter(coordinateBounds)} />
+                                        <InfoPair label="上次检查" value={lastCheckedLabel} />
                                     </div>
                                     {jobText ? (
                                         <Alert className="border-[rgba(47,127,247,0.45)] bg-card">
@@ -1489,10 +1569,10 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             }}
                                             disabled={loading || selectableMaps.length === 0}
                                         >
-                                            <SelectTrigger className="h-8 w-full">
+                                            <SelectTrigger className="h-8 w-full border-border bg-background text-foreground data-placeholder:text-muted-foreground [&_svg]:text-muted-foreground">
                                                 <SelectValue placeholder="选择发布包" />
                                             </SelectTrigger>
-                                            <SelectContent className="max-h-[360px] w-[var(--radix-select-trigger-width)] min-w-[min(560px,calc(100vw-32px))] max-w-[calc(100vw-32px)]">
+                                            <SelectContent className="max-h-[360px] w-[var(--radix-select-trigger-width)] min-w-[min(560px,calc(100vw-32px))] max-w-[calc(100vw-32px)] border border-border bg-popover text-popover-foreground shadow-xl">
                                                 {readyMaps.length > 0 ? (
                                                     <SelectGroup>
                                                         <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
@@ -1777,16 +1857,30 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                     </div>
                                 </CardHeader>
                                 <CardContent className="flex flex-col gap-4">
-                                    <div className="grid gap-2 sm:grid-cols-2">
-                                        <InfoPair label="期望地图" value={verificationExpectedMap} />
-                                        <InfoPair label="Dreamview 当前地图" value={verificationDreamviewMap} />
-                                        <InfoPair label="runtime 当前地图" value={verificationRuntimeMap} />
-                                        <InfoPair label="验证时间" value={verificationTime} />
-                                    </div>
-                                    <div className="grid gap-2">
-                                        <InfoPair label="目标目录 / map_dir" value={verificationTargetDir} wrap />
-                                        <InfoPair label="动态定位" value={dynamicPoseLabel} wrap />
-                                    </div>
+                                    {lastDeployVerification ? (
+                                        <>
+                                            <div className="grid gap-2 sm:grid-cols-2">
+                                                <InfoPair label="期望地图" value={verificationExpectedMap} />
+                                                <InfoPair label="Dreamview 当前地图" value={verificationDreamviewMap} />
+                                                <InfoPair label="runtime 当前地图" value={verificationRuntimeMap} />
+                                                <InfoPair label="验证时间" value={verificationTime} />
+                                            </div>
+                                            <div className="grid gap-2">
+                                                <InfoPair
+                                                    label="目标目录 / map_dir"
+                                                    value={verificationTargetDir}
+                                                    wrap
+                                                />
+                                                <InfoPair label="动态定位" value={dynamicPoseLabel} wrap />
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-sm leading-6 text-muted-foreground">
+                                            部署成功后这里会显示 Dreamview 当前地图、runtime 当前地图和 map_dir
+                                            写入结果。当前只保留动态定位提示：
+                                            <span className="ml-1 text-foreground">{dynamicPoseLabel}</span>
+                                        </div>
+                                    )}
                                     <div className="flex flex-wrap justify-end gap-2">
                                         <Button
                                             type="button"
@@ -1823,16 +1917,23 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                 </CardContent>
                             </Card>
 
-                            <Card>
-                                <CardHeader>
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div>
-                                            <CardTitle className="flex items-center gap-2">
-                                                <HistoryIcon data-icon="inline-start" />
-                                                最近部署
-                                            </CardTitle>
-                                            <CardDescription>只保留操作需要看的部署和回滚记录。</CardDescription>
-                                        </div>
+                            <details className="rounded-lg border border-border bg-card">
+                                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+                                    <span className="min-w-0">
+                                        <strong className="flex items-center gap-2 text-sm text-foreground">
+                                            <HistoryIcon data-icon="inline-start" />
+                                            高级 / 最近部署与回滚
+                                        </strong>
+                                        <span className="mt-1 block truncate text-xs text-muted-foreground">
+                                            默认折叠；需要回滚或核对历史时再打开。
+                                        </span>
+                                    </span>
+                                    <Badge variant="outline" className="shrink-0">
+                                        {recentDeploymentRecords.length}
+                                    </Badge>
+                                </summary>
+                                <div className="flex flex-col gap-3 border-t border-border p-3">
+                                    <div className="flex justify-end">
                                         <Button
                                             type="button"
                                             variant="outline"
@@ -1844,8 +1945,6 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             刷新
                                         </Button>
                                     </div>
-                                </CardHeader>
-                                <CardContent>
                                     <ScrollArea className="h-[230px]">
                                         {recentDeploymentRecords.length > 0 ? (
                                             <div className="flex flex-col gap-2 pr-3">
@@ -1892,8 +1991,8 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             </div>
                                         )}
                                     </ScrollArea>
-                                </CardContent>
-                            </Card>
+                                </div>
+                            </details>
 
                             {rollbackCandidate ? (
                                 <Alert variant="destructive">
