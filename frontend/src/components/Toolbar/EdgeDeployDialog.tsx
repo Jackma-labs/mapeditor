@@ -1141,24 +1141,22 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             </SelectTrigger>
                                             <SelectContent className="max-h-[360px] min-w-[560px]">
                                                 {readyMaps.length > 0 ? (
-                                                    <>
+                                                    <SelectGroup>
                                                         <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
                                                             可部署
                                                         </SelectLabel>
-                                                        <SelectGroup>
-                                                            {readyMaps.map((item: any, index: number) =>
-                                                                renderMapOption(item, index),
-                                                            )}
-                                                        </SelectGroup>
-                                                    </>
+                                                        {readyMaps.map((item: any, index: number) =>
+                                                            renderMapOption(item, index),
+                                                        )}
+                                                    </SelectGroup>
                                                 ) : null}
                                                 {nonReadyMaps.length > 0 ? (
                                                     <>
                                                         <SelectSeparator />
-                                                        <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
-                                                            不可部署（待修复）
-                                                        </SelectLabel>
                                                         <SelectGroup>
+                                                            <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
+                                                                不可部署（待修复）
+                                                            </SelectLabel>
                                                             {nonReadyMaps.map((item: any, index: number) =>
                                                                 renderMapOption(item, readyMaps.length + index),
                                                             )}
@@ -1166,9 +1164,11 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                                     </>
                                                 ) : null}
                                                 {selectableMaps.length === 0 ? (
-                                                    <SelectLabel className="px-2 py-2 text-sm text-muted-foreground">
-                                                        暂无可用发布包
-                                                    </SelectLabel>
+                                                    <SelectGroup>
+                                                        <SelectLabel className="px-2 py-2 text-sm text-muted-foreground">
+                                                            暂无可用发布包
+                                                        </SelectLabel>
+                                                    </SelectGroup>
                                                 ) : null}
                                             </SelectContent>
                                         </Select>
