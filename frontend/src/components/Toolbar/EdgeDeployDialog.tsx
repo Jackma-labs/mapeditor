@@ -40,7 +40,6 @@ import {
     SelectGroup,
     SelectItem,
     SelectLabel,
-    SelectSeparator,
     SelectTrigger,
     SelectValue,
 } from 'src/components/ui/select';
@@ -59,6 +58,8 @@ type StatusLevel = 'ok' | 'warning' | 'error' | 'idle';
 type NoticeType = 'success' | 'warning' | 'error' | 'info';
 
 type PreflightGroupKey = 'blocking' | 'confirm' | 'passed';
+
+const DEVICE_CHECK_TIMEOUT_MS = 10000;
 
 interface NoticeState {
     type: NoticeType;
@@ -474,13 +475,13 @@ const statusTextMap: Record<StatusLevel, string> = {
     idle: '未检查',
 };
 
-function StatusLight({ level, label }: { level: StatusLevel; label: string }) {
+function StatusLight({ level, label, value }: { level: StatusLevel; label: string; value?: string }) {
     return (
         <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-2">
             <span className={cn('size-2.5 shrink-0 rounded-full', statusDotClass[level])} />
             <div className="min-w-0">
                 <div className="truncate text-xs text-muted-foreground">{label}</div>
-                <div className="truncate text-sm font-medium text-foreground">{statusTextMap[level]}</div>
+                <div className="truncate text-sm font-medium text-foreground">{value || statusTextMap[level]}</div>
             </div>
         </div>
     );
@@ -663,6 +664,8 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const [runtimeDoctor, setRuntimeDoctor] = useState<any>(null);
     const [lastDeployVerification, setLastDeployVerification] = useState<any>(null);
     const [lastCheckedAt, setLastCheckedAt] = useState('');
+    const [checkingDevice, setCheckingDevice] = useState(false);
+    const [deviceCheckTimedOut, setDeviceCheckTimedOut] = useState(false);
     const autoPreflightInFlightRef = useRef(false);
 
     const updateValue = useCallback(<K extends keyof DeployValues>(key: K, value: DeployValues[K]) => {
@@ -800,6 +803,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         values.targetMapRoot ||
         '待验证';
     const lastCheckedLabel = lastCheckedAt ? formatModifiedTime(lastCheckedAt) : '待检查';
+    const checkingStatusText = checkingDevice ? '检查中' : undefined;
 
     const loadDeployments = useCallback(async () => {
         const response = await FileService.getDeployments();
@@ -892,6 +896,8 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             setRollbackCandidate(null);
             setNotice(null);
             setLastCheckedAt('');
+            setCheckingDevice(false);
+            setDeviceCheckTimedOut(false);
         }
     }, [loadConfig, loadDeployments, open]);
 
@@ -1053,8 +1059,8 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     };
 
     const refreshStatus = async () => {
-        setLoading(true);
-        setJobText(`正在刷新边缘设备状态：${values.mapName || '所选发布包'}`);
+        setCheckingDevice(true);
+        setDeviceCheckTimedOut(false);
         try {
             await runPreflight(editingDevice || !hasSavedDevice);
         } catch (error: any) {
@@ -1067,8 +1073,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                 ),
             });
         } finally {
-            setLoading(false);
-            setJobText('');
+            setCheckingDevice(false);
         }
     };
 
@@ -1083,14 +1088,33 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             }
             autoPreflightInFlightRef.current = true;
             if (initial) {
-                setLoading(true);
-                setJobText(`正在检查设备状态：${values.mapName}`);
+                setCheckingDevice(true);
+                setDeviceCheckTimedOut(false);
             }
+            let timeoutId: number | undefined;
             try {
-                await runPreflight(false, {
-                    silent: !initial,
+                const preflightTask = runPreflight(false, {
+                    silent: true,
                     mapName: values.mapName,
                 });
+                if (initial) {
+                    const result = await Promise.race([
+                        preflightTask,
+                        new Promise<'timeout'>((resolve) => {
+                            timeoutId = window.setTimeout(() => resolve('timeout'), DEVICE_CHECK_TIMEOUT_MS);
+                        }),
+                    ]);
+                    if (result === 'timeout') {
+                        setDeviceCheckTimedOut(true);
+                        setNotice({
+                            type: 'warning',
+                            title: '检查超时，可手动刷新',
+                            description: '设备状态检查超过 10 秒，界面已恢复可操作；可以点击“刷新设备状态”重试。',
+                        });
+                    }
+                } else {
+                    await preflightTask;
+                }
             } catch (error: any) {
                 if (!cancelled && initial) {
                     setNotice({
@@ -1103,10 +1127,12 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                     });
                 }
             } finally {
+                if (timeoutId !== undefined) {
+                    window.clearTimeout(timeoutId);
+                }
                 autoPreflightInFlightRef.current = false;
                 if (!cancelled && initial) {
-                    setLoading(false);
-                    setJobText('');
+                    setCheckingDevice(false);
                 }
             }
         };
@@ -1283,37 +1309,19 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         setLastDeployVerification(null);
     };
 
-    const renderMapOption = (item: any, optionIndex: number) => {
-        const optionStatus = item.ready ? 'ready' : item.status || 'invalid';
-        const optionTime = item.modifiedAt ? ` / ${formatModifiedTime(item.modifiedAt)}` : '';
-        let warningHint = '';
-        if (!item.ready && item.statusMessage) {
-            warningHint = ` / ${String(item.statusMessage).slice(0, 96)}`;
-        } else if (!item.ready) {
-            warningHint = ' / 不可部署：请修复检查项';
-        }
-
-        return (
-            <SelectItem
-                key={item.mapName}
-                value={item.mapName}
-                disabled={!item.ready}
-                className="text-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:text-muted-foreground data-[disabled]:opacity-70 data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground"
-            >
-                <span className="flex min-w-0 flex-col py-0.5">
-                    <span className="truncate text-sm">{`${optionIndex + 1}. ${item.mapName}`}</span>
-                    <span className="truncate text-xs text-muted-foreground">
-                        {optionStatus}
-                        {optionTime}
-                        {warningHint}
-                    </span>
-                </span>
-            </SelectItem>
-        );
-    };
+    const renderMapOption = (item: any, optionIndex: number) => (
+        <SelectItem
+            key={item.mapName}
+            value={item.mapName}
+            disabled={!item.ready}
+            className="h-8 text-foreground focus:bg-[var(--landing-primary)] focus:text-white data-[disabled]:text-muted-foreground data-[disabled]:opacity-70 data-[state=checked]:bg-[var(--landing-primary)] data-[state=checked]:text-white"
+        >
+            <span className="block min-w-0 truncate text-sm">{`${optionIndex + 1}. ${item.mapName}`}</span>
+        </SelectItem>
+    );
 
     const renderBlockedMapCard = (item: any) => (
-        <div key={item.mapName} className="rounded-lg border border-destructive/35 bg-destructive/5 p-3">
+        <div key={item.mapName} className="min-w-0 rounded-lg border border-destructive/35 bg-destructive/5 p-3">
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                     <div className="truncate text-sm font-semibold text-foreground">{item.mapName}</div>
@@ -1326,9 +1334,11 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                     不可部署
                 </Badge>
             </div>
-            <ul className="mt-2 flex list-disc flex-col gap-1 pl-4 text-xs leading-5 text-muted-foreground">
+            <ul className="mt-2 flex list-disc flex-col gap-1 break-words pl-4 text-xs leading-5 text-muted-foreground">
                 {getReleaseMapIssueLines(item).map((line) => (
-                    <li key={line}>{line}</li>
+                    <li key={line} className="min-w-0 break-words">
+                        {line}
+                    </li>
                 ))}
             </ul>
         </div>
@@ -1396,7 +1406,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         primaryActionLabel = '刷新设备状态';
         PrimaryActionIcon = WifiIcon;
         primaryAction = refreshStatus;
-        primaryActionDisabled = loading || !hasSelectedReadyMap;
+        primaryActionDisabled = loading || checkingDevice || !hasSelectedReadyMap;
     }
     const showAuxRefresh = hasSelectedReadyMap && hasSavedDevice && primaryActionLabel !== '刷新设备状态';
     const showAuxSave = editingDevice && hasReadyMaps && primaryActionLabel !== '保存设备并预检';
@@ -1526,10 +1536,26 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                 </CardHeader>
                                 <CardContent className="flex flex-col gap-4">
                                     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                                        <StatusLight level={sshStatus} label="设备在线" />
-                                        <StatusLight level={dockerStatus} label="容器可用" />
-                                        <StatusLight level={dreamviewStatus} label="Dreamview" />
-                                        <StatusLight level={overviewStatus} label="是否可部署" />
+                                        <StatusLight
+                                            level={checkingDevice ? 'warning' : sshStatus}
+                                            label="设备在线"
+                                            value={checkingStatusText}
+                                        />
+                                        <StatusLight
+                                            level={checkingDevice ? 'warning' : dockerStatus}
+                                            label="容器可用"
+                                            value={checkingStatusText}
+                                        />
+                                        <StatusLight
+                                            level={checkingDevice ? 'warning' : dreamviewStatus}
+                                            label="Dreamview"
+                                            value={checkingStatusText}
+                                        />
+                                        <StatusLight
+                                            level={checkingDevice ? 'warning' : overviewStatus}
+                                            label="是否可部署"
+                                            value={checkingStatusText}
+                                        />
                                     </div>
                                     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                                         <InfoPair label="Docker 容器" value={values.dockerContainer || '宿主机模式'} />
@@ -1538,6 +1564,15 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                         <InfoPair label="发布包中心" value={formatBoundsCenter(coordinateBounds)} />
                                         <InfoPair label="上次检查" value={lastCheckedLabel} />
                                     </div>
+                                    {deviceCheckTimedOut ? (
+                                        <Alert className="border-[rgba(245,158,11,0.45)] bg-card">
+                                            <AlertTriangleIcon />
+                                            <AlertTitle>检查超时，可手动刷新</AlertTitle>
+                                            <AlertDescription>
+                                                自动设备检查超过 10 秒，界面已恢复可操作。请点击“刷新设备状态”重试。
+                                            </AlertDescription>
+                                        </Alert>
+                                    ) : null}
                                     {jobText ? (
                                         <Alert className="border-[rgba(47,127,247,0.45)] bg-card">
                                             <RefreshCwIcon className="animate-spin" />
@@ -1567,12 +1602,17 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                                 setPreflight(null);
                                                 setLastDeployVerification(null);
                                             }}
-                                            disabled={loading || selectableMaps.length === 0}
+                                            disabled={loading || readyMaps.length === 0}
                                         >
                                             <SelectTrigger className="h-8 w-full border-border bg-background text-foreground data-placeholder:text-muted-foreground [&_svg]:text-muted-foreground">
                                                 <SelectValue placeholder="选择发布包" />
                                             </SelectTrigger>
-                                            <SelectContent className="max-h-[360px] w-[var(--radix-select-trigger-width)] min-w-[min(560px,calc(100vw-32px))] max-w-[calc(100vw-32px)] border border-border bg-popover text-popover-foreground shadow-xl">
+                                            <SelectContent
+                                                position="popper"
+                                                sideOffset={4}
+                                                align="start"
+                                                className="max-h-[280px] w-[var(--radix-select-trigger-width)] min-w-0 max-w-[var(--radix-select-trigger-width)] border border-border bg-popover text-popover-foreground shadow-xl [&_[data-position=popper]]:!h-auto [&_[data-position=popper]]:max-h-[260px]"
+                                            >
                                                 {readyMaps.length > 0 ? (
                                                     <SelectGroup>
                                                         <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
@@ -1583,20 +1623,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                                         )}
                                                     </SelectGroup>
                                                 ) : null}
-                                                {nonReadyMaps.length > 0 ? (
-                                                    <>
-                                                        <SelectSeparator />
-                                                        <SelectGroup>
-                                                            <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
-                                                                不可部署（待修复）
-                                                            </SelectLabel>
-                                                            {nonReadyMaps.map((item: any, index: number) =>
-                                                                renderMapOption(item, readyMaps.length + index),
-                                                            )}
-                                                        </SelectGroup>
-                                                    </>
-                                                ) : null}
-                                                {selectableMaps.length === 0 ? (
+                                                {readyMaps.length === 0 ? (
                                                     <SelectGroup>
                                                         <SelectLabel className="px-2 py-2 text-sm text-muted-foreground">
                                                             暂无可用发布包
@@ -1624,6 +1651,27 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             刷新发布包
                                         </Button>
                                     </div>
+
+                                    {nonReadyMaps.length > 0 ? (
+                                        <details className="rounded-lg border border-border bg-muted/15">
+                                            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+                                                <span className="min-w-0">
+                                                    <strong className="block truncate text-sm text-foreground">
+                                                        不可部署原因
+                                                    </strong>
+                                                    <span className="block truncate text-xs text-muted-foreground">
+                                                        {`默认收起，只显示前 ${Math.min(nonReadyMaps.length, 3)} 个异常包摘要。`}
+                                                    </span>
+                                                </span>
+                                                <Badge variant="outline" className="shrink-0">
+                                                    {nonReadyMaps.length}
+                                                </Badge>
+                                            </summary>
+                                            <div className="flex flex-col gap-2 border-t border-border p-3">
+                                                {nonReadyMaps.slice(0, 3).map(renderBlockedMapCard)}
+                                            </div>
+                                        </details>
+                                    ) : null}
 
                                     {releasePackageSummary}
                                 </CardContent>
@@ -2040,7 +2088,12 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                         关闭
                     </Button>
                     {showAuxRefresh ? (
-                        <Button type="button" variant="outline" onClick={refreshStatus} disabled={loading}>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={refreshStatus}
+                            disabled={loading || checkingDevice}
+                        >
                             <WifiIcon data-icon="inline-start" />
                             刷新设备状态
                         </Button>
