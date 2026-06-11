@@ -15,6 +15,9 @@ const { convertEditorMapToApolloPackage } = require('./editorMapConverter');
 const { runCommand } = require('./process');
 const { generateAssistDrawingCandidates } = require('./assistDrawingCandidates');
 
+const EDGE_SSH_READY_TIMEOUT_MS = 15000;
+const EDGE_SSH_CONNECT_ATTEMPTS = 3;
+const EDGE_SSH_CONNECT_RETRY_DELAYS_MS = [0, 500, 1500];
 const DEFAULT_POINT_CLOUD_RENDER_POINTS = 1000000;
 const configuredPointCloudRenderPoints = Number(
   process.env.POINT_CLOUD_RENDER_POINTS || DEFAULT_POINT_CLOUD_RENDER_POINTS,
@@ -453,14 +456,25 @@ function hasEdgePassword(config) {
   return Boolean(String(config.edgeDeploy?.password || '').trim());
 }
 
-function createEdgeSshConnection(config) {
+function isRetryableEdgeSshConnectionError(error) {
+  const code = String(error?.code || '');
+  const message = String(error?.message || error || '');
+  return (
+    ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE'].includes(code) ||
+    /timed out while waiting for handshake|connection closed before ready|handshake failed|socket closed|ECONNRESET|ECONNREFUSED|ETIMEDOUT/i.test(
+      message,
+    )
+  );
+}
+
+function createEdgeSshConnectionOnce(config, readyTimeoutMs) {
   const conn = new SshClient();
   const options = {
     host: config.edgeDeploy.host,
     port: config.edgeDeploy.port || 22,
     username: config.edgeDeploy.user,
     password: config.edgeDeploy.password,
-    readyTimeout: 10000,
+    readyTimeout: readyTimeoutMs,
   };
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -469,8 +483,12 @@ function createEdgeSshConnection(config) {
         return;
       }
       settled = true;
+      conn.removeListener('error', rejectOnce);
+      conn.removeListener('close', onCloseBeforeReady);
+      conn.end();
       reject(error);
     };
+    const onCloseBeforeReady = () => rejectOnce(new Error('SSH connection closed before ready'));
     conn.once('ready', () => {
       if (settled) {
         return;
@@ -481,11 +499,44 @@ function createEdgeSshConnection(config) {
       conn.on('error', () => {});
       resolve(conn);
     });
-    const onCloseBeforeReady = () => rejectOnce(new Error('SSH connection closed before ready'));
     conn.once('error', rejectOnce);
     conn.once('close', onCloseBeforeReady);
-    conn.connect(options);
+    try {
+      conn.connect(options);
+    } catch (error) {
+      rejectOnce(error);
+    }
   });
+}
+
+async function createEdgeSshConnection(config, options = {}) {
+  const attempts = Math.max(1, Math.floor(Number(options.attempts || EDGE_SSH_CONNECT_ATTEMPTS)));
+  const readyTimeoutMs = Math.max(1000, Math.floor(Number(options.readyTimeoutMs || EDGE_SSH_READY_TIMEOUT_MS)));
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await createEdgeSshConnectionOnce(config, readyTimeoutMs);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts || !isRetryableEdgeSshConnectionError(error)) {
+        break;
+      }
+      const delayMs =
+        EDGE_SSH_CONNECT_RETRY_DELAYS_MS[attempt] ||
+        EDGE_SSH_CONNECT_RETRY_DELAYS_MS[EDGE_SSH_CONNECT_RETRY_DELAYS_MS.length - 1];
+      if (delayMs > 0) {
+        await delay(delayMs);
+      }
+    }
+  }
+
+  if (attempts > 1 && isRetryableEdgeSshConnectionError(lastError)) {
+    const error = new Error(`SSH handshake failed after ${attempts} attempts: ${lastError.message}`);
+    error.cause = lastError;
+    throw error;
+  }
+  throw lastError;
 }
 
 async function runEdgeSshCommand(config, command, options = {}) {
@@ -493,7 +544,10 @@ async function runEdgeSshCommand(config, command, options = {}) {
     return runCommand('ssh', [...buildSshBaseArgs(config), command], options);
   }
   const timeoutMs = options.timeoutMs || 30000;
-  const conn = await createEdgeSshConnection(config);
+  const conn = await createEdgeSshConnection(config, {
+    attempts: options.connectionAttempts || EDGE_SSH_CONNECT_ATTEMPTS,
+    readyTimeoutMs: options.readyTimeoutMs || EDGE_SSH_READY_TIMEOUT_MS,
+  });
   return new Promise((resolve, reject) => {
     let stdout = '';
     let stderr = '';
@@ -585,7 +639,10 @@ async function uploadDirectoryWithSftp(config, localDir, remoteParentDir) {
   await runEdgeSshCommand(config, `mkdir -p ${quoteShell(remoteParentDir)}`, {
     timeoutMs: 30000,
   });
-  const conn = await createEdgeSshConnection(config);
+  const conn = await createEdgeSshConnection(config, {
+    attempts: EDGE_SSH_CONNECT_ATTEMPTS,
+    readyTimeoutMs: EDGE_SSH_READY_TIMEOUT_MS,
+  });
   const startedAt = Date.now();
   let fileCount = 0;
   let byteCount = 0;

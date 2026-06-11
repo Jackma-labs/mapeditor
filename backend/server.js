@@ -3313,7 +3313,7 @@ app.post(
       const result = await runtime.configureEdgeDeploy(config, req.body || {});
       const preflight = await runtime.preflightEdgeDeploy(config, req.body || {});
       const preflightErrors = summarizePreflightErrors(preflight);
-      res.status(preflight.ready ? 200 : 409).json({
+      res.status(200).json({
         code: preflight.ready ? 0 : 15065,
         message: preflight.ready
           ? "Success"
@@ -3582,7 +3582,7 @@ app.post(
     try {
       const result = await runtime.preflightEdgeDeploy(config, req.body || {});
       const preflightErrors = summarizePreflightErrors(result);
-      res.status(result.ready ? 200 : 500).json({
+      res.status(200).json({
         code: result.ready ? 0 : 15042,
         message: result.ready
           ? "Success"
