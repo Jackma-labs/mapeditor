@@ -2071,12 +2071,19 @@ async function listReleasedMaps(config) {
     const stat = await fsp.stat(mapDir);
     const files = await fsp.readdir(mapDir).catch(() => []);
     const expectedFiles = [
+      'editor_map.json',
       'base_map.bin',
       'base_map.txt',
       'routing_map.bin',
       'routing_map.txt',
       'sim_map.bin',
       'sim_map.txt',
+      'coordinate_metadata.json',
+      'quality_gate.json',
+      'default_routing_request.json',
+      'routing_loop_plan.json',
+      'poi.json',
+      'manifest.json',
     ];
     const sizeBytes = await getDirectorySize(mapDir);
     const missingExpectedFiles = expectedFiles.filter((fileName) => !files.includes(fileName));
@@ -2086,11 +2093,11 @@ async function listReleasedMaps(config) {
     const conversionErrors = getReleasedMapManifestErrors(manifest);
     const ready = missingExpectedFiles.length === 0 && sizeBytes > 0 && conversionErrors.length === 0;
     const selectable = isSelectableReleasedMapName(mapName);
-    const status = ready ? 'ready' : conversionErrors.length > 0 ? 'coordinate_invalid' : 'invalid';
+    const status = ready ? 'ready' : conversionErrors.length > 0 ? 'validation_failed' : 'invalid';
     const statusMessage = ready
       ? 'Ready for edge deployment'
       : conversionErrors.length > 0
-        ? `Coordinate conversion failed: ${summarizeReleasedMapErrors(conversionErrors)}`
+        ? `Release validation failed: ${summarizeReleasedMapErrors(conversionErrors)}`
         : `Missing ${missingExpectedFiles.join(', ') || 'valid map files'}`;
     maps.push({
       mapName,
@@ -2165,8 +2172,11 @@ async function readReleasedMapManifest(mapDir) {
 }
 
 function getReleasedMapManifestErrors(manifest) {
-  if (!manifest || manifest.parseError) {
-    return [];
+  if (!manifest) {
+    return ['manifest.json is missing'];
+  }
+  if (manifest.parseError) {
+    return [`manifest.json parse failed: ${manifest.parseError}`];
   }
   const warnings = Array.isArray(manifest.warnings) ? manifest.warnings : [];
   const errors = warnings
@@ -2187,6 +2197,8 @@ function getReleasedMapManifestErrors(manifest) {
     errors.push(...gateErrors);
   } else if (manifest.qualityGate && manifest.qualityGate.ready === false) {
     errors.push('release quality gate is not ready');
+  } else if (!manifest.qualityGate) {
+    errors.push('release quality gate metadata is missing');
   }
   return errors;
 }

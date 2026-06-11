@@ -44,6 +44,7 @@ const APOLLO_SIM_CENTER_SMOOTH_MIN_LENGTH = 5;
 const APOLLO_SIM_CENTER_SMOOTH_MAX_DEVIATION = 3.5;
 const APOLLO_SIM_CENTER_SMOOTH_SAMPLE_COUNT = 17;
 const APOLLO_SIM_CENTER_HEADING_RELAX_DEGREES = [-12, -8, -4, 0, 4, 8, 12];
+const APOLLO_SIM_CENTER_CONTROL_CANDIDATE_LIMIT = 9;
 const APOLLO_CURVE_MIN_SAMPLE_COUNT = 17;
 const APOLLO_CURVE_MAX_SAMPLE_COUNT = 97;
 const APOLLO_CURVE_TARGET_SEGMENT_LENGTH_METERS = 0.4;
@@ -1117,6 +1118,40 @@ function cubicCenterCandidate(start, end, startHeading, endHeading, startControl
   );
 }
 
+function centerControlDistanceCandidates(maxControl, chord, originalLength) {
+  const rawCandidates = [
+    1,
+    1.5,
+    2.5,
+    3.5,
+    chord * 0.25,
+    chord * 0.4,
+    chord * 0.6,
+    originalLength * 0.25,
+    originalLength * 0.4,
+    originalLength * 0.6,
+    maxControl,
+  ];
+  const uniqueCandidates = Array.from(
+    new Set(
+      rawCandidates
+        .filter((value) => Number.isFinite(value))
+        .map((value) => clamp(value, 1, maxControl))
+        .map((value) => Math.round(value * 4) / 4),
+    ),
+  ).sort((a, b) => a - b);
+
+  if (uniqueCandidates.length <= APOLLO_SIM_CENTER_CONTROL_CANDIDATE_LIMIT) {
+    return uniqueCandidates;
+  }
+
+  const lastIndex = uniqueCandidates.length - 1;
+  return Array.from({ length: APOLLO_SIM_CENTER_CONTROL_CANDIDATE_LIMIT }, (_unused, index) => {
+    const sourceIndex = Math.round((index / (APOLLO_SIM_CENTER_CONTROL_CANDIDATE_LIMIT - 1)) * lastIndex);
+    return uniqueCandidates[sourceIndex];
+  }).filter((value, index, values) => index === 0 || value !== values[index - 1]);
+}
+
 function centerlineStaysInsideLane(candidate, original, leftBoundaryPoints, rightBoundaryPoints, laneWidth) {
   const maxDeviation = Math.max(APOLLO_SIM_CENTER_SMOOTH_MAX_DEVIATION, laneWidth / 2);
   for (let index = 0; index < candidate.length; index += 1) {
@@ -1168,12 +1203,13 @@ function smoothCenterlineForApolloPlanning(
   const endHeading = headingBetween(center[center.length - 2], center[center.length - 1]);
   const chord = distance(start, end);
   const maxControl = Math.max(3, Math.min(originalLength * 1.4, Math.max(chord * 1.8, 8)));
+  const controlCandidates = centerControlDistanceCandidates(maxControl, chord, originalLength);
   const findBestCandidate = (headingOffsets) => {
     let bestCandidate = null;
     for (const startHeadingOffset of headingOffsets) {
       for (const endHeadingOffset of headingOffsets) {
-        for (let startControl = 1; startControl <= maxControl; startControl += 0.5) {
-          for (let endControl = 1; endControl <= maxControl; endControl += 0.5) {
+        for (const startControl of controlCandidates) {
+          for (const endControl of controlCandidates) {
             const candidate = cubicCenterCandidate(
               start,
               end,
@@ -2521,8 +2557,15 @@ function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateM
   const captureDistance = coordinateMetadata.captureTrajectoryCenter?.distanceToMapCenterMeters;
   if (Number.isFinite(captureDistance)) {
     const captureCenterCheck = coordinateMetadata.captureTrajectoryCenter;
-    const captureDistanceStatus =
-      captureDistance <= 100 ? 'ok' : captureDistance <= 5000 ? 'warning' : 'error';
+    const captureDistanceStatus = captureCenterCheck.enforce
+      ? captureDistance <= 100
+        ? 'ok'
+        : captureDistance <= 5000
+          ? 'warning'
+          : 'error'
+      : captureDistance <= 100
+        ? 'ok'
+        : 'warning';
     addCheck(
       'capture-center-distance',
       captureDistanceStatus,

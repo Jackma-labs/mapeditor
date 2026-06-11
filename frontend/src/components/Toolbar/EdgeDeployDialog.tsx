@@ -32,7 +32,16 @@ import {
 import { Input } from 'src/components/ui/input';
 import { Label } from 'src/components/ui/label';
 import { ScrollArea } from 'src/components/ui/scroll-area';
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from 'src/components/ui/select';
+import {
+    Select,
+    SelectContent,
+    SelectGroup,
+    SelectItem,
+    SelectLabel,
+    SelectSeparator,
+    SelectTrigger,
+    SelectValue,
+} from 'src/components/ui/select';
 import { Separator } from 'src/components/ui/separator';
 import { Switch } from 'src/components/ui/switch';
 import { cn } from 'src/lib/utils';
@@ -323,7 +332,7 @@ const statusTextMap: Record<StatusLevel, string> = {
 function StatusLight({ level, label }: { level: StatusLevel; label: string }) {
     return (
         <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-2">
-            <span className={cn('h-2.5 w-2.5 shrink-0 rounded-full', statusDotClass[level])} />
+            <span className={cn('size-2.5 shrink-0 rounded-full', statusDotClass[level])} />
             <div className="min-w-0">
                 <div className="truncate text-xs text-muted-foreground">{label}</div>
                 <div className="truncate text-sm font-medium text-foreground">{statusTextMap[level]}</div>
@@ -411,12 +420,26 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         }
     }, []);
 
+    const resolveDefaultMapName = useCallback(
+        (maps: any[]) => {
+            const current = values.mapName;
+            if (maps.some((item: any) => item.selectable && item.ready && item.mapName === current)) {
+                return current;
+            }
+            const readyMapName = maps.find((item: any) => item.selectable && item.ready)?.mapName;
+            return readyMapName || '';
+        },
+        [values.mapName],
+    );
+
     const selectedMap = useMemo(
         () => releasedMaps.find((item: any) => item.mapName === values.mapName) || null,
         [releasedMaps, values.mapName],
     );
     const selectableMaps = useMemo(() => releasedMaps.filter((item: any) => item.selectable), [releasedMaps]);
-    const deployableMaps = useMemo(() => selectableMaps.filter((item: any) => item.ready), [selectableMaps]);
+    const readyMaps = useMemo(() => selectableMaps.filter((item: any) => item.ready), [selectableMaps]);
+    const nonReadyMaps = useMemo(() => selectableMaps.filter((item: any) => !item.ready), [selectableMaps]);
+    const latestReadyMapName = readyMaps[0]?.mapName || '';
     const preflightChecks = useMemo(() => getChecks(preflight), [preflight]);
     const runtimeCheck = useMemo(() => getCheck(preflight, 'edge-runtime-status'), [preflight]);
     const dreamviewCheck = useMemo(() => getCheck(preflight, 'edge-dreamview-hmi'), [preflight]);
@@ -479,11 +502,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             }
             const data = response.data || {};
             const maps = Array.isArray(mapsResponse?.data?.maps) ? mapsResponse.data.maps : [];
-            const currentMapName = values.mapName;
-            const currentReadyExists = maps.some(
-                (item: any) => item.mapName === currentMapName && item.selectable && item.ready,
-            );
-            const defaultMapName = maps.find((item: any) => item.selectable && item.ready)?.mapName || '';
+            const defaultMapName = resolveDefaultMapName(maps);
             setReleasedMaps(maps);
             setDeployConfig(data);
             setValues((current) => ({
@@ -497,7 +516,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                 nativeMapTools: data.nativeMapTools !== false,
                 autoSwitchDreamview: data.autoSwitchDreamview !== false,
                 postDeployCommand: data.postDeployCommand || '',
-                mapName: currentReadyExists ? currentMapName : defaultMapName,
+                mapName: defaultMapName,
             }));
             setEditingDevice(!(data.enabled && data.host && data.user));
             setNotice(null);
@@ -510,7 +529,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         } finally {
             setLoading(false);
         }
-    }, [values.mapName]);
+    }, [resolveDefaultMapName]);
 
     const refreshReleasedMaps = async () => {
         setLoading(true);
@@ -525,7 +544,8 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                 (item: any) => item.mapName === values.mapName && item.selectable && item.ready,
             );
             if (!currentStillExists) {
-                updateValue('mapName', maps.find((item: any) => item.selectable && item.ready)?.mapName || '');
+                const fallbackReadyMapName = maps.find((item: any) => item.selectable && item.ready)?.mapName;
+                updateValue('mapName', fallbackReadyMapName || '');
             }
         } catch (error: any) {
             setNotice({
@@ -838,10 +858,74 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
 
     const selectedMapStatusValue = selectedMap ? (
         <span className="inline-flex items-center gap-2">
-            <span className={cn('h-2 w-2 rounded-full', statusDotClass[mapStatusColor(selectedMap)])} />
+            <span className={cn('size-2 rounded-full', statusDotClass[mapStatusColor(selectedMap)])} />
             {selectedMap.ready ? 'ready' : selectedMap.status || 'invalid'}
         </span>
     ) : null;
+    const primaryBlockedMap = nonReadyMaps[0] || null;
+
+    const selectLatestReadyMap = () => {
+        if (!latestReadyMapName) {
+            return;
+        }
+        updateValue('mapName', latestReadyMapName);
+        setPreflight(null);
+    };
+
+    const renderMapOption = (item: any, optionIndex: number) => {
+        const optionStatus = item.ready ? 'ready' : item.status || 'invalid';
+        const optionTime = item.modifiedAt ? ` / ${formatModifiedTime(item.modifiedAt)}` : '';
+        let warningHint = '';
+        if (!item.ready && item.statusMessage) {
+            warningHint = ` / ${String(item.statusMessage).slice(0, 96)}`;
+        } else if (!item.ready) {
+            warningHint = ' / 不可部署：请修复检查项';
+        }
+
+        return (
+            <SelectItem key={item.mapName} value={item.mapName} disabled={!item.ready}>
+                <span className="flex min-w-0 flex-col py-0.5">
+                    <span className="truncate text-sm">{`${optionIndex + 1}. ${item.mapName}`}</span>
+                    <span className="truncate text-xs text-muted-foreground">
+                        {optionStatus}
+                        {optionTime}
+                        {warningHint}
+                    </span>
+                </span>
+            </SelectItem>
+        );
+    };
+
+    let releasePackageSummary: ReactNode;
+    if (selectedMap) {
+        releasePackageSummary = (
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                <InfoPair label="发布包" value={selectedMap.mapName} />
+                <InfoPair label="状态" value={selectedMapStatusValue} />
+                <InfoPair label="修改时间" value={formatModifiedTime(selectedMap.modifiedAt)} />
+                <InfoPair label="大小" value={formatBytes(selectedMap.sizeBytes)} />
+            </div>
+        );
+    } else if (primaryBlockedMap) {
+        const blockedMessage = `${primaryBlockedMap.mapName}：${
+            primaryBlockedMap.statusMessage || '发布检查未通过，请先修复后重新生成发布包。'
+        }`;
+        releasePackageSummary = (
+            <Alert>
+                <AlertTriangleIcon />
+                <AlertTitle>没有可部署发布包</AlertTitle>
+                <AlertDescription>{blockedMessage}</AlertDescription>
+            </Alert>
+        );
+    } else {
+        releasePackageSummary = (
+            <Alert>
+                <InfoIcon />
+                <AlertTitle>没有可部署发布包</AlertTitle>
+                <AlertDescription>请先从当前地图生成发布包，并确保发布检查通过。</AlertDescription>
+            </Alert>
+        );
+    }
 
     return (
         <Dialog
@@ -933,7 +1017,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                     </CardDescription>
                                 </CardHeader>
                                 <CardContent className="flex flex-col gap-4">
-                                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
                                         <Select
                                             value={values.mapName}
                                             onValueChange={(mapName) => {
@@ -942,41 +1026,51 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             }}
                                             disabled={loading || selectableMaps.length === 0}
                                         >
-                                            <SelectTrigger className="h-10 w-full">
+                                            <SelectTrigger className="h-8 w-full">
                                                 <SelectValue placeholder="选择发布包" />
                                             </SelectTrigger>
-                                            <SelectContent className="z-[10000] max-h-[360px] min-w-[520px]">
-                                                <SelectGroup>
-                                                    {selectableMaps.map((item: any, index: number) => {
-                                                        const optionStatus = item.ready
-                                                            ? 'ready'
-                                                            : item.status || 'invalid';
-                                                        const optionTime = item.modifiedAt
-                                                            ? ` / ${formatModifiedTime(item.modifiedAt)}`
-                                                            : '';
-                                                        return (
-                                                            <SelectItem
-                                                                key={item.mapName}
-                                                                value={item.mapName}
-                                                                disabled={!item.ready}
-                                                            >
-                                                                <span className="flex min-w-0 flex-col">
-                                                                    <span className="truncate">{item.mapName}</span>
-                                                                    <span className="truncate text-xs text-muted-foreground">
-                                                                        {optionStatus}
-                                                                        {index === 0 ? ' / 最新修改' : ''}
-                                                                        {optionTime}
-                                                                        {!item.ready && item.statusMessage
-                                                                            ? ` / ${item.statusMessage}`
-                                                                            : ''}
-                                                                    </span>
-                                                                </span>
-                                                            </SelectItem>
-                                                        );
-                                                    })}
-                                                </SelectGroup>
+                                            <SelectContent className="max-h-[360px] min-w-[560px]">
+                                                {readyMaps.length > 0 ? (
+                                                    <>
+                                                        <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
+                                                            可部署
+                                                        </SelectLabel>
+                                                        <SelectGroup>
+                                                            {readyMaps.map((item: any, index: number) =>
+                                                                renderMapOption(item, index),
+                                                            )}
+                                                        </SelectGroup>
+                                                    </>
+                                                ) : null}
+                                                {nonReadyMaps.length > 0 ? (
+                                                    <>
+                                                        <SelectSeparator />
+                                                        <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
+                                                            不可部署（待修复）
+                                                        </SelectLabel>
+                                                        <SelectGroup>
+                                                            {nonReadyMaps.map((item: any, index: number) =>
+                                                                renderMapOption(item, readyMaps.length + index),
+                                                            )}
+                                                        </SelectGroup>
+                                                    </>
+                                                ) : null}
+                                                {selectableMaps.length === 0 ? (
+                                                    <SelectLabel className="px-2 py-2 text-sm text-muted-foreground">
+                                                        暂无可用发布包
+                                                    </SelectLabel>
+                                                ) : null}
                                             </SelectContent>
                                         </Select>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={selectLatestReadyMap}
+                                            disabled={loading || !latestReadyMapName}
+                                        >
+                                            <HistoryIcon data-icon="inline-start" />
+                                            选择最新可部署
+                                        </Button>
                                         <Button
                                             type="button"
                                             variant="outline"
@@ -988,25 +1082,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                         </Button>
                                     </div>
 
-                                    {selectedMap ? (
-                                        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                                            <InfoPair label="发布包" value={selectedMap.mapName} />
-                                            <InfoPair label="状态" value={selectedMapStatusValue} />
-                                            <InfoPair
-                                                label="修改时间"
-                                                value={formatModifiedTime(selectedMap.modifiedAt)}
-                                            />
-                                            <InfoPair label="大小" value={formatBytes(selectedMap.sizeBytes)} />
-                                        </div>
-                                    ) : (
-                                        <Alert>
-                                            <InfoIcon />
-                                            <AlertTitle>没有可部署发布包</AlertTitle>
-                                            <AlertDescription>
-                                                请先从当前地图生成发布包，并确保发布检查通过。
-                                            </AlertDescription>
-                                        </Alert>
-                                    )}
+                                    {releasePackageSummary}
                                 </CardContent>
                             </Card>
 
@@ -1192,7 +1268,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                                         >
                                                             <span
                                                                 className={cn(
-                                                                    'mt-1 h-2.5 w-2.5 rounded-full',
+                                                                    'mt-1 size-2.5 rounded-full',
                                                                     statusDotClass[level],
                                                                 )}
                                                             />

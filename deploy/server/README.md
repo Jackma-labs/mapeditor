@@ -8,7 +8,7 @@ edge-device deployment. Vehicle edge devices should only receive released maps.
 
 The verified target is:
 
-- Host: `dell@192.168.110.2`
+- Host: `dell@192.168.110.18`
 - OS: Ubuntu 22.04
 - Architecture: x86_64
 - CPU: 64 hardware threads
@@ -77,7 +77,7 @@ curl -fsS -X POST http://127.0.0.1:58000/runtime/preflight-deploy
 After deployment, open:
 
 ```text
-http://192.168.110.2:58000/
+http://192.168.110.18:58000/
 ```
 
 If the service is healthy on the server but another machine cannot open the URL,

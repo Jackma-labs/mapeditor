@@ -38,11 +38,23 @@ async function discoverDefaultFixtures() {
   const editorMapRoot = path.join(appRoot, "data", "editor_map");
   const releaseRoot = path.join(appRoot, "data", "released_map");
   const editorMaps = (await listJsonFiles(editorMapRoot)).filter(
-    (filePath) => !filePath.includes(`${path.sep}.history${path.sep}`),
+    (filePath) =>
+      !filePath.includes(`${path.sep}.history${path.sep}`) &&
+      !/\.(fixed|remote|backup|bak)\.json$/u.test(path.basename(filePath)),
   );
-  const releasedEditorMaps = (await listJsonFiles(releaseRoot)).filter(
-    (filePath) => path.basename(filePath) === "editor_map.json",
-  );
+  const releaseEntries = (await pathExists(releaseRoot))
+    ? await fs.readdir(releaseRoot, { withFileTypes: true })
+    : [];
+  const releasedEditorMaps = [];
+  for (const entry of releaseEntries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".") || /\.bak(?:-|$)/u.test(entry.name)) {
+      continue;
+    }
+    const editorMapPath = path.join(releaseRoot, entry.name, "editor_map.json");
+    if (await pathExists(editorMapPath)) {
+      releasedEditorMaps.push(editorMapPath);
+    }
+  }
   return [...editorMaps, ...releasedEditorMaps].sort();
 }
 
@@ -54,6 +66,7 @@ function inferMapName(filePath) {
 }
 
 async function runFixture(filePath, tmpRoot) {
+  const startedAt = Date.now();
   const mapName = inferMapName(filePath);
   const releaseDir = path.join(tmpRoot, mapName.replace(/[^\w.-]+/g, "_"));
   await convertEditorMapToApolloPackage({
@@ -64,10 +77,17 @@ async function runFixture(filePath, tmpRoot) {
   const manifest = JSON.parse(
     await fs.readFile(path.join(releaseDir, "manifest.json"), "utf8"),
   );
+  const summary = manifest.summary || {};
+  const qualityGateIssues = Array.isArray(manifest.qualityGate?.checks)
+    ? manifest.qualityGate.checks.filter((check) => check.status !== "ok")
+    : [];
   return {
     mapName,
     filePath,
-    summary: manifest.summary || {},
+    summary,
+    ready: summary.qualityGateReady === true,
+    durationMs: Date.now() - startedAt,
+    qualityGateIssues,
     warningCount: Array.isArray(manifest.warnings)
       ? manifest.warnings.length
       : 0,
@@ -95,9 +115,29 @@ async function main() {
   );
   const results = [];
   const failures = [];
-  for (const fixture of fixtures) {
+  for (const [index, fixture] of fixtures.entries()) {
+    console.error(`[regression] ${index + 1}/${fixtures.length} ${fixture}`);
     try {
-      results.push(await runFixture(fixture, tmpRoot));
+      const result = await runFixture(fixture, tmpRoot);
+      results.push(result);
+      if (
+        result.summary.qualityGateReady !== true ||
+        Number(result.summary.qualityGateErrors || 0) > 0 ||
+        Number(result.summary.contractErrors || 0) > 0
+      ) {
+        const issueText = result.qualityGateIssues
+          .slice(0, 5)
+          .map((issue) => `${issue.id || issue.title || "quality"}: ${issue.message || issue.status}`)
+          .join("; ");
+        failures.push({
+          filePath: fixture,
+          error: `quality gate not ready: ${JSON.stringify({
+            qualityGateReady: result.summary.qualityGateReady,
+            qualityGateErrors: result.summary.qualityGateErrors,
+            contractErrors: result.summary.contractErrors,
+          })}${issueText ? `; ${issueText}` : ""}`,
+        });
+      }
     } catch (error) {
       failures.push({
         filePath: fixture,
