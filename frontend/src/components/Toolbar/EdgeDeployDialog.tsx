@@ -1724,14 +1724,50 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                             </CardHeader>
                             <CardContent className="flex flex-col gap-3">
                                 {selectedMap?.ready ? (
-                                    <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 px-3 py-3">
-                                        <div className="min-w-0">
-                                            <div className="truncate text-base font-semibold text-foreground">
-                                                {selectedMap.mapName}
-                                            </div>
-                                            <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                                                最新可部署包；点击下方按钮会先自动预检，再推送到边缘设备。
-                                            </div>
+                                    <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-muted/20 px-3 py-3">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <Label htmlFor="edge-map-select-simple" className="text-sm font-semibold">
+                                                发布地图
+                                            </Label>
+                                            <Badge variant="outline" className="shrink-0">
+                                                {readyMaps.length > 1 ? `${readyMaps.length} 个可选` : '默认最新'}
+                                            </Badge>
+                                        </div>
+                                        <Select
+                                            value={values.mapName}
+                                            onValueChange={(mapName) => {
+                                                updateValue('mapName', mapName);
+                                                setPreflight(null);
+                                                setLastDeployVerification(null);
+                                                setDeviceCheckTimedOut(false);
+                                                setNotice(null);
+                                            }}
+                                            disabled={loading || readyMaps.length === 0}
+                                        >
+                                            <SelectTrigger
+                                                id="edge-map-select-simple"
+                                                className="h-10 w-full border-border bg-background text-left text-foreground data-placeholder:text-muted-foreground [&_svg]:text-muted-foreground"
+                                            >
+                                                <SelectValue placeholder="选择发布地图" />
+                                            </SelectTrigger>
+                                            <SelectContent
+                                                position="popper"
+                                                sideOffset={4}
+                                                align="start"
+                                                className="max-h-[280px] w-[var(--radix-select-trigger-width)] min-w-0 max-w-[var(--radix-select-trigger-width)] border border-border bg-popover text-popover-foreground shadow-xl"
+                                            >
+                                                <SelectGroup>
+                                                    <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
+                                                        可部署发布包
+                                                    </SelectLabel>
+                                                    {readyMaps.map((item: any, index: number) =>
+                                                        renderMapOption(item, index),
+                                                    )}
+                                                </SelectGroup>
+                                            </SelectContent>
+                                        </Select>
+                                        <div className="text-xs leading-5 text-muted-foreground">
+                                            默认选择最新可部署包；需要发布其它地图时，先在这里切换。
                                         </div>
                                     </div>
                                 ) : (
@@ -1775,7 +1811,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             一键发布
                                         </CardTitle>
                                         <CardDescription>
-                                            不需要手动选择边缘设备和发布包。系统使用固定设备和最新可部署包。
+                                            边缘设备固定；发布地图默认最新，需要时可在上方切换。
                                         </CardDescription>
                                     </div>
                                     <Badge
