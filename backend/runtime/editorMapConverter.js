@@ -735,6 +735,7 @@ function createCoordinateTransform(editorMap) {
   if (rawPoints.length === 0) {
     return null;
   }
+  const maxAbsRawPoint = rawPoints.reduce((max, point) => Math.max(max, Math.abs(point.x), Math.abs(point.y)), 0);
   const bounds = {
     left: Math.min(...rawPoints.map((point) => point.x)),
     right: Math.max(...rawPoints.map((point) => point.x)),
@@ -773,6 +774,45 @@ function createCoordinateTransform(editorMap) {
       sourceCrs,
       targetCrs: APOLLO_TARGET_CRS,
       origin: null,
+      targetCenter: {
+        x: (targetBounds.left + targetBounds.right) / 2,
+        y: (targetBounds.bottom + targetBounds.top) / 2,
+        z: 0,
+      },
+      localCenter,
+      offset: { x: 0, y: 0, z: 0 },
+    };
+  }
+  const baseMapCenter = finiteCoordinate(
+    coordinateFromArray(
+      editorMap.basemapCenter ||
+        editorMap.baseMapCenter ||
+        editorMap.base_map_center ||
+        editorMap.imageBasemapCenter ||
+        editorMap.image_basemap_center,
+    ),
+  );
+  if (sourceCrs === 'GAUSS_KRUGER_CM114' && maxAbsRawPoint < 10000 && baseMapCenter) {
+    const convertedPoints = rawPoints.map((point) =>
+      gaussKrugerCm114ToUtmZone50(point.x + baseMapCenter.x, point.y + baseMapCenter.y, point.z + (baseMapCenter.z || 0)),
+    );
+    const targetBounds = {
+      left: Math.min(...convertedPoints.map((point) => point.x)),
+      right: Math.max(...convertedPoints.map((point) => point.x)),
+      bottom: Math.min(...convertedPoints.map((point) => point.y)),
+      top: Math.max(...convertedPoints.map((point) => point.y)),
+    };
+    const targetOrigin = gaussKrugerCm114ToUtmZone50(baseMapCenter.x, baseMapCenter.y, baseMapCenter.z || 0);
+    return {
+      mode: 'local-enu-gauss-kruger-cm114-to-utm-zone-50',
+      source: 'basemapCenter:gauss-kruger-cm114-local-origin',
+      sourceCrs: 'LOCAL_ENU_METERS',
+      sourceProjectedCrs: 'GAUSS_KRUGER_CM114',
+      sourceCrsDefinition: GAUSS_KRUGER_CM114_CRS,
+      sourceOrigin: baseMapCenter,
+      targetOrigin,
+      targetCrs: APOLLO_TARGET_CRS,
+      origin: targetOrigin,
       targetCenter: {
         x: (targetBounds.left + targetBounds.right) / 2,
         y: (targetBounds.bottom + targetBounds.top) / 2,
