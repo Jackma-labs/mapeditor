@@ -541,6 +541,39 @@ function firstAnchorUtmFromEditorMap(editorMap) {
   return null;
 }
 
+function localProjectedAnchorFromEditorMap(editorMap) {
+  const anchorSources = [
+    editorMap.anchor,
+    editorMap.coordinateAnchor,
+    editorMap.coordinate_anchor,
+    editorMap.coordinateMetadata?.anchor,
+    editorMap.coordinate?.anchor,
+  ].filter(Boolean);
+  for (const anchor of anchorSources) {
+    const sourceCrs = normalizeCoordinateFrame(anchor.sourceCrs || anchor.source_crs || anchor.rawPointCloudCrs);
+    const sourceOrigin = coordinateFromNestedKeys(anchor, [
+      'sourceOrigin',
+      'source_origin',
+      'rawOrigin',
+      'raw_origin',
+      'cm114Origin',
+      'cm114_origin',
+      'gaussKrugerOrigin',
+      'gauss_kruger_origin',
+      'baseMapCenter',
+      'base_map_center',
+    ]);
+    if (sourceCrs === 'GAUSS_KRUGER_CM114' && sourceOrigin) {
+      return {
+        sourceCrs,
+        sourceOrigin,
+        source: typeof anchor.source === 'string' && anchor.source.trim() ? anchor.source.trim() : 'anchor.sourceOrigin',
+      };
+    }
+  }
+  return null;
+}
+
 function anchorUtmFromEditorMap(editorMap) {
   const anchorUtm = firstAnchorUtmFromEditorMap(editorMap);
   const direct = coordinateFromNestedKeys(editorMap, [
@@ -773,6 +806,45 @@ function createCoordinateTransform(editorMap) {
       offset: { x: 0, y: 0, z: 0 },
     };
   }
+  const projectedAnchor = sourceCrs === 'LOCAL_ENU_METERS' ? localProjectedAnchorFromEditorMap(editorMap) : null;
+  if (projectedAnchor?.sourceCrs === 'GAUSS_KRUGER_CM114') {
+    const convertedPoints = rawPoints.map((point) =>
+      gaussKrugerCm114ToUtmZone50(
+        point.x + projectedAnchor.sourceOrigin.x,
+        point.y + projectedAnchor.sourceOrigin.y,
+        point.z + (projectedAnchor.sourceOrigin.z || 0),
+      ),
+    );
+    const targetBounds = {
+      left: Math.min(...convertedPoints.map((point) => point.x)),
+      right: Math.max(...convertedPoints.map((point) => point.x)),
+      bottom: Math.min(...convertedPoints.map((point) => point.y)),
+      top: Math.max(...convertedPoints.map((point) => point.y)),
+    };
+    const targetOrigin = gaussKrugerCm114ToUtmZone50(
+      projectedAnchor.sourceOrigin.x,
+      projectedAnchor.sourceOrigin.y,
+      projectedAnchor.sourceOrigin.z || 0,
+    );
+    return {
+      mode: 'local-enu-gauss-kruger-cm114-to-utm-zone-50',
+      source: projectedAnchor.source,
+      sourceCrs,
+      sourceProjectedCrs: 'GAUSS_KRUGER_CM114',
+      sourceCrsDefinition: GAUSS_KRUGER_CM114_CRS,
+      sourceOrigin: projectedAnchor.sourceOrigin,
+      targetOrigin,
+      targetCrs: APOLLO_TARGET_CRS,
+      origin: targetOrigin,
+      targetCenter: {
+        x: (targetBounds.left + targetBounds.right) / 2,
+        y: (targetBounds.bottom + targetBounds.top) / 2,
+        z: 0,
+      },
+      localCenter,
+      offset: { x: 0, y: 0, z: 0 },
+    };
+  }
   const explicitCenter = [
     editorMap.apolloCenter,
     editorMap.apollo_center,
@@ -834,6 +906,13 @@ function applyCoordinateTransform(point, transform) {
   }
   if (transform.mode === 'gauss-kruger-cm114-to-utm-zone-50') {
     return gaussKrugerCm114ToUtmZone50(point.x, point.y, point.z);
+  }
+  if (transform.mode === 'local-enu-gauss-kruger-cm114-to-utm-zone-50') {
+    return gaussKrugerCm114ToUtmZone50(
+      point.x + transform.sourceOrigin.x,
+      point.y + transform.sourceOrigin.y,
+      point.z + (transform.sourceOrigin.z || 0),
+    );
   }
   return {
     x: point.x + transform.offset.x,
@@ -2570,8 +2649,14 @@ function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransfo
   const captureCenter = extractCaptureCenter(editorMap);
   const sourceCrs = coordinateTransform?.sourceCrs || coordinateFrameFromEditorMap(editorMap) || 'LOCAL_ENU_METERS';
   const captureCenterAlreadyTarget = sourceCrs === 'APOLLO_UTM_ZONE_50';
+  const captureCenterIsProjectedOrigin =
+    coordinateTransform?.mode === 'local-enu-gauss-kruger-cm114-to-utm-zone-50' &&
+    /basemapcenter|base_map_center/i.test(String(captureCenter?.source || '')) &&
+    coordinatesNearlyEqual(captureCenter?.coordinate, coordinateTransform.sourceOrigin, 0.001);
   const captureCenterTarget = captureCenter
-    ? captureCenterAlreadyTarget
+    ? captureCenterIsProjectedOrigin
+      ? coordinateTransform.targetOrigin
+      : captureCenterAlreadyTarget
       ? captureCenter.coordinate
       : applyCoordinateTransform(captureCenter.coordinate, coordinateTransform)
     : null;
@@ -2604,6 +2689,9 @@ function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransfo
           source: coordinateTransform.source,
           offsetMeters: coordinateTransform.offset,
           origin: coordinateTransform.origin,
+          sourceProjectedCrs: coordinateTransform.sourceProjectedCrs || null,
+          sourceOrigin: coordinateTransform.sourceOrigin || null,
+          targetOrigin: coordinateTransform.targetOrigin || null,
           localCenter: coordinateTransform.localCenter,
           targetCenter: coordinateTransform.targetCenter,
         }
@@ -2618,6 +2706,7 @@ function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransfo
           raw: captureCenter.coordinate,
           target: captureCenterTarget,
           alreadyInTargetCrs: captureCenterAlreadyTarget,
+          sourceProjectedOrigin: captureCenterIsProjectedOrigin,
           distanceToMapCenterMeters: mapCenter ? Number(distance(captureCenterTarget, mapCenter).toFixed(3)) : null,
         }
       : null,
@@ -2655,7 +2744,11 @@ function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateM
   const sourceIsTrusted =
     !unsafeBaseMapAutoAnchor &&
     (sourceCrs === 'APOLLO_UTM_ZONE_50' ||
-      ['wgs84-to-utm-zone-50', 'gauss-kruger-cm114-to-utm-zone-50'].includes(transformMode) ||
+      [
+        'wgs84-to-utm-zone-50',
+        'gauss-kruger-cm114-to-utm-zone-50',
+        'local-enu-gauss-kruger-cm114-to-utm-zone-50',
+      ].includes(transformMode) ||
       (sourceCrs === 'LOCAL_ENU_METERS' && transformMode === 'offset' && coordinateMetadata?.transform?.source));
   addCheck(
     'coordinate-source-crs',
@@ -3177,6 +3270,9 @@ async function convertEditorMapToApolloPackage(options) {
                 z: coordinateTransform.offset.z,
               },
               origin: coordinateTransform.origin,
+              sourceProjectedCrs: coordinateTransform.sourceProjectedCrs || null,
+              sourceOrigin: coordinateTransform.sourceOrigin || null,
+              targetOrigin: coordinateTransform.targetOrigin || null,
               localCenter: coordinateTransform.localCenter,
               targetCenter: coordinateTransform.targetCenter,
             }

@@ -246,6 +246,37 @@ async function main() {
   assert.ok(cm114Manifest.bounds.xMin > 468250 && cm114Manifest.bounds.xMax < 468450);
   assert.ok(cm114Manifest.bounds.yMin > 4293850 && cm114Manifest.bounds.yMax < 4294050);
 
+  const localCm114JsonPath = path.join(tmpDir, 'editor_map_local_cm114.json');
+  const localCm114ReleaseDir = path.join(tmpDir, 'release-local-cm114');
+  const localCm114Map = JSON.parse(JSON.stringify(editorMap));
+  delete localCm114Map.coordinateCenter;
+  delete localCm114Map.trajectoryCenter;
+  localCm114Map.sourceCrs = 'LOCAL_ENU_METERS';
+  localCm114Map.basemapCenter = cm114Origin;
+  localCm114Map.anchor = {
+    source: 'base_map_coordinate_metadata:gauss_kruger_cm114_local_origin',
+    sourceCrs: 'GAUSS_KRUGER_CM114',
+    sourceOrigin: cm114Origin,
+  };
+  await fs.writeFile(localCm114JsonPath, JSON.stringify(localCm114Map), 'utf8');
+  await convertEditorMapToApolloPackage({
+    mapName: 'local-cm114-test',
+    jsonPath: localCm114JsonPath,
+    releaseDir: localCm114ReleaseDir,
+  });
+  const localCm114Manifest = JSON.parse(await fs.readFile(path.join(localCm114ReleaseDir, 'manifest.json'), 'utf8'));
+  const localCm114CoordinateMetadata = JSON.parse(
+    await fs.readFile(path.join(localCm114ReleaseDir, 'coordinate_metadata.json'), 'utf8'),
+  );
+  const localCm114QualityGate = JSON.parse(await fs.readFile(path.join(localCm114ReleaseDir, 'quality_gate.json'), 'utf8'));
+  assert.strictEqual(localCm114Manifest.coordinateTransform.mode, 'local-enu-gauss-kruger-cm114-to-utm-zone-50');
+  assert.strictEqual(localCm114CoordinateMetadata.sourceCrs, 'LOCAL_ENU_METERS');
+  assert.strictEqual(localCm114CoordinateMetadata.transform.sourceProjectedCrs, 'GAUSS_KRUGER_CM114');
+  assert.strictEqual(localCm114QualityGate.ready, true);
+  assert.strictEqual(localCm114QualityGate.errors, 0);
+  assert.ok(localCm114Manifest.bounds.xMin > 468250 && localCm114Manifest.bounds.xMax < 468450);
+  assert.ok(localCm114Manifest.bounds.yMin > 4293850 && localCm114Manifest.bounds.yMax < 4294050);
+
   const originJsonPath = path.join(tmpDir, 'editor_map_origin_anchor.json');
   const originReleaseDir = path.join(tmpDir, 'release-origin-anchor');
   const originEditorMap = JSON.parse(JSON.stringify(editorMap));

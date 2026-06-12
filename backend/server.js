@@ -1986,24 +1986,46 @@ async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
   const baseSourceCrs = explicitBaseSourceCrs || inferredSource?.sourceCrs || null;
   if (["APOLLO_UTM_ZONE_50", "WGS84_LON_LAT", "GAUSS_KRUGER_CM114"].includes(baseSourceCrs)) {
     const enrichedMap = JSON.parse(JSON.stringify(map));
-    enrichedMap.sourceCrs = baseSourceCrs;
-    enrichedMap.coordinateFrame = baseSourceCrs;
+    const rawCenter = baseMapCoordinate.rawCenter || baseMapCoordinate.center;
+    const targetOrigin = projectCoordinateToApollo(rawCenter, baseSourceCrs);
+    enrichedMap.sourceCrs = "LOCAL_ENU_METERS";
+    enrichedMap.coordinateFrame = "LOCAL_ENU_METERS";
     enrichedMap.baseMapDir = baseMapCoordinate.baseMapName;
-    enrichedMap.basemapCenter = coordinateFromAny(enrichedMap.basemapCenter) || baseMapCoordinate.rawCenter || baseMapCoordinate.center;
+    enrichedMap.basemapCenter = coordinateFromAny(enrichedMap.basemapCenter) || rawCenter;
+    enrichedMap.anchor =
+      baseSourceCrs === "GAUSS_KRUGER_CM114"
+        ? {
+            source: "base_map_coordinate_metadata:gauss_kruger_cm114_local_origin",
+            sourceCrs: "GAUSS_KRUGER_CM114",
+            sourceOrigin: rawCenter,
+            targetOrigin,
+            baseMap: baseMapCoordinate.baseMapName,
+            sourceFile: baseMapCoordinate.sourceFile,
+            confidence: inferredSource?.confidence || "base_map_metadata",
+          }
+        : {
+            source: "base_map_coordinate_metadata:apollo_utm_local_origin",
+            utm: targetOrigin || rawCenter,
+            baseMap: baseMapCoordinate.baseMapName,
+            sourceFile: baseMapCoordinate.sourceFile,
+            confidence: inferredSource?.confidence || "base_map_metadata",
+          };
+    enrichedMap.apolloOrigin = baseSourceCrs === "APOLLO_UTM_ZONE_50" ? targetOrigin || rawCenter : undefined;
     enrichedMap.coordinateMetadata = {
       ...(enrichedMap.coordinateMetadata || {}),
-      sourceCrs: baseSourceCrs,
+      sourceCrs: "LOCAL_ENU_METERS",
       targetCrs: APOLLO_TARGET_CRS,
+      anchor: enrichedMap.anchor,
       baseMap: {
         name: baseMapCoordinate.baseMapName,
         sourceFile: baseMapCoordinate.sourceFile,
-        center: baseMapCoordinate.center || baseMapCoordinate.rawCenter,
+        center: baseMapCoordinate.center || rawCenter,
         bounds: baseMapCoordinate.bounds,
         coordinate: baseMapCoordinate.coordinate,
         rawPointCloud: baseMapCoordinate.coordinateMetadata?.rawPointCloud || {
           sourceCrs: baseSourceCrs,
           confidence: inferredSource?.confidence || "base_map_metadata",
-          center: baseMapCoordinate.rawCenter || baseMapCoordinate.center,
+          center: rawCenter,
           bounds: baseMapCoordinate.bounds,
         },
         sourceInference: inferredSource || null,
@@ -2019,7 +2041,10 @@ async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
         mapName,
         baseMap: baseMapCoordinate.baseMapName,
         sourceFile: baseMapCoordinate.sourceFile,
-        sourceCrs: baseSourceCrs,
+        sourceCrs: "LOCAL_ENU_METERS",
+        sourceProjectedCrs: baseSourceCrs,
+        sourceOrigin: rawCenter,
+        targetOrigin,
         targetCrs: APOLLO_TARGET_CRS,
         inferredFromEdgePose: inferredSource || null,
         strippedUnsafeAnchor,
@@ -2132,7 +2157,18 @@ async function findApolloAnchorForBaseCenter(mapName, baseCenter) {
 
 async function inferMissingApolloAnchor(mapName, map) {
   const sourceCrs = String(map?.sourceCrs || map?.source_crs || map?.coordinateFrame || "").toUpperCase();
-  if (!map || sourceCrs === "APOLLO_UTM_ZONE_50" || getEditorMapApolloAnchor(map)) {
+  const projectedAnchor = map?.anchor || map?.coordinateAnchor || map?.coordinate_anchor || map?.coordinateMetadata?.anchor;
+  const projectedAnchorSourceCrs = normalizeCoordinateFrame(
+    projectedAnchor?.sourceCrs || projectedAnchor?.source_crs || projectedAnchor?.rawPointCloudCrs,
+  );
+  if (
+    !map ||
+    sourceCrs === "APOLLO_UTM_ZONE_50" ||
+    sourceCrs === "WGS84_LON_LAT" ||
+    sourceCrs === "GAUSS_KRUGER_CM114" ||
+    projectedAnchorSourceCrs === "GAUSS_KRUGER_CM114" ||
+    getEditorMapApolloAnchor(map)
+  ) {
     return { map, inferred: null };
   }
   const baseCenter = getEditorMapBaseCenter(map);
