@@ -111,3 +111,52 @@ If `runtime/bin/editor_map_converter` is absent, the backend uses its JS
 compatibility converter and keeps the original frontend `ReleaseMapFile`
 protocol unchanged. Installing the native binary later automatically restores
 the original converter path.
+
+## Cloud release runtime contract
+
+Cloud deployments under `/opt/landing/apps/mapeditor` must start the backend
+through the repository backend entrypoint:
+
+```text
+backend/server.js
+```
+
+Do not start `server.js` from the repository root. The root directory does not
+own a backend entrypoint, and starting it directly can leave `/healthz` down
+even after the frontend build succeeds.
+
+The standard release deploy script is:
+
+```bash
+APP_ROOT=/opt/landing/apps/mapeditor \
+NODE_BIN_DIR=/opt/landing/runtime/node/bin \
+SERVICE_SCOPE=auto \
+bash deploy/server/deploy-cloud-release.sh
+```
+
+The script updates the release, switches `current`, and delegates runtime
+startup to:
+
+```bash
+APP_DIR=/opt/landing/apps/mapeditor/current \
+NODE_BIN_DIR=/opt/landing/runtime/node/bin \
+SERVICE_SCOPE=auto \
+bash deploy/server/restart-runtime.sh
+```
+
+`restart-runtime.sh` validates the backend entrypoint, validates the frontend
+build, loads `.env.server`, restarts systemd when a configured service exists,
+or falls back to a PID-file based `nohup node backend/server.js` startup. It
+then verifies `/healthz` and prints a compact `/runtime/doctor` summary when
+the endpoint is accessible.
+
+Post-deploy checks:
+
+```bash
+curl -fsS http://127.0.0.1:58000/healthz
+curl -fsS http://127.0.0.1:58000/runtime/doctor
+```
+
+For environments where `/runtime/doctor` requires authentication, `/healthz`
+is still the non-authenticated process liveness gate; authenticate before
+checking build hash through the browser or API.

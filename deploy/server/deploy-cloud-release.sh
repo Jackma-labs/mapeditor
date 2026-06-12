@@ -7,6 +7,7 @@ COMMIT_SHA="${COMMIT_SHA:-}"
 FRONTEND_TARBALL="${FRONTEND_TARBALL:-}"
 NODE_BIN_DIR="${NODE_BIN_DIR:-/opt/landing/runtime/node/bin}"
 SERVICE_NAME="${SERVICE_NAME:-landing-mapeditor.service}"
+SERVICE_SCOPE="${SERVICE_SCOPE:-auto}"
 PORT="${PORT:-58000}"
 
 if [ -z "$FRONTEND_TARBALL" ]; then
@@ -35,7 +36,6 @@ require_cmd git
 require_cmd node
 require_cmd npm
 require_cmd tar
-require_cmd systemctl
 require_cmd curl
 
 CURRENT="$APP_ROOT/current"
@@ -92,17 +92,12 @@ test -f frontend/build/map_editor_frontend/index.html
 
 log "switching current release"
 ln -sfnT "$RELEASE_DIR" "$CURRENT"
-systemctl restart "$SERVICE_NAME"
+APP_DIR="$CURRENT" \
+  PORT="$PORT" \
+  NODE_BIN_DIR="$NODE_BIN_DIR" \
+  SERVICE_NAME="$SERVICE_NAME" \
+  SERVICE_SCOPE="$SERVICE_SCOPE" \
+  LOG_DIR="$APP_ROOT/shared" \
+  bash "$CURRENT/deploy/server/restart-runtime.sh"
 
-HEALTH_URL="http://127.0.0.1:$PORT/healthz"
-for _ in $(seq 1 30); do
-  if HEALTH_RESPONSE="$(curl -fsS "$HEALTH_URL" 2>/dev/null)"; then
-    printf '%s\n' "$HEALTH_RESPONSE"
-    log "deployed $(git rev-parse --short HEAD)"
-    exit 0
-  fi
-  sleep 1
-done
-
-printf 'health check failed: %s\n' "$HEALTH_URL" >&2
-exit 1
+log "deployed $(git rev-parse --short HEAD)"
