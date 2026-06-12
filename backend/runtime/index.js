@@ -10750,9 +10750,9 @@ async function runEdgeNativeMapTools(config, mapDir, progress = async () => {}) 
     'if [ -x /apollo/bazel-bin/modules/map/tools/bin_map_generator ]; then',
     '  /apollo/bazel-bin/modules/map/tools/bin_map_generator --map_dir="$d" --output_dir="$d";',
     'fi',
-    'if [ -x /apollo/bazel-bin/modules/map/tools/sim_map_generator ]; then',
-    '  /apollo/bazel-bin/modules/map/tools/sim_map_generator --map_dir="$d" --output_dir="$d";',
-    'fi',
+    '# Preserve high-detail Dreamview geometry exported by the map editor.',
+    'if [ -f "$d/base_map.bin" ]; then cp -p "$d/base_map.bin" "$d/sim_map.bin"; fi',
+    'if [ -f "$d/base_map.txt" ]; then cp -p "$d/base_map.txt" "$d/sim_map.txt"; fi',
     'ls -lh "$d"/base_map.* "$d"/sim_map.* "$d"/routing_map.* 2>/dev/null || true',
   ].join('\n');
   return runEdgeSshCommand(config, dockerExecCommand(container, command), {
