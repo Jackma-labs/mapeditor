@@ -19,11 +19,17 @@ fail() {
   exit 1
 }
 
-if [ ! -d "$APP_DIR" ]; then
-  fail "APP_DIR does not exist: $APP_DIR"
+APP_DIR_INPUT="$APP_DIR"
+APP_PARENT_INPUT="$(dirname "$APP_DIR_INPUT")"
+if [ -d "$APP_PARENT_INPUT" ]; then
+  APP_PARENT_INPUT="$(cd "$APP_PARENT_INPUT" && pwd -P)"
 fi
 
-APP_DIR="$(cd "$APP_DIR" && pwd -P)"
+if [ ! -d "$APP_DIR_INPUT" ]; then
+  fail "APP_DIR does not exist: $APP_DIR_INPUT"
+fi
+
+APP_DIR="$(cd "$APP_DIR_INPUT" && pwd -P)"
 BACKEND_DIR="$APP_DIR/backend"
 FRONTEND_DIR="$APP_DIR/frontend/build/map_editor_frontend"
 ENV_FILE="$APP_DIR/.env.server"
@@ -42,7 +48,9 @@ fi
 command -v node >/dev/null 2>&1 || fail "node is not available"
 
 if [ -z "$LOG_DIR" ]; then
-  if [ -d "$(dirname "$APP_DIR")/shared" ]; then
+  if [ -d "$APP_PARENT_INPUT/shared" ]; then
+    LOG_DIR="$APP_PARENT_INPUT/shared"
+  elif [ -d "$(dirname "$APP_DIR")/shared" ]; then
     LOG_DIR="$(dirname "$APP_DIR")/shared"
   else
     LOG_DIR="$APP_DIR/logs"
