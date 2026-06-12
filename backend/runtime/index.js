@@ -1319,6 +1319,100 @@ async function validateReleasedMapAgainstEdgePose(config, sourceDir, mapBounds =
   };
 }
 
+function buildRoadReadiness({ mapName, vehiclePoseValidation, deployConfig }) {
+  const localizationRequired = deployConfig.requireLocalizationGate !== false;
+  const checks = [];
+  const addCheck = (id, status, message, details = null) => {
+    checks.push({
+      id,
+      status,
+      message,
+      ...(details ? { details } : {}),
+    });
+  };
+
+  if (!vehiclePoseValidation) {
+    addCheck(
+      'localization-pose',
+      localizationRequired ? 'error' : 'warning',
+      'Localization was not checked for this preflight',
+    );
+  } else if (!vehiclePoseValidation.available) {
+    addCheck(
+      'localization-pose',
+      vehiclePoseValidation.status === 'error' ? 'error' : 'warning',
+      vehiclePoseValidation.message || 'Localization pose is unavailable',
+      vehiclePoseValidation,
+    );
+  } else {
+    addCheck('localization-pose', 'ok', 'Localization pose is available', {
+      pose: vehiclePoseValidation.pose || null,
+      sampleCount: vehiclePoseValidation.pose?.sampleCount || null,
+    });
+    const gateChecks = Array.isArray(vehiclePoseValidation.localizationGate?.checks)
+      ? vehiclePoseValidation.localizationGate.checks
+      : [];
+    for (const check of gateChecks) {
+      addCheck(check.id, check.status || 'warning', check.message || check.id, check.details || null);
+    }
+  }
+
+  const rank = { ok: 0, warning: 1, error: 2 };
+  const status = checks.reduce((current, check) => (rank[check.status] > rank[current] ? check.status : current), 'ok');
+  const ready = checks.length > 0 && !checks.some((check) => check.status === 'error');
+  const blockerCount = checks.filter((check) => check.status === 'error').length;
+  const warningCount = checks.filter((check) => check.status === 'warning').length;
+  const message = !ready
+    ? 'Dynamic localization is not road-ready; deploy can continue, but do not drive until the blocking checks pass'
+    : warningCount > 0
+      ? 'Dynamic localization needs field confirmation before operating the vehicle'
+      : 'Dynamic localization is road-ready for the selected map';
+
+  return {
+    version: 1,
+    mapName,
+    ready,
+    status: ready ? (warningCount > 0 ? 'needs_confirmation' : 'ready') : 'blocked',
+    severity: status,
+    message,
+    checkedAt: new Date().toISOString(),
+    localizationRequired,
+    blockerCount,
+    warningCount,
+    pose: vehiclePoseValidation?.pose || null,
+    nearest: vehiclePoseValidation?.nearest || null,
+    laneCenterlineCount: vehiclePoseValidation?.laneCenterlineCount || 0,
+    warningDistanceMeters: vehiclePoseValidation?.warningDistanceMeters ?? deployConfig.vehicleLaneWarningDistanceMeters,
+    errorDistanceMeters: vehiclePoseValidation?.errorDistanceMeters ?? deployConfig.vehicleLaneErrorDistanceMeters,
+    checks,
+  };
+}
+
+function buildPendingRoadReadiness(message = 'Dynamic localization has not been checked') {
+  return {
+    version: 1,
+    mapName: '',
+    ready: false,
+    status: 'not_checked',
+    severity: 'warning',
+    message,
+    checkedAt: new Date().toISOString(),
+    localizationRequired: true,
+    blockerCount: 0,
+    warningCount: 1,
+    pose: null,
+    nearest: null,
+    laneCenterlineCount: 0,
+    checks: [
+      {
+        id: 'localization-pose',
+        status: 'warning',
+        message,
+      },
+    ],
+  };
+}
+
 async function fetchEdgeReferenceMapBounds(config, remoteRoot, currentMapName) {
   const script = `
 import json, os, re
@@ -10093,6 +10187,71 @@ async function getFrontendBuildInfo(config) {
   return result;
 }
 
+function normalizeEdgePath(value) {
+  return String(value || '').trim().replace(/\/+$/u, '');
+}
+
+function normalizeExpectedPort(value) {
+  const port = Number(value);
+  return Number.isFinite(port) && port > 0 ? port : null;
+}
+
+function buildEdgeConfigLock(deployConfig) {
+  const expected = deployConfig.expected || {};
+  const comparisons = [];
+  const compare = (key, label, actualValue, expectedValue, normalizer = (value) => String(value || '').trim()) => {
+    const normalizedExpected = normalizer(expectedValue);
+    if (normalizedExpected === '' || normalizedExpected === null || typeof normalizedExpected === 'undefined') {
+      return;
+    }
+    const normalizedActual = normalizer(actualValue);
+    comparisons.push({
+      key,
+      label,
+      expected: normalizedExpected,
+      actual: normalizedActual,
+      ok: normalizedActual === normalizedExpected,
+    });
+  };
+
+  compare('host', 'edge host', deployConfig.host, expected.host);
+  compare('user', 'edge SSH user', deployConfig.user, expected.user);
+  compare('port', 'edge SSH port', deployConfig.port, expected.port, normalizeExpectedPort);
+  compare('targetMapRoot', 'edge map root', deployConfig.targetMapRoot, expected.targetMapRoot, normalizeEdgePath);
+  compare(
+    'dockerContainer',
+    'edge Apollo container',
+    deployConfig.dockerContainer,
+    expected.dockerContainer,
+    (value) => String(value || '').trim(),
+  );
+
+  const mismatches = comparisons.filter((item) => !item.ok);
+  const configured = comparisons.length > 0;
+  return {
+    enabled: Boolean(deployConfig.configLockEnabled),
+    configured,
+    ok: mismatches.length === 0,
+    comparisons,
+    mismatches,
+  };
+}
+
+function formatEdgeConfigLockMessage(lock) {
+  if (!lock.configured) {
+    return 'Edge config lock is not configured';
+  }
+  if (lock.ok) {
+    return lock.enabled
+      ? 'Edge config lock matches the expected production target'
+      : 'Edge expected target matches the current config';
+  }
+  const summary = lock.mismatches
+    .map((item) => `${item.label} expected ${item.expected || '(empty)'}, got ${item.actual || '(empty)'}`)
+    .join('; ');
+  return lock.enabled ? `Edge config lock mismatch: ${summary}` : `Edge config drift warning: ${summary}`;
+}
+
 function getDeployConfig(config) {
   const edge = config.edgeDeploy;
   return {
@@ -10122,6 +10281,14 @@ function getDeployConfig(config) {
     headingErrorRadians: edge.headingErrorRadians || 0.15,
     mapBoundaryMarginMeters: edge.mapBoundaryMarginMeters || 5,
     remoteBoundsToleranceMeters: edge.remoteBoundsToleranceMeters || 0.5,
+    configLockEnabled: edge.configLock === true,
+    expected: {
+      host: edge.expectedHost || '',
+      user: edge.expectedUser || '',
+      port: normalizeExpectedPort(edge.expectedPort),
+      targetMapRoot: edge.expectedTargetMapRoot || '',
+      dockerContainer: edge.expectedDockerContainer || '',
+    },
   };
 }
 
@@ -10129,6 +10296,7 @@ async function preflightEdgeDeploy(config, params = {}) {
   const deployConfig = getDeployConfig(config);
   const checks = [];
   let edgeRuntimeCurrentMap = null;
+  let roadReadiness = buildPendingRoadReadiness();
   const addCheck = (name, ok, severity, message, details = null) => {
     checks.push({
       name,
@@ -10153,9 +10321,30 @@ async function preflightEdgeDeploy(config, params = {}) {
       : 'MAP_EDGE_HOST and MAP_EDGE_USER are required',
   );
 
+  const configLock = buildEdgeConfigLock(deployConfig);
+  addCheck(
+    'edge-config-lock',
+    !configLock.configured || configLock.ok,
+    configLock.enabled ? 'error' : 'warning',
+    formatEdgeConfigLockMessage(configLock),
+    configLock,
+  );
+
   if (!deployConfig.enabled || !deployConfig.host || !deployConfig.user) {
+    const deployReady = !checks.some((check) => check.status === 'error');
     return {
       ready: false,
+      deployReady,
+      roadReady: false,
+      readiness: {
+        deploy: {
+          ready: false,
+          status: 'blocked',
+          message: 'Edge deploy is not configured',
+        },
+        road: roadReadiness,
+      },
+      roadReadiness,
       deployConfig,
       checks,
     };
@@ -10163,8 +10352,40 @@ async function preflightEdgeDeploy(config, params = {}) {
 
   if (deployConfig.mode !== 'ssh') {
     addCheck('edge-mode-supported', false, 'error', `Unsupported edge deploy mode: ${deployConfig.mode}`);
+    const deployReady = !checks.some((check) => check.status === 'error');
     return {
       ready: false,
+      deployReady,
+      roadReady: false,
+      readiness: {
+        deploy: {
+          ready: deployReady,
+          status: deployReady ? 'ready' : 'blocked',
+          message: 'Edge deploy mode is not supported',
+        },
+        road: roadReadiness,
+      },
+      roadReadiness,
+      deployConfig,
+      checks,
+    };
+  }
+
+  if (configLock.enabled && configLock.configured && !configLock.ok) {
+    const deployReady = !checks.some((check) => check.status === 'error');
+    return {
+      ready: false,
+      deployReady,
+      roadReady: false,
+      readiness: {
+        deploy: {
+          ready: false,
+          status: 'blocked',
+          message: 'Edge config lock does not match the expected production target',
+        },
+        road: roadReadiness,
+      },
+      roadReadiness,
       deployConfig,
       checks,
     };
@@ -10380,6 +10601,11 @@ async function preflightEdgeDeploy(config, params = {}) {
       );
     }
     const vehiclePoseValidation = validation.vehiclePoseValidation;
+    roadReadiness = buildRoadReadiness({
+      mapName,
+      vehiclePoseValidation,
+      deployConfig,
+    });
     if (vehiclePoseValidation?.available) {
       const vehiclePoseStatus = vehiclePoseValidation.status || 'warning';
       const vehiclePoseBlocksDeploy = false;
@@ -10428,9 +10654,22 @@ async function preflightEdgeDeploy(config, params = {}) {
     );
   }
 
-  const ready = !checks.some((check) => check.status === 'error');
+  const deployReady = !checks.some((check) => check.status === 'error');
   return {
-    ready,
+    ready: deployReady,
+    deployReady,
+    roadReady: roadReadiness.ready,
+    readiness: {
+      deploy: {
+        ready: deployReady,
+        status: deployReady ? (checks.some((check) => check.status === 'warning') ? 'needs_confirmation' : 'ready') : 'blocked',
+        message: deployReady
+          ? 'Map package can be deployed to the edge device'
+          : 'Map package is blocked before edge deployment',
+      },
+      road: roadReadiness,
+    },
+    roadReadiness,
     deployConfig,
     checks,
   };

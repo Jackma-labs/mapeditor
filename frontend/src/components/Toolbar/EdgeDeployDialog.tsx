@@ -184,11 +184,63 @@ const formatMeters = (value: any) => {
     return `${number.toFixed(number >= 10 ? 1 : 2)} m`;
 };
 
+const formatSeconds = (value: any) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+        return '待验证';
+    }
+    return `${number.toFixed(3)} s`;
+};
+
+const formatDegrees = (value: any) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+        return '待验证';
+    }
+    return `${((number * 180) / Math.PI).toFixed(2)} deg`;
+};
+
 const formatBoundsCenter = (bounds: any) => {
     if (!bounds || !Number.isFinite(Number(bounds.centerX)) || !Number.isFinite(Number(bounds.centerY))) {
         return '待预检';
     }
     return `${Number(bounds.centerX).toFixed(3)}, ${Number(bounds.centerY).toFixed(3)}`;
+};
+
+const getRoadReadinessLevel = (readiness: any): StatusLevel => {
+    if (!readiness) {
+        return 'idle';
+    }
+    if (readiness.ready && readiness.severity !== 'warning') {
+        return 'ok';
+    }
+    if (readiness.ready || readiness.status === 'needs_confirmation') {
+        return 'warning';
+    }
+    return 'error';
+};
+
+const getRoadReadinessText = (readiness: any) => {
+    if (!readiness) {
+        return '未验证';
+    }
+    if (readiness.status === 'ready') {
+        return '可动车验证';
+    }
+    if (readiness.status === 'needs_confirmation') {
+        return '需现场确认';
+    }
+    if (readiness.status === 'blocked') {
+        return '禁止动车';
+    }
+    return '未验证';
+};
+
+const getRoadCheck = (readiness: any, id: string) => {
+    if (!Array.isArray(readiness?.checks)) {
+        return null;
+    }
+    return readiness.checks.find((item: any) => item.id === id) || null;
 };
 
 const getReleaseMapIssueLines = (map: any) => {
@@ -236,6 +288,7 @@ const getOverviewStatusText = (status: StatusLevel, hasPreflight: boolean) => {
 const checkTitleMap: Record<string, string> = {
     'edge-mode': '部署模式',
     'edge-target': '目标设备',
+    'edge-config-lock': '固定设备配置',
     'ssh-connectivity': 'SSH 连接',
     'host-upload-root': '上传目录',
     'target-map-root': '地图目录',
@@ -383,6 +436,8 @@ const getPreflightNextAction = (item: any) => {
             return '先保存边缘设备配置，确认已启用 SSH 部署模式。';
         case 'edge-target':
             return '补齐设备 IP、SSH 用户、端口和密码后重新预检。';
+        case 'edge-config-lock':
+            return '不要继续部署到非固定设备。请恢复 Dell 的边缘设备 IP、SSH 用户、端口、Apollo 地图目录和容器配置。';
         case 'ssh-connectivity':
             return '先点“刷新状态”重试一次；连续失败再检查设备在线、SSH 账号和端口。';
         case 'host-upload-root':
@@ -705,6 +760,16 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const vehiclePoseCheck = useMemo(() => getCheck(preflight, 'selected-map-vehicle-pose'), [preflight]);
     const runtimeDetails = runtimeCheck?.details || null;
     const vehiclePoseDetails = vehiclePoseCheck?.details || coordinateCheck?.details?.vehiclePoseValidation || null;
+    const roadReadiness = preflight?.roadReadiness || preflight?.readiness?.road || null;
+    const roadPose = roadReadiness?.pose || vehiclePoseDetails?.pose || null;
+    const roadNearest = roadReadiness?.nearest || vehiclePoseDetails?.nearest || null;
+    const roadPoseDelayCheck = getRoadCheck(roadReadiness, 'pose-delay');
+    const roadRtkCheck = getRoadCheck(roadReadiness, 'rtk-fix');
+    const roadHeadingCheck = getRoadCheck(roadReadiness, 'heading-stability');
+    const roadBoundaryCheck = getRoadCheck(roadReadiness, 'map-boundary');
+    const roadPoseDelayValue = Number.isFinite(Number(roadPose?.delaySeconds))
+        ? roadPose.delaySeconds
+        : roadPoseDelayCheck?.details?.delaySeconds;
     const coordinateBounds = coordinateCheck?.details?.localBounds || null;
     const readyCheckCount = preflightChecks.filter((item: any) => item.status === 'ok').length;
     const warningCheckCount = preflightChecks.filter((item: any) => item.status === 'warning').length;
@@ -757,6 +822,13 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             getCheckLevel(preflight, 'selected-map-edge-reference'),
         ].filter((item) => item !== 'idle'),
     );
+    const deployReadyValue = Boolean(preflight?.deployReady ?? preflight?.ready);
+    let deployReadinessStatus: StatusLevel = 'idle';
+    if (preflight) {
+        deployReadinessStatus = deployReadyValue ? 'ok' : 'error';
+    }
+    const roadReadinessStatus = getRoadReadinessLevel(roadReadiness);
+    const roadReadinessText = getRoadReadinessText(roadReadiness);
     const dreamviewHttpUrl = useMemo(() => {
         const wsUrl =
             getCheck(preflight, 'edge-dreamview-runtime-sync')?.details?.wsUrl ||
@@ -771,10 +843,28 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         return values.host ? `http://${values.host}:8888` : '';
     }, [preflight, values.host]);
     let dynamicPoseLabel = '待设备预检后读取 localization pose。';
-    if (preflight && vehiclePoseDetails?.available) {
+    if (preflight && roadReadiness) {
+        dynamicPoseLabel = roadReadiness.message || roadReadinessText;
+    } else if (preflight && vehiclePoseDetails?.available) {
         dynamicPoseLabel = getCheckDisplayMessage(vehiclePoseCheck);
     } else if (preflight) {
         dynamicPoseLabel = '动态定位未验证：当前没有 localization pose，不能承诺定位不飘。';
+    }
+    let roadBoundaryValue = '待验证';
+    if (roadBoundaryCheck?.status === 'ok') {
+        roadBoundaryValue = '在地图内';
+    } else if (roadBoundaryCheck?.status === 'error') {
+        roadBoundaryValue = '不在地图内';
+    }
+    const roadPoseValue =
+        Number.isFinite(Number(roadPose?.x)) && Number.isFinite(Number(roadPose?.y))
+            ? `${Number(roadPose.x).toFixed(3)}, ${Number(roadPose.y).toFixed(3)}`
+            : '待验证';
+    let roadAlertTitle = '动态定位需要现场确认';
+    if (roadReadinessStatus === 'error') {
+        roadAlertTitle = '不能动车验证';
+    } else if (roadReadinessStatus === 'ok') {
+        roadAlertTitle = '动态定位已满足动车验证条件';
     }
     let deployVerificationStatus: StatusLevel = 'idle';
     if (lastDeployVerification?.passed) {
@@ -1559,9 +1649,14 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             value={checkingStatusText}
                                         />
                                         <StatusLight
-                                            level={checkingDevice ? 'warning' : overviewStatus}
+                                            level={checkingDevice ? 'warning' : deployReadinessStatus}
                                             label="是否可部署"
                                             value={checkingStatusText}
+                                        />
+                                        <StatusLight
+                                            level={checkingDevice ? 'warning' : roadReadinessStatus}
+                                            label="动态定位"
+                                            value={checkingStatusText || roadReadinessText}
                                         />
                                     </div>
                                     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -1849,7 +1944,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                         />
                                         <InfoPair
                                             label="车辆到中心线"
-                                            value={formatMeters(vehiclePoseDetails?.nearest?.distanceMeters)}
+                                            value={formatMeters(roadNearest?.distanceMeters)}
                                         />
                                         <InfoPair label="坐标链路" value={statusTextMap[packageStatus]} />
                                     </div>
@@ -1887,6 +1982,68 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             SSH、Docker、Dreamview、坐标和车辆位置检查结果。
                                         </div>
                                     )}
+                                </CardContent>
+                            </Card>
+
+                            <Card className={cn(roadReadinessStatus === 'error' && 'border-destructive/45')}>
+                                <CardHeader>
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <CardTitle className="flex items-center gap-2">
+                                                <ShieldCheckIcon data-icon="inline-start" />
+                                                动态定位验收
+                                            </CardTitle>
+                                            <CardDescription>
+                                                这里只判断车辆是否具备动车验证条件；地图可部署不等于定位已验收。
+                                            </CardDescription>
+                                        </div>
+                                        <Badge
+                                            variant={roadReadinessStatus === 'error' ? 'destructive' : 'outline'}
+                                            className="shrink-0"
+                                        >
+                                            {roadReadinessText}
+                                        </Badge>
+                                    </div>
+                                </CardHeader>
+                                <CardContent className="flex flex-col gap-4">
+                                    <div className="grid gap-2 sm:grid-cols-2">
+                                        <InfoPair
+                                            label="最近车道中心线"
+                                            value={formatMeters(roadNearest?.distanceMeters)}
+                                        />
+                                        <InfoPair label="pose 延迟" value={formatSeconds(roadPoseDelayValue)} />
+                                        <InfoPair
+                                            label="RTK / INS"
+                                            value={roadPose?.rtkFix?.raw || roadRtkCheck?.message || '待验证'}
+                                        />
+                                        <InfoPair
+                                            label="heading 稳定性"
+                                            value={formatDegrees(roadHeadingCheck?.details?.maxDeltaRadians)}
+                                        />
+                                        <InfoPair label="地图边界" value={roadBoundaryValue} />
+                                        <InfoPair label="当前 pose" value={roadPoseValue} wrap />
+                                    </div>
+                                    <Alert
+                                        variant={roadReadinessStatus === 'error' ? 'destructive' : 'default'}
+                                        className={cn(
+                                            'bg-card',
+                                            roadReadinessStatus === 'warning' && 'border-[rgba(245,158,11,0.5)]',
+                                            roadReadinessStatus === 'ok' && 'border-[rgba(34,197,94,0.45)]',
+                                        )}
+                                    >
+                                        {roadReadinessStatus === 'error' ? <XCircleIcon /> : <InfoIcon />}
+                                        <AlertTitle>{roadAlertTitle}</AlertTitle>
+                                        <AlertDescription>
+                                            {dynamicPoseLabel}
+                                            {roadReadiness?.blockerCount || roadReadiness?.warningCount ? (
+                                                <span className="ml-1">
+                                                    {`阻断 ${roadReadiness?.blockerCount || 0} 项，警告 ${
+                                                        roadReadiness?.warningCount || 0
+                                                    } 项。`}
+                                                </span>
+                                            ) : null}
+                                        </AlertDescription>
+                                    </Alert>
                                 </CardContent>
                             </Card>
 

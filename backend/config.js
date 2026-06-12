@@ -90,6 +90,12 @@ const defaults = {
     headingErrorRadians: Number(process.env.MAP_EDGE_HEADING_ERROR_RADIANS || 0.15),
     mapBoundaryMarginMeters: Number(process.env.MAP_EDGE_MAP_BOUNDARY_MARGIN_METERS || 5),
     remoteBoundsToleranceMeters: Number(process.env.MAP_EDGE_REMOTE_BOUNDS_TOLERANCE_METERS || 0.5),
+    configLock: process.env.MAP_EDGE_CONFIG_LOCK === 'true',
+    expectedHost: process.env.MAP_EDGE_EXPECTED_HOST || '',
+    expectedUser: process.env.MAP_EDGE_EXPECTED_USER || '',
+    expectedPort: process.env.MAP_EDGE_EXPECTED_PORT ? Number(process.env.MAP_EDGE_EXPECTED_PORT) : null,
+    expectedTargetMapRoot: process.env.MAP_EDGE_EXPECTED_TARGET_MAP_ROOT || '',
+    expectedDockerContainer: process.env.MAP_EDGE_EXPECTED_DOCKER_CONTAINER || '',
   },
   apolloLite: {
     enabled: process.env.MAP_APOLLOLITE_ENABLED === 'true',
@@ -325,6 +331,24 @@ if (process.env.MAP_EDGE_MAP_BOUNDARY_MARGIN_METERS) {
 }
 if (process.env.MAP_EDGE_REMOTE_BOUNDS_TOLERANCE_METERS) {
   merged.edgeDeploy.remoteBoundsToleranceMeters = Number(process.env.MAP_EDGE_REMOTE_BOUNDS_TOLERANCE_METERS);
+}
+if (process.env.MAP_EDGE_CONFIG_LOCK) {
+  merged.edgeDeploy.configLock = process.env.MAP_EDGE_CONFIG_LOCK === 'true';
+}
+if (process.env.MAP_EDGE_EXPECTED_HOST) {
+  merged.edgeDeploy.expectedHost = process.env.MAP_EDGE_EXPECTED_HOST;
+}
+if (process.env.MAP_EDGE_EXPECTED_USER) {
+  merged.edgeDeploy.expectedUser = process.env.MAP_EDGE_EXPECTED_USER;
+}
+if (process.env.MAP_EDGE_EXPECTED_PORT) {
+  merged.edgeDeploy.expectedPort = Number(process.env.MAP_EDGE_EXPECTED_PORT);
+}
+if (process.env.MAP_EDGE_EXPECTED_TARGET_MAP_ROOT) {
+  merged.edgeDeploy.expectedTargetMapRoot = process.env.MAP_EDGE_EXPECTED_TARGET_MAP_ROOT;
+}
+if (process.env.MAP_EDGE_EXPECTED_DOCKER_CONTAINER) {
+  merged.edgeDeploy.expectedDockerContainer = process.env.MAP_EDGE_EXPECTED_DOCKER_CONTAINER;
 }
 if (process.env.MAP_APOLLOLITE_ENABLED) {
   merged.apolloLite.enabled = process.env.MAP_APOLLOLITE_ENABLED === 'true';

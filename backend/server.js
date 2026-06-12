@@ -158,6 +158,9 @@ const HEAVY_RUNTIME_JOB_TYPES = new Set([
   "prebuild-data-package-base-maps",
   "stage-apollolite-map",
   "repair-apollolite-runtime",
+  "deploy-map",
+  "deploy-latest",
+  "rollback-deployment",
 ]);
 
 function log(...args) {
@@ -897,7 +900,7 @@ function sendRuntimeJobBusy(res, activeJob) {
     res,
     409,
     15066,
-    `A base-map generation job is already running: ${activeJob.id}`,
+    `A runtime production job is already running: ${activeJob.id}`,
     {
       job: serializeRuntimeJob(activeJob),
     },
@@ -4075,6 +4078,11 @@ app.post(
   async (req, res) => {
     try {
       const body = req.body || {};
+      const activeJob = findActiveHeavyRuntimeJob();
+      if (activeJob) {
+        sendRuntimeJobBusy(res, activeJob);
+        return;
+      }
       const job = startRuntimeJob(
         "deploy-map",
         (runtimeJob) =>
@@ -4099,6 +4107,11 @@ app.post(
   requirePermission("canDeploy"),
   async (_req, res) => {
     try {
+      const activeJob = findActiveHeavyRuntimeJob();
+      if (activeJob) {
+        sendRuntimeJobBusy(res, activeJob);
+        return;
+      }
       const job = startRuntimeJob(
         "deploy-latest",
         (runtimeJob) =>
@@ -4121,6 +4134,11 @@ app.post(
   async (req, res) => {
     try {
       const body = req.body || {};
+      const activeJob = findActiveHeavyRuntimeJob();
+      if (activeJob) {
+        sendRuntimeJobBusy(res, activeJob);
+        return;
+      }
       const job = startRuntimeJob(
         "rollback-deployment",
         () => runtime.rollbackDeployment(config, body),
@@ -4141,6 +4159,11 @@ app.post(
   requirePermission("canDeploy"),
   async (req, res) => {
     try {
+      const activeJob = findActiveHeavyRuntimeJob();
+      if (activeJob) {
+        sendRuntimeJobBusy(res, activeJob);
+        return;
+      }
       const result = await runtime.deployReleasedMap(config, req.body || {});
       sendSuccess(res, result);
     } catch (error) {
@@ -4154,6 +4177,11 @@ app.post(
   requirePermission("canDeploy"),
   async (_req, res) => {
     try {
+      const activeJob = findActiveHeavyRuntimeJob();
+      if (activeJob) {
+        sendRuntimeJobBusy(res, activeJob);
+        return;
+      }
       const result = await runtime.deployLatestReleasedMap(config);
       sendSuccess(res, result);
     } catch (error) {
