@@ -1136,13 +1136,11 @@ async function readEdgeLocalizationPose(config) {
     'CYBER_CHANNEL=$(command -v cyber_channel 2>/dev/null || true)',
     '[ -n "$CYBER_CHANNEL" ] || CYBER_CHANNEL=/apollo/bazel-bin/cyber/tools/cyber_channel/cyber_channel',
     "echo '__MAPEDITOR_POSE__'",
-    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 6 "$CYBER_CHANNEL" echo /apollo/localization/pose 2>/dev/null | head -n 260 || true',
-    "timeout 4 cyber_echo /apollo/localization/pose 2>/dev/null | head -n 260 || true",
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 4 "$CYBER_CHANNEL" echo /apollo/localization/pose 2>/dev/null | head -n 180 || true',
+    "echo \"__MAPEDITOR_READ_TIME_SEC__$(date +%s.%N)\"",
     "echo '__MAPEDITOR_GNSS_STATUS__'",
-    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 3 "$CYBER_CHANNEL" echo /apollo/sensor/gnss/ins_stat 2>/dev/null | head -n 120 || true',
-    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 3 "$CYBER_CHANNEL" echo /apollo/gnss/ins_stat 2>/dev/null | head -n 120 || true',
-    "timeout 2 cyber_echo /apollo/sensor/gnss/ins_stat 2>/dev/null | head -n 120 || true",
-    "timeout 2 cyber_echo /apollo/gnss/ins_stat 2>/dev/null | head -n 120 || true",
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 1 "$CYBER_CHANNEL" echo /apollo/sensor/gnss/ins_stat 2>/dev/null | head -n 80 || true',
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 1 "$CYBER_CHANNEL" echo /apollo/gnss/ins_stat 2>/dev/null | head -n 80 || true',
     'true',
   ].join('\n');
   const container = String(config.edgeDeploy.dockerContainer || '').trim();
@@ -4787,8 +4785,12 @@ function parseLocalizationPose(stdout) {
     .filter(Number.isFinite);
   const timestampSec = timestampMatches.length ? timestampMatches[timestampMatches.length - 1] : null;
   const measurementTimeSec = measurementMatches.length ? measurementMatches[measurementMatches.length - 1] : null;
+  const readTimeMatch = stdout.match(/__MAPEDITOR_READ_TIME_SEC__\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)/iu);
+  const readTimeSec = readTimeMatch ? Number(readTimeMatch[1]) : null;
   const sampleTimeSec = measurementTimeSec || timestampSec || null;
-  const delaySeconds = Number.isFinite(sampleTimeSec) ? Math.max(0, Date.now() / 1000 - sampleTimeSec) : null;
+  const delaySeconds = Number.isFinite(sampleTimeSec)
+    ? Math.max(0, (Number.isFinite(readTimeSec) ? readTimeSec : Date.now() / 1000) - sampleTimeSec)
+    : null;
   const recentHeadings = headings.slice(-5);
   const lastHeading = recentHeadings.length ? recentHeadings[recentHeadings.length - 1] : null;
   const headingDeltas = Number.isFinite(lastHeading)
@@ -4801,6 +4803,7 @@ function parseLocalizationPose(stdout) {
     timestampSec,
     measurementTimeSec,
     sampleTimeSec,
+    readTimeSec: Number.isFinite(readTimeSec) ? readTimeSec : null,
     delaySeconds,
     sampleCount: positionMatches.length,
     rtkFix: extractRtkFixStatus(stdout),
