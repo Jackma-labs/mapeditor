@@ -2647,17 +2647,25 @@ function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateM
   );
   const sourceCrs = coordinateMetadata?.sourceCrs || 'UNKNOWN';
   const transformMode = coordinateMetadata?.transform?.mode || '';
+  const unsafeBaseMapAutoAnchor =
+    sourceCrs === 'LOCAL_ENU_METERS' &&
+    transformMode === 'offset' &&
+    /base_map_coordinate_metadata/i.test(String(coordinateMetadata?.transform?.source || '')) &&
+    !coordinateMetadata?.sourceCrsDefinition;
   const sourceIsTrusted =
-    sourceCrs === 'APOLLO_UTM_ZONE_50' ||
-    ['wgs84-to-utm-zone-50', 'gauss-kruger-cm114-to-utm-zone-50'].includes(transformMode) ||
-    (sourceCrs === 'LOCAL_ENU_METERS' && transformMode === 'offset' && coordinateMetadata?.transform?.source);
+    !unsafeBaseMapAutoAnchor &&
+    (sourceCrs === 'APOLLO_UTM_ZONE_50' ||
+      ['wgs84-to-utm-zone-50', 'gauss-kruger-cm114-to-utm-zone-50'].includes(transformMode) ||
+      (sourceCrs === 'LOCAL_ENU_METERS' && transformMode === 'offset' && coordinateMetadata?.transform?.source));
   addCheck(
     'coordinate-source-crs',
     sourceIsTrusted ? 'ok' : 'error',
     'Source coordinate reference',
     sourceIsTrusted
       ? `Source CRS ${sourceCrs} is explicitly handled by transform ${transformMode || 'pass-through'}`
-      : `Source CRS ${sourceCrs} is not explicit enough for production publishing; confirm the point-cloud projection or provide an Apollo anchor`,
+      : unsafeBaseMapAutoAnchor
+        ? 'Base-map center was used as an Apollo origin without explicit point-cloud CRS; regenerate with confirmed source projection'
+        : `Source CRS ${sourceCrs} is not explicit enough for production publishing; confirm the point-cloud projection or provide an Apollo anchor`,
     {
       sourceCrs,
       transform: coordinateMetadata?.transform || null,

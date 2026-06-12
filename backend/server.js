@@ -1629,6 +1629,39 @@ function getEditorMapApolloAnchor(map) {
   return headerOrigin ? { coordinate: headerOrigin, source: "header.origin" } : null;
 }
 
+function editorMapHasUnsafeBaseMapAnchor(map) {
+  const anchor = getEditorMapApolloAnchor(map);
+  if (!anchor || !/base_map_coordinate_metadata/i.test(String(anchor.source || ""))) {
+    return false;
+  }
+  const rawSourceCrs = normalizeCoordinateFrame(
+    map?.coordinateMetadata?.baseMap?.rawPointCloud?.sourceCrs ||
+      map?.coordinateMetadata?.rawPointCloud?.sourceCrs ||
+      map?.coordinateMetadata?.sourceCrs,
+  );
+  return !["APOLLO_UTM_ZONE_50", "WGS84_LON_LAT", "GAUSS_KRUGER_CM114"].includes(rawSourceCrs);
+}
+
+function stripUnsafeBaseMapAnchor(map) {
+  const clean = JSON.parse(JSON.stringify(map || {}));
+  delete clean.apolloOrigin;
+  delete clean.apollo_origin;
+  delete clean.utmOrigin;
+  delete clean.utm_origin;
+  delete clean.mapOrigin;
+  delete clean.map_origin;
+  delete clean.anchor;
+  delete clean.coordinateAnchor;
+  delete clean.coordinate_anchor;
+  if (clean.header) {
+    delete clean.header.origin;
+  }
+  if (clean.coordinateMetadata) {
+    delete clean.coordinateMetadata.anchor;
+  }
+  return clean;
+}
+
 function normalizeCoordinateFrame(value) {
   const raw = String(value || "").trim().toUpperCase();
   if (!raw) {
@@ -1914,6 +1947,10 @@ async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
   }
   const binding = await stampEditorMapBaseMapBinding(mapName, map);
   map = binding.map;
+  const strippedUnsafeAnchor = editorMapHasUnsafeBaseMapAnchor(map);
+  if (strippedUnsafeAnchor) {
+    map = stripUnsafeBaseMapAnchor(map);
+  }
   const sourceCrs = getEditorMapCoordinateFrame(map);
   if (
     sourceCrs === "APOLLO_UTM_ZONE_50" ||
@@ -1931,6 +1968,7 @@ async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
             origin: binding.matched.center,
             sourceCrs: sourceCrs || null,
             targetCrs: APOLLO_TARGET_CRS,
+            strippedUnsafeAnchor,
           }
         : null,
     };
@@ -1984,6 +2022,7 @@ async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
         sourceCrs: baseSourceCrs,
         targetCrs: APOLLO_TARGET_CRS,
         inferredFromEdgePose: inferredSource || null,
+        strippedUnsafeAnchor,
       },
     };
   }
