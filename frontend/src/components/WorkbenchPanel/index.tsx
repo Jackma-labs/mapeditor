@@ -19,7 +19,7 @@ const tabs: { key: WorkbenchTab; label: string; desc: string; icon: React.Elemen
     { key: 'attr', label: '属性', desc: '编辑选中对象', icon: MousePointer2 },
     { key: 'quality', label: '质检', desc: '定位地图问题', icon: ListChecks },
     { key: 'ai', label: 'AI 诊断', desc: '解释修复建议', icon: Bot },
-    { key: 'publish', label: '发布检查', desc: '确认能否部署', icon: ClipboardCheck },
+    { key: 'publish', label: '发布检查', desc: '生成 Apollo 包', icon: ClipboardCheck },
 ];
 
 export default function WorkbenchPanel() {
@@ -86,8 +86,8 @@ export default function WorkbenchPanel() {
             };
         }
         return {
-            title: '进入发布检查',
-            detail: '编辑态质检通过，确认发布包坐标和 route 后推送边缘设备。',
+            title: '生成 Apollo 发布包',
+            detail: '编辑态质检通过后，发布地图包会自动生成 Apollo 可部署产物。',
             button: '发布检查',
             status: 'ready' as FlowStatus,
             tab: 'publish' as WorkbenchTab,

@@ -1444,35 +1444,21 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         );
     }
 
-    let primaryActionLabel = '部署所选地图';
+    let primaryActionLabel = '一键发布到边缘设备';
     let PrimaryActionIcon = CloudUploadIcon;
     let primaryAction: () => void | Promise<void> = deploySelected;
-    let primaryActionDisabled =
-        loading ||
-        checkingDevice ||
-        !hasSavedDevice ||
-        editingDevice ||
-        !hasSelectedReadyMap ||
-        !preflight ||
-        errorCheckCount > 0;
+    let primaryActionDisabled = loading || checkingDevice || !hasSavedDevice || editingDevice || !hasSelectedReadyMap;
     if (!hasReadyMaps) {
-        primaryActionLabel = '去发布检查';
+        primaryActionLabel = '去发布地图包';
         PrimaryActionIcon = ShieldCheckIcon;
         primaryAction = goToPublishCheck;
         primaryActionDisabled = loading;
     } else if (!hasSavedDevice || editingDevice) {
-        primaryActionLabel = '保存设备并预检';
+        primaryActionLabel = '保存固定设备';
         PrimaryActionIcon = SaveIcon;
         primaryAction = saveAndPreflight;
         primaryActionDisabled = loading;
-    } else if (!preflight || errorCheckCount > 0) {
-        primaryActionLabel = '刷新设备状态';
-        PrimaryActionIcon = WifiIcon;
-        primaryAction = refreshStatus;
-        primaryActionDisabled = loading || checkingDevice || !hasSelectedReadyMap;
     }
-    const showAuxRefresh = hasSelectedReadyMap && hasSavedDevice && primaryActionLabel !== '刷新设备状态';
-    const showAuxSave = editingDevice && hasReadyMaps && primaryActionLabel !== '保存设备并预检';
     const hasPreflightAttention = blockingPreflightChecks.length > 0 || confirmPreflightChecks.length > 0;
     let deployDecisionLevel: StatusLevel = 'idle';
     let deployDecisionTitle = '等待设备检查';
@@ -1548,7 +1534,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                     right: 'auto',
                     bottom: 'auto',
                     left: '50%',
-                    width: 'min(1120px, calc(100vw - 48px))',
+                    width: 'min(780px, calc(100vw - 48px))',
                     maxWidth: 'calc(100vw - 32px)',
                     height: 'min(820px, calc(100vh - 80px))',
                     transform: 'translateX(-50%)',
@@ -1559,7 +1545,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                         <div className="min-w-0">
                             <DialogTitle className="text-lg font-semibold">边缘设备部署</DialogTitle>
                             <DialogDescription className="mt-2">
-                                固定边缘设备配置后，后续只需要选择发布包、刷新状态、部署地图。
+                                使用最新 Apollo 发布包，一键推送到已配置的边缘设备。
                             </DialogDescription>
                             <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
                                 <Badge variant="outline">{`frontend ${buildHash || 'unknown'}`}</Badge>
@@ -1574,7 +1560,415 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                 </DialogHeader>
 
                 <ScrollArea className="min-h-0 flex-1">
-                    <div className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
+                    <div className="flex min-w-0 flex-col gap-4 p-5">
+                        {notice ? <NoticeAlert notice={notice} onClear={() => setNotice(null)} /> : null}
+
+                        <Card>
+                            <CardHeader>
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <CardTitle className="flex items-center gap-2">
+                                            <ServerIcon data-icon="inline-start" />
+                                            固定边缘设备
+                                        </CardTitle>
+                                        <CardDescription>
+                                            部署目标固定为已保存设备；现场不需要每次重新输入。
+                                        </CardDescription>
+                                    </div>
+                                    <Badge variant={hasSavedDevice ? 'outline' : 'destructive'} className="shrink-0">
+                                        {hasSavedDevice ? '已配置' : '未配置'}
+                                    </Badge>
+                                </div>
+                            </CardHeader>
+                            <CardContent className="flex flex-col gap-4">
+                                {hasSavedDevice && !editingDevice ? (
+                                    <>
+                                        <div className="flex min-w-0 items-start justify-between gap-3 rounded-lg border border-border bg-muted/20 px-3 py-3">
+                                            <div className="min-w-0">
+                                                <div className="truncate text-base font-semibold text-foreground">
+                                                    {`${values.user}@${values.host}:${values.port}`}
+                                                </div>
+                                                <div className="mt-1 truncate text-xs text-muted-foreground">
+                                                    {values.targetMapRoot}
+                                                </div>
+                                            </div>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => setEditingDevice(true)}
+                                                disabled={loading}
+                                            >
+                                                <PencilIcon data-icon="inline-start" />
+                                                更换设备
+                                            </Button>
+                                        </div>
+                                        <div className="grid gap-2 sm:grid-cols-4">
+                                            <StatusLight
+                                                level={checkingDevice ? 'warning' : sshStatus}
+                                                label="设备在线"
+                                                value={checkingStatusText}
+                                            />
+                                            <StatusLight
+                                                level={checkingDevice ? 'warning' : dockerStatus}
+                                                label="Apollo 容器"
+                                                value={checkingStatusText}
+                                            />
+                                            <StatusLight
+                                                level={checkingDevice ? 'warning' : dreamviewStatus}
+                                                label="Dreamview"
+                                                value={checkingStatusText}
+                                            />
+                                            <StatusLight
+                                                level={checkingDevice ? 'warning' : deployReadinessStatus}
+                                                label="部署状态"
+                                                value={checkingStatusText}
+                                            />
+                                        </div>
+                                        <div className="flex justify-end">
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={refreshStatus}
+                                                disabled={loading || checkingDevice || !hasSelectedReadyMap}
+                                            >
+                                                <RefreshCwIcon data-icon="inline-start" />
+                                                检查设备
+                                            </Button>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="flex flex-col gap-4">
+                                        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_120px]">
+                                            <FieldBlock label="边缘设备 IP" htmlFor="edge-host-simple">
+                                                <Input
+                                                    id="edge-host-simple"
+                                                    value={values.host}
+                                                    placeholder="192.168.110.187"
+                                                    onChange={(event) => updateValue('host', event.target.value)}
+                                                />
+                                            </FieldBlock>
+                                            <FieldBlock label="SSH 端口" htmlFor="edge-port-simple">
+                                                <Input
+                                                    id="edge-port-simple"
+                                                    type="number"
+                                                    min={1}
+                                                    max={65535}
+                                                    value={values.port}
+                                                    onChange={(event) => {
+                                                        updateValue('port', Number(event.target.value) || 22);
+                                                    }}
+                                                />
+                                            </FieldBlock>
+                                        </div>
+                                        <div className="grid gap-4 md:grid-cols-2">
+                                            <FieldBlock label="SSH 用户" htmlFor="edge-user-simple">
+                                                <Input
+                                                    id="edge-user-simple"
+                                                    value={values.user}
+                                                    placeholder="nvidia"
+                                                    onChange={(event) => updateValue('user', event.target.value)}
+                                                />
+                                            </FieldBlock>
+                                            <FieldBlock
+                                                label="SSH 密码"
+                                                htmlFor="edge-password-simple"
+                                                hint={
+                                                    passwordConfigured
+                                                        ? '已保存密码可以留空。'
+                                                        : '首次配置需要输入密码。'
+                                                }
+                                            >
+                                                <Input
+                                                    id="edge-password-simple"
+                                                    type="password"
+                                                    value={values.password}
+                                                    autoComplete="new-password"
+                                                    placeholder={
+                                                        passwordConfigured ? '已保存，留空即可' : '请输入 SSH 密码'
+                                                    }
+                                                    onChange={(event) => updateValue('password', event.target.value)}
+                                                />
+                                            </FieldBlock>
+                                        </div>
+                                        <FieldBlock label="Apollo 地图目录" htmlFor="edge-map-root-simple">
+                                            <Input
+                                                id="edge-map-root-simple"
+                                                value={values.targetMapRoot}
+                                                placeholder="/apollo/modules/map/data"
+                                                onChange={(event) => updateValue('targetMapRoot', event.target.value)}
+                                            />
+                                        </FieldBlock>
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+
+                        <Card className={cn(!hasReadyMaps && 'border-destructive/45')}>
+                            <CardHeader>
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <CardTitle className="flex items-center gap-2">
+                                            <MapIcon data-icon="inline-start" />
+                                            Apollo 发布包
+                                        </CardTitle>
+                                        <CardDescription>
+                                            画完图后发布地图包，系统自动生成 Apollo 可部署格式。
+                                        </CardDescription>
+                                    </div>
+                                    <Badge variant={hasReadyMaps ? 'outline' : 'destructive'} className="shrink-0">
+                                        {hasReadyMaps ? '可部署' : '待发布'}
+                                    </Badge>
+                                </div>
+                            </CardHeader>
+                            <CardContent className="flex flex-col gap-3">
+                                {selectedMap?.ready ? (
+                                    <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border bg-muted/20 px-3 py-3">
+                                        <div className="min-w-0">
+                                            <div className="truncate text-base font-semibold text-foreground">
+                                                {selectedMap.mapName}
+                                            </div>
+                                            <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                                                最新可部署包；点击下方按钮会先自动预检，再推送到边缘设备。
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <Alert variant="destructive">
+                                        <AlertTriangleIcon />
+                                        <AlertTitle>还没有可部署的 Apollo 发布包</AlertTitle>
+                                        <AlertDescription>
+                                            先发布地图包。发布动作会自动转换成 Apollo 可部署产物，不需要单独转换。
+                                        </AlertDescription>
+                                    </Alert>
+                                )}
+                                {nonReadyMaps.length > 0 ? (
+                                    <details className="rounded-lg border border-border bg-muted/15">
+                                        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+                                            <span className="min-w-0">
+                                                <strong className="block truncate text-sm text-foreground">
+                                                    不可部署包
+                                                </strong>
+                                                <span className="block truncate text-xs text-muted-foreground">
+                                                    只有失败排查时需要看。
+                                                </span>
+                                            </span>
+                                            <Badge variant="outline" className="shrink-0">
+                                                {nonReadyMaps.length}
+                                            </Badge>
+                                        </summary>
+                                        <div className="flex flex-col gap-2 border-t border-border p-3">
+                                            {nonReadyMaps.slice(0, 3).map(renderBlockedMapCard)}
+                                        </div>
+                                    </details>
+                                ) : null}
+                            </CardContent>
+                        </Card>
+
+                        <Card>
+                            <CardHeader>
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <CardTitle className="flex items-center gap-2">
+                                            <CloudUploadIcon data-icon="inline-start" />
+                                            一键发布
+                                        </CardTitle>
+                                        <CardDescription>
+                                            不需要手动选择边缘设备和发布包。系统使用固定设备和最新可部署包。
+                                        </CardDescription>
+                                    </div>
+                                    <Badge
+                                        variant={deployDecisionLevel === 'error' ? 'destructive' : 'outline'}
+                                        className="shrink-0"
+                                    >
+                                        {deployDecisionTitle}
+                                    </Badge>
+                                </div>
+                            </CardHeader>
+                            <CardContent className="flex flex-col gap-4">
+                                {jobText ? (
+                                    <Alert className="border-[rgba(47,127,247,0.45)] bg-card">
+                                        <RefreshCwIcon className="animate-spin" />
+                                        <AlertTitle>正在发布</AlertTitle>
+                                        <AlertDescription>{jobText}</AlertDescription>
+                                    </Alert>
+                                ) : (
+                                    <div className="rounded-lg border border-border bg-muted/20 px-3 py-3 text-sm leading-6 text-muted-foreground">
+                                        {hasSavedDevice && hasReadyMaps
+                                            ? '点击“一键发布到边缘设备”，系统会自动预检、上传、切换 Dreamview 并记录结果。'
+                                            : deployDecisionDescription}
+                                    </div>
+                                )}
+                                {lastDeployVerification ? (
+                                    <div className="grid gap-2 sm:grid-cols-2">
+                                        <InfoPair label="期望地图" value={verificationExpectedMap} />
+                                        <InfoPair label="Dreamview 当前地图" value={verificationDreamviewMap} />
+                                        <InfoPair label="runtime 当前地图" value={verificationRuntimeMap} />
+                                        <InfoPair label="验证时间" value={verificationTime} />
+                                    </div>
+                                ) : null}
+                                {preflightChecks.length > 0 || deviceCheckTimedOut ? (
+                                    <details
+                                        className="rounded-lg border border-border bg-muted/15"
+                                        open={blockingPreflightChecks.length > 0}
+                                    >
+                                        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+                                            <span className="min-w-0">
+                                                <strong className="block truncate text-sm text-foreground">
+                                                    失败排查
+                                                </strong>
+                                                <span className="block truncate text-xs text-muted-foreground">
+                                                    正常发布不用看；失败时按阻断项处理。
+                                                </span>
+                                            </span>
+                                            <Badge
+                                                variant={blockingPreflightChecks.length > 0 ? 'destructive' : 'outline'}
+                                                className="shrink-0"
+                                            >
+                                                {`${blockingPreflightChecks.length} 阻断`}
+                                            </Badge>
+                                        </summary>
+                                        <div className="flex flex-col gap-3 border-t border-border p-3">
+                                            {deviceCheckTimedOut ? (
+                                                <Alert className="border-[rgba(245,158,11,0.45)] bg-card">
+                                                    <AlertTriangleIcon />
+                                                    <AlertTitle>检查超时</AlertTitle>
+                                                    <AlertDescription>
+                                                        自动检查超过 10 秒，可以重新点击一键发布或检查设备。
+                                                    </AlertDescription>
+                                                </Alert>
+                                            ) : null}
+                                            <PreflightGroup
+                                                title="阻断部署"
+                                                description="这些问题会阻止地图下发"
+                                                items={blockingPreflightChecks}
+                                                group="blocking"
+                                                defaultOpen={blockingPreflightChecks.length > 0}
+                                                emptyText="没有阻断项。"
+                                            />
+                                            <PreflightGroup
+                                                title="部署后确认"
+                                                description="可以部署，但上线前现场确认"
+                                                items={confirmPreflightChecks}
+                                                group="confirm"
+                                                defaultOpen={false}
+                                                emptyText="没有确认项。"
+                                            />
+                                        </div>
+                                    </details>
+                                ) : null}
+                            </CardContent>
+                        </Card>
+
+                        <details className="rounded-lg border border-border bg-card">
+                            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+                                <span className="min-w-0">
+                                    <strong className="flex items-center gap-2 text-sm text-foreground">
+                                        <HistoryIcon data-icon="inline-start" />
+                                        部署记录与回滚
+                                    </strong>
+                                    <span className="mt-1 block truncate text-xs text-muted-foreground">
+                                        默认收起；只有需要回滚时打开。
+                                    </span>
+                                </span>
+                                <Badge variant="outline" className="shrink-0">
+                                    {recentDeploymentRecords.length}
+                                </Badge>
+                            </summary>
+                            <div className="flex flex-col gap-3 border-t border-border p-3">
+                                <div className="flex justify-end">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={refreshDeployments}
+                                        disabled={loading}
+                                    >
+                                        <RefreshCwIcon data-icon="inline-start" />
+                                        刷新记录
+                                    </Button>
+                                </div>
+                                {recentDeploymentRecords.length > 0 ? (
+                                    <div className="flex flex-col gap-2">
+                                        {recentDeploymentRecords.slice(0, 3).map((item: any) => {
+                                            const rollbackable =
+                                                item.type === 'deploy' &&
+                                                item.status === 'succeeded' &&
+                                                Boolean(item.backupDir);
+                                            return (
+                                                <div
+                                                    className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border bg-muted/25 px-3 py-2"
+                                                    key={item.id}
+                                                >
+                                                    <div className="min-w-0">
+                                                        <div className="truncate text-sm font-medium text-foreground">
+                                                            {item.mapName || '-'}
+                                                        </div>
+                                                        <div className="truncate text-xs text-muted-foreground">
+                                                            {`${item.status || '-'} / ${formatModifiedTime(
+                                                                item.finishedAt || item.startedAt,
+                                                            )}`}
+                                                        </div>
+                                                    </div>
+                                                    <Button
+                                                        type="button"
+                                                        variant="destructive"
+                                                        size="sm"
+                                                        disabled={!rollbackable || loading}
+                                                        onClick={() => setRollbackCandidate(item)}
+                                                    >
+                                                        <RotateCcwIcon data-icon="inline-start" />
+                                                        回滚
+                                                    </Button>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : (
+                                    <div className="rounded-lg bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                                        暂无部署记录。
+                                    </div>
+                                )}
+                            </div>
+                        </details>
+
+                        {rollbackCandidate ? (
+                            <Alert variant="destructive">
+                                <AlertTriangleIcon />
+                                <AlertTitle>确认回滚边缘设备地图？</AlertTitle>
+                                <AlertDescription>
+                                    <div className="flex flex-col gap-3">
+                                        <span>
+                                            <span>将把</span>
+                                            <strong className="mx-1">{rollbackCandidate.mapName || '-'}</strong>
+                                            <span>回滚到部署前备份。</span>
+                                        </span>
+                                        <div className="flex justify-end gap-2">
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                onClick={() => setRollbackCandidate(null)}
+                                                disabled={loading}
+                                            >
+                                                取消
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant="destructive"
+                                                onClick={rollbackDeployment}
+                                                disabled={loading}
+                                            >
+                                                <RotateCcwIcon data-icon="inline-start" />
+                                                确认回滚
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </AlertDescription>
+                            </Alert>
+                        ) : null}
+                    </div>
+                    <div className="hidden">
                         <div className="flex min-w-0 flex-col gap-4">
                             <div className="grid gap-2 md:grid-cols-4">
                                 {workflowSummary.map((item) => (
@@ -2306,23 +2700,6 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                     <Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
                         关闭
                     </Button>
-                    {showAuxRefresh ? (
-                        <Button
-                            type="button"
-                            variant="outline"
-                            onClick={refreshStatus}
-                            disabled={loading || checkingDevice}
-                        >
-                            <WifiIcon data-icon="inline-start" />
-                            刷新设备状态
-                        </Button>
-                    ) : null}
-                    {showAuxSave ? (
-                        <Button type="button" variant="secondary" onClick={saveAndPreflight} disabled={loading}>
-                            <SaveIcon data-icon="inline-start" />
-                            保存设备并预检
-                        </Button>
-                    ) : null}
                     <Button type="button" onClick={primaryAction} disabled={primaryActionDisabled}>
                         <PrimaryActionIcon data-icon="inline-start" />
                         {primaryActionLabel}

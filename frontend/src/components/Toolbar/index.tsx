@@ -938,7 +938,9 @@ export default function Index(prop: ToolbarProps) {
                             label: (
                                 <FileMenuLabel
                                     title="ApolloLite 仿真预检"
-                                    description={canDeploy ? '检查并同步最新发布地图到本机仿真目录' : '需要管理员权限'}
+                                    description={
+                                        canDeploy ? '把最新 Apollo 发布包同步到本机验证目录' : '需要管理员权限'
+                                    }
                                 />
                             ),
                             key: 'apollolite-stage-latest',
@@ -1008,9 +1010,7 @@ export default function Index(prop: ToolbarProps) {
                             label: (
                                 <FileMenuLabel
                                     title="边缘设备部署"
-                                    description={
-                                        canDeploy ? '选择发布包、保存预检并部署到 Apollo 边缘设备' : '需要管理员权限'
-                                    }
+                                    description={canDeploy ? '一键发布最新 Apollo 包到固定边缘设备' : '需要管理员权限'}
                                 />
                             ),
                             key: 'edge-device',
@@ -1030,10 +1030,7 @@ export default function Index(prop: ToolbarProps) {
                     children: [
                         {
                             label: (
-                                <FileMenuLabel
-                                    title="运行状态"
-                                    description="查看导入、转换、底图生成、仿真和部署状态"
-                                />
+                                <FileMenuLabel title="运行状态" description="查看导入、转换、发布包和边缘部署状态" />
                             ),
                             key: 'runtime-status',
                         },
@@ -1091,7 +1088,7 @@ export default function Index(prop: ToolbarProps) {
                                         <FileMenuLabel
                                             title="发布地图包"
                                             description={
-                                                canEdit ? '把已保存标注生成 Apollo 可部署产物' : '需要编辑权限'
+                                                canEdit ? '保存标注并自动生成 Apollo 可部署包' : '需要编辑权限'
                                             }
                                         />
                                     ),
@@ -1104,9 +1101,7 @@ export default function Index(prop: ToolbarProps) {
                                         <FileMenuLabel
                                             title="边缘设备部署"
                                             description={
-                                                canDeploy
-                                                    ? '选择发布包、执行坐标预检并推送到 Apollo 边缘设备'
-                                                    : '需要管理员权限'
+                                                canDeploy ? '一键发布最新 Apollo 包到固定边缘设备' : '需要管理员权限'
                                             }
                                         />
                                     ),

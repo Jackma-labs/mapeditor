@@ -87,8 +87,8 @@ function getHeroState(readyForDeploy: boolean, readyForRelease: boolean) {
 function getHeroCopy(state: string) {
     if (state === 'ready') {
         return {
-            title: '发布包可部署',
-            detail: '后端质量门禁通过，可以直接进入边缘部署；边缘设备侧负责仿真和实车验证。',
+            title: 'Apollo 发布包可部署',
+            detail: '后端质量门禁通过，可以一键发布到固定边缘设备；边缘设备侧负责实车验证。',
             badge: 'ready',
             variant: 'outline' as const,
         };
@@ -269,10 +269,10 @@ export default function ReleaseGatePanel({
             <section className="release-deploy-action">
                 <div>
                     <strong>部署路径</strong>
-                    <span>发布包通过后直接推送到边缘设备；仿真和实车验证在边缘设备侧完成。</span>
+                    <span>发布地图包会自动生成 Apollo 可部署包；通过后可一键推送到固定边缘设备。</span>
                 </div>
                 <Button type="button" variant="default" onClick={onOpenDeploy} disabled={!readyForDeploy}>
-                    边缘部署
+                    一键部署到边缘设备
                 </Button>
             </section>
 
@@ -389,8 +389,8 @@ export default function ReleaseGatePanel({
                     </>
                 ) : (
                     <div className="release-empty">
-                        当前地图还没有发布包。先保存标注并从顶部“生产”菜单发布当前地图，再回到这里检查坐标、默认路线、POI
-                        和质量门禁；其它历史发布包请在“边缘部署”里选择。
+                        当前地图还没有 Apollo
+                        发布包。先保存标注并从顶部“生产”菜单发布当前地图，系统会自动生成可部署包；通过后直接一键推送到固定边缘设备。
                     </div>
                 )}
             </section>
