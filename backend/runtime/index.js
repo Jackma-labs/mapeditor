@@ -1136,14 +1136,13 @@ async function readEdgeLocalizationPose(config) {
     'CYBER_CHANNEL=$(command -v cyber_channel 2>/dev/null || true)',
     '[ -n "$CYBER_CHANNEL" ] || CYBER_CHANNEL=/apollo/bazel-bin/cyber/tools/cyber_channel/cyber_channel',
     "echo '__MAPEDITOR_POSE__'",
-    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 6 "$CYBER_CHANNEL" echo /apollo/localization/pose 2>/dev/null | sed -n \'1,260p\' || true',
-    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 6 "$CYBER_CHANNEL" echo -c /apollo/localization/pose 2>/dev/null | sed -n \'1,260p\' || true',
-    "timeout 4 cyber_echo /apollo/localization/pose 2>/dev/null | sed -n '1,260p' || true",
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 6 "$CYBER_CHANNEL" echo /apollo/localization/pose 2>/dev/null | head -n 260 || true',
+    "timeout 4 cyber_echo /apollo/localization/pose 2>/dev/null | head -n 260 || true",
     "echo '__MAPEDITOR_GNSS_STATUS__'",
-    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 3 "$CYBER_CHANNEL" echo /apollo/sensor/gnss/ins_stat 2>/dev/null | sed -n \'1,120p\' || true',
-    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 3 "$CYBER_CHANNEL" echo /apollo/gnss/ins_stat 2>/dev/null | sed -n \'1,120p\' || true',
-    "timeout 2 cyber_echo /apollo/sensor/gnss/ins_stat 2>/dev/null | sed -n '1,120p' || true",
-    "timeout 2 cyber_echo /apollo/gnss/ins_stat 2>/dev/null | sed -n '1,120p' || true",
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 3 "$CYBER_CHANNEL" echo /apollo/sensor/gnss/ins_stat 2>/dev/null | head -n 120 || true',
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 3 "$CYBER_CHANNEL" echo /apollo/gnss/ins_stat 2>/dev/null | head -n 120 || true',
+    "timeout 2 cyber_echo /apollo/sensor/gnss/ins_stat 2>/dev/null | head -n 120 || true",
+    "timeout 2 cyber_echo /apollo/gnss/ins_stat 2>/dev/null | head -n 120 || true",
     'true',
   ].join('\n');
   const container = String(config.edgeDeploy.dockerContainer || '').trim();
@@ -4838,7 +4837,7 @@ async function readApolloLiteLocalizationPose(apolloLite, progress) {
   const command = [
     'cd /apollo',
     'source cyber/setup.bash >/dev/null 2>&1 || true',
-    "timeout 2 cyber_channel echo /apollo/localization/pose 2>/dev/null | sed -n '1,180p' || true",
+    "timeout 2 cyber_channel echo /apollo/localization/pose 2>/dev/null | head -n 180 || true",
   ].join(' && ');
   const result = await runCommand('docker', ['exec', '-u', 'dell', containerName, 'bash', '-lc', command], {
     timeoutMs: 5000,
