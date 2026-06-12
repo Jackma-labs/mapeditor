@@ -2,7 +2,6 @@ import React, { ReactNode, useCallback, useEffect, useMemo, useRef, useState } f
 import PubSub from 'pubsub-js';
 import {
     AlertTriangleIcon,
-    BoxIcon,
     CheckCircle2Icon,
     CloudUploadIcon,
     ExternalLinkIcon,
@@ -168,14 +167,6 @@ const formatModifiedTime = (value: string) => {
     return date.toLocaleString();
 };
 
-const formatBytes = (value: any) => {
-    const bytes = Number(value) || 0;
-    if (bytes >= 1024 * 1024) {
-        return `${(bytes / 1024 / 1024).toFixed(bytes >= 1024 * 1024 * 1024 ? 1 : 2)} MB`;
-    }
-    return `${Math.round(bytes / 1024)} KB`;
-};
-
 const formatMeters = (value: any) => {
     const number = Number(value);
     if (!Number.isFinite(number)) {
@@ -260,16 +251,6 @@ const getReleaseMapIssueLines = (map: any) => {
         lines.push('发布检查未通过，请重新执行发布检查。');
     }
     return lines;
-};
-
-const mapStatusColor = (map: any): StatusLevel => {
-    if (map?.ready) {
-        return 'ok';
-    }
-    if (map?.status === 'invalid') {
-        return 'error';
-    }
-    return 'warning';
 };
 
 const getOverviewStatusText = (status: StatusLevel, hasPreflight: boolean) => {
@@ -752,7 +733,6 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     const selectableMaps = useMemo(() => releasedMaps.filter((item: any) => item.selectable), [releasedMaps]);
     const readyMaps = useMemo(() => selectableMaps.filter((item: any) => item.ready), [selectableMaps]);
     const nonReadyMaps = useMemo(() => selectableMaps.filter((item: any) => !item.ready), [selectableMaps]);
-    const latestReadyMapName = readyMaps[0]?.mapName || '';
     const preflightChecks = useMemo(() => getChecks(preflight), [preflight]);
     const runtimeCheck = useMemo(() => getCheck(preflight, 'edge-runtime-status'), [preflight]);
     const dreamviewCheck = useMemo(() => getCheck(preflight, 'edge-dreamview-hmi'), [preflight]);
@@ -892,7 +872,6 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         runtimeDetails?.flag_map_dir ||
         values.targetMapRoot ||
         '待验证';
-    const lastCheckedLabel = lastCheckedAt ? formatModifiedTime(lastCheckedAt) : '待检查';
     const checkingStatusText = checkingDevice ? '检查中' : undefined;
 
     const loadDeployments = useCallback(async () => {
@@ -1382,22 +1361,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
         }, 0);
     };
 
-    const selectedMapStatusValue = selectedMap ? (
-        <span className="inline-flex items-center gap-2">
-            <span className={cn('size-2 rounded-full', statusDotClass[mapStatusColor(selectedMap)])} />
-            {selectedMap.ready ? 'ready' : selectedMap.status || 'invalid'}
-        </span>
-    ) : null;
     const primaryBlockedMap = nonReadyMaps[0] || null;
-
-    const selectLatestReadyMap = () => {
-        if (!latestReadyMapName) {
-            return;
-        }
-        updateValue('mapName', latestReadyMapName);
-        setPreflight(null);
-        setLastDeployVerification(null);
-    };
 
     const renderMapOption = (item: any, optionIndex: number) => (
         <SelectItem
@@ -1415,10 +1379,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                     <div className="truncate text-sm font-semibold text-foreground">{item.mapName}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                        {item.status || 'validation_failed'}
-                        {item.modifiedAt ? ` / ${formatModifiedTime(item.modifiedAt)}` : ''}
-                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">需要回到发布检查修复后重新生成。</div>
                 </div>
                 <Badge variant="destructive" className="shrink-0">
                     不可部署
@@ -1438,11 +1399,16 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     if (selectedMap) {
         releasePackageSummary = (
             <div className="flex flex-col gap-3">
-                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                    <InfoPair label="发布包" value={selectedMap.mapName} />
-                    <InfoPair label="状态" value={selectedMapStatusValue} />
-                    <InfoPair label="修改时间" value={formatModifiedTime(selectedMap.modifiedAt)} />
-                    <InfoPair label="大小" value={formatBytes(selectedMap.sizeBytes)} />
+                <div className="flex min-w-0 items-start justify-between gap-3 rounded-lg border border-border bg-muted/20 px-3 py-3">
+                    <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-foreground">{selectedMap.mapName}</div>
+                        <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                            已通过发布检查。部署前会自动确认设备、坐标链路和 Dreamview 状态。
+                        </div>
+                    </div>
+                    <Badge variant={selectedMap.ready ? 'outline' : 'destructive'} className="shrink-0">
+                        {selectedMap.ready ? '可部署' : '不可部署'}
+                    </Badge>
                 </div>
                 {!selectedMap.ready ? renderBlockedMapCard(selectedMap) : null}
             </div>
@@ -1507,6 +1473,63 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     }
     const showAuxRefresh = hasSelectedReadyMap && hasSavedDevice && primaryActionLabel !== '刷新设备状态';
     const showAuxSave = editingDevice && hasReadyMaps && primaryActionLabel !== '保存设备并预检';
+    const hasPreflightAttention = blockingPreflightChecks.length > 0 || confirmPreflightChecks.length > 0;
+    let deployDecisionLevel: StatusLevel = 'idle';
+    let deployDecisionTitle = '等待设备检查';
+    let deployDecisionDescription = '选择可部署发布包后，系统会自动检查设备、容器、Dreamview 和坐标链路。';
+    if (!hasReadyMaps) {
+        deployDecisionLevel = 'error';
+        deployDecisionTitle = '先完成发布检查';
+        deployDecisionDescription = '当前没有 ready 发布包，不能部署到边缘设备。';
+    } else if (!hasSavedDevice || editingDevice) {
+        deployDecisionLevel = 'warning';
+        deployDecisionTitle = '先保存固定设备';
+        deployDecisionDescription = '保存设备后会立即预检，之后打开弹窗会自动首检。';
+    } else if (checkingDevice) {
+        deployDecisionLevel = 'warning';
+        deployDecisionTitle = '正在检查设备';
+        deployDecisionDescription = '检查结束前不会锁死界面；超时后可手动刷新。';
+    } else if (preflight && errorCheckCount > 0) {
+        deployDecisionLevel = 'error';
+        deployDecisionTitle = '暂不能部署';
+        deployDecisionDescription = `发现 ${errorCheckCount} 个阻断项，先按下方原因处理。`;
+    } else if (preflight && warningCheckCount > 0) {
+        deployDecisionLevel = 'warning';
+        deployDecisionTitle = '可以部署，部署后确认';
+        deployDecisionDescription = `预检有 ${warningCheckCount} 个现场确认项，部署后不要直接承诺定位可运营。`;
+    } else if (preflight) {
+        deployDecisionLevel = 'ok';
+        deployDecisionTitle = '可以部署';
+        deployDecisionDescription = '设备、发布包和坐标链路已通过部署预检。';
+    }
+    let preflightSummaryText = '待检查';
+    if (checkingDevice) {
+        preflightSummaryText = '检查中';
+    } else if (preflight) {
+        preflightSummaryText = statusTextMap[deployReadinessStatus];
+    }
+    const workflowSummary: Array<{ title: string; level: StatusLevel; text: string }> = [
+        {
+            title: '固定设备',
+            level: deviceGateStatus,
+            text: hasSavedDevice ? `${values.user}@${values.host}:${values.port}` : '待配置',
+        },
+        {
+            title: '可部署地图',
+            level: releaseGateStatus,
+            text: hasReadyMaps ? `${readyMaps.length} 个 ready 包` : '没有 ready 包',
+        },
+        {
+            title: '部署预检',
+            level: checkingDevice ? 'warning' : deployReadinessStatus,
+            text: preflightSummaryText,
+        },
+        {
+            title: '动车定位',
+            level: roadReadinessStatus,
+            text: roadReadinessText,
+        },
+    ];
 
     return (
         <Dialog
@@ -1553,44 +1576,47 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                 <ScrollArea className="min-h-0 flex-1">
                     <div className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
                         <div className="flex min-w-0 flex-col gap-4">
-                            <div className="grid gap-3 md:grid-cols-2">
-                                <Card className={cn(releaseGateStatus === 'error' && 'border-destructive/45')}>
-                                    <CardContent className="flex items-start gap-3 p-4">
-                                        <span
-                                            className={cn(
-                                                'mt-1 size-2.5 shrink-0 rounded-full',
-                                                statusDotClass[releaseGateStatus],
-                                            )}
-                                        />
-                                        <div className="min-w-0">
-                                            <div className="text-sm font-semibold text-foreground">发布包门禁</div>
-                                            <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                                                {hasReadyMaps
-                                                    ? `可部署 ${readyMaps.length} 个，不可部署 ${nonReadyMaps.length} 个`
-                                                    : `没有 ready 发布包，不可部署 ${nonReadyMaps.length} 个`}
-                                            </div>
+                            <div className="grid gap-2 md:grid-cols-4">
+                                {workflowSummary.map((item) => (
+                                    <div
+                                        key={item.title}
+                                        className={cn(
+                                            'min-w-0 rounded-lg border border-border bg-card px-3 py-3',
+                                            item.level === 'error' && 'border-destructive/45 bg-destructive/5',
+                                            item.level === 'warning' && 'border-[rgba(245,158,11,0.45)]',
+                                        )}
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <span
+                                                className={cn(
+                                                    'size-2.5 shrink-0 rounded-full',
+                                                    statusDotClass[item.level],
+                                                )}
+                                            />
+                                            <div className="truncate text-xs text-muted-foreground">{item.title}</div>
                                         </div>
-                                    </CardContent>
-                                </Card>
-                                <Card className={cn(deviceGateStatus === 'error' && 'border-destructive/45')}>
-                                    <CardContent className="flex items-start gap-3 p-4">
-                                        <span
-                                            className={cn(
-                                                'mt-1 size-2.5 shrink-0 rounded-full',
-                                                statusDotClass[deviceGateStatus],
-                                            )}
-                                        />
-                                        <div className="min-w-0">
-                                            <div className="text-sm font-semibold text-foreground">设备门禁</div>
-                                            <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                                                {hasSavedDevice
-                                                    ? `${values.user}@${values.host}:${values.port}`
-                                                    : '先配置边缘设备 IP、SSH 用户、端口和地图目录'}
-                                            </div>
+                                        <div className="mt-2 truncate text-sm font-semibold text-foreground">
+                                            {item.text}
                                         </div>
-                                    </CardContent>
-                                </Card>
+                                    </div>
+                                ))}
                             </div>
+
+                            <Alert
+                                variant={deployDecisionLevel === 'error' ? 'destructive' : 'default'}
+                                className={cn(
+                                    'bg-card',
+                                    deployDecisionLevel === 'ok' && 'border-[rgba(34,197,94,0.45)]',
+                                    deployDecisionLevel === 'warning' && 'border-[rgba(245,158,11,0.45)]',
+                                )}
+                            >
+                                {deployDecisionLevel === 'error' ? <XCircleIcon /> : <InfoIcon />}
+                                <AlertTitle>{deployDecisionTitle}</AlertTitle>
+                                <AlertDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <span>{deployDecisionDescription}</span>
+                                    <span className="text-foreground">{`下一步：${primaryActionLabel}`}</span>
+                                </AlertDescription>
+                            </Alert>
 
                             {!hasSavedDevice ? (
                                 <Alert variant="destructive">
@@ -1653,19 +1679,34 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                             label="是否可部署"
                                             value={checkingStatusText}
                                         />
-                                        <StatusLight
-                                            level={checkingDevice ? 'warning' : roadReadinessStatus}
-                                            label="动态定位"
-                                            value={checkingStatusText || roadReadinessText}
-                                        />
                                     </div>
-                                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                                        <InfoPair label="Docker 容器" value={values.dockerContainer || '宿主机模式'} />
-                                        <InfoPair label="密码状态" value={passwordConfigured ? '已保存' : '未保存'} />
-                                        <InfoPair label="当前加载" value={runtimeDetails?.map_name || '待预检'} />
-                                        <InfoPair label="发布包中心" value={formatBoundsCenter(coordinateBounds)} />
-                                        <InfoPair label="上次检查" value={lastCheckedLabel} />
-                                    </div>
+                                    <details className="rounded-lg border border-border bg-muted/15">
+                                        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+                                            <span className="min-w-0">
+                                                <strong className="block truncate text-sm text-foreground">
+                                                    设备细节
+                                                </strong>
+                                                <span className="block truncate text-xs text-muted-foreground">
+                                                    排查时再打开，默认不占主流程空间。
+                                                </span>
+                                            </span>
+                                            <Badge variant="outline" className="shrink-0">
+                                                {lastCheckedAt ? '已检查' : '待检查'}
+                                            </Badge>
+                                        </summary>
+                                        <div className="grid gap-2 border-t border-border p-3 sm:grid-cols-2 xl:grid-cols-4">
+                                            <InfoPair
+                                                label="Docker 容器"
+                                                value={values.dockerContainer || '宿主机模式'}
+                                            />
+                                            <InfoPair
+                                                label="密码状态"
+                                                value={passwordConfigured ? '已保存' : '未保存'}
+                                            />
+                                            <InfoPair label="当前加载" value={runtimeDetails?.map_name || '待预检'} />
+                                            <InfoPair label="发布包中心" value={formatBoundsCenter(coordinateBounds)} />
+                                        </div>
+                                    </details>
                                     {deviceCheckTimedOut ? (
                                         <Alert className="border-[rgba(245,158,11,0.45)] bg-card">
                                             <AlertTriangleIcon />
@@ -1696,7 +1737,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                     </CardDescription>
                                 </CardHeader>
                                 <CardContent className="flex flex-col gap-4">
-                                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+                                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                                         <Select
                                             value={values.mapName}
                                             onValueChange={(mapName) => {
@@ -1734,15 +1775,6 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                                 ) : null}
                                             </SelectContent>
                                         </Select>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            onClick={selectLatestReadyMap}
-                                            disabled={loading || !latestReadyMapName}
-                                        >
-                                            <HistoryIcon data-icon="inline-start" />
-                                            选择最新可部署
-                                        </Button>
                                         <Button
                                             type="button"
                                             variant="outline"
@@ -1927,207 +1959,230 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                         <div className="flex min-w-0 flex-col gap-4">
                             {notice ? <NoticeAlert notice={notice} onClear={() => setNotice(null)} /> : null}
 
-                            <Card>
+                            <Card className={cn(deployDecisionLevel === 'error' && 'border-destructive/45')}>
                                 <CardHeader>
-                                    <CardTitle className="flex items-center gap-2">
-                                        <CheckCircle2Icon data-icon="inline-start" />
-                                        发布预检
-                                    </CardTitle>
-                                    <CardDescription>当前地图是否能安全下发到固定边缘设备。</CardDescription>
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <CardTitle className="flex items-center gap-2">
+                                                <CheckCircle2Icon data-icon="inline-start" />
+                                                部署判断
+                                            </CardTitle>
+                                            <CardDescription>
+                                                先看结论；需要排查时再展开预检和定位明细。
+                                            </CardDescription>
+                                        </div>
+                                        <Badge
+                                            variant={deployDecisionLevel === 'error' ? 'destructive' : 'outline'}
+                                            className="shrink-0"
+                                        >
+                                            {deployDecisionTitle}
+                                        </Badge>
+                                    </div>
                                 </CardHeader>
                                 <CardContent className="flex flex-col gap-4">
                                     <div className="grid gap-2 sm:grid-cols-2">
-                                        <InfoPair label="通过" value={preflight ? readyCheckCount : '待预检'} />
+                                        <InfoPair label="当前发布包" value={values.mapName || '未选择'} />
                                         <InfoPair
-                                            label="警告/错误"
-                                            value={preflight ? `${warningCheckCount} / ${errorCheckCount}` : '待预检'}
+                                            label="预检结果"
+                                            value={
+                                                preflight
+                                                    ? `${readyCheckCount} 通过 / ${errorCheckCount} 阻断`
+                                                    : '待预检'
+                                            }
                                         />
                                         <InfoPair
                                             label="车辆到中心线"
                                             value={formatMeters(roadNearest?.distanceMeters)}
                                         />
-                                        <InfoPair label="坐标链路" value={statusTextMap[packageStatus]} />
+                                        <InfoPair label="动车定位" value={roadReadinessText} />
                                     </div>
 
                                     {preflightChecks.length > 0 ? (
-                                        <div className="flex flex-col gap-3">
-                                            <PreflightGroup
-                                                title="阻断部署"
-                                                description="这些问题会直接阻止地图下发"
-                                                items={blockingPreflightChecks}
-                                                group="blocking"
-                                                defaultOpen
-                                                emptyText="没有阻断项。"
-                                            />
-                                            <PreflightGroup
-                                                title="部署后必须确认"
-                                                description="可以下发，但上线前必须现场确认"
-                                                items={confirmPreflightChecks}
-                                                group="confirm"
-                                                defaultOpen={confirmPreflightChecks.length > 0}
-                                                emptyText="没有需要现场确认的警告。"
-                                            />
-                                            <PreflightGroup
-                                                title="已通过"
-                                                description="设备、发布包和坐标链路已经检查通过"
-                                                items={passedPreflightChecks}
-                                                group="passed"
-                                                defaultOpen={blockingPreflightChecks.length === 0}
-                                                emptyText="还没有通过项。"
-                                            />
-                                        </div>
-                                    ) : (
-                                        <div className="rounded-lg border border-border bg-muted/20 px-6 py-8 text-center text-sm text-muted-foreground">
-                                            点击“刷新设备状态”或“保存设备并预检”后，这里会按阻断、确认、通过三组显示
-                                            SSH、Docker、Dreamview、坐标和车辆位置检查结果。
-                                        </div>
-                                    )}
-                                </CardContent>
-                            </Card>
-
-                            <Card className={cn(roadReadinessStatus === 'error' && 'border-destructive/45')}>
-                                <CardHeader>
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div className="min-w-0">
-                                            <CardTitle className="flex items-center gap-2">
-                                                <ShieldCheckIcon data-icon="inline-start" />
-                                                动态定位验收
-                                            </CardTitle>
-                                            <CardDescription>
-                                                这里只判断车辆是否具备动车验证条件；地图可部署不等于定位已验收。
-                                            </CardDescription>
-                                        </div>
-                                        <Badge
-                                            variant={roadReadinessStatus === 'error' ? 'destructive' : 'outline'}
-                                            className="shrink-0"
+                                        <details
+                                            className="rounded-lg border border-border bg-muted/15"
+                                            open={hasPreflightAttention}
                                         >
-                                            {roadReadinessText}
-                                        </Badge>
-                                    </div>
-                                </CardHeader>
-                                <CardContent className="flex flex-col gap-4">
-                                    <div className="grid gap-2 sm:grid-cols-2">
-                                        <InfoPair
-                                            label="最近车道中心线"
-                                            value={formatMeters(roadNearest?.distanceMeters)}
-                                        />
-                                        <InfoPair label="pose 延迟" value={formatSeconds(roadPoseDelayValue)} />
-                                        <InfoPair
-                                            label="RTK / INS"
-                                            value={roadPose?.rtkFix?.raw || roadRtkCheck?.message || '待验证'}
-                                        />
-                                        <InfoPair
-                                            label="heading 稳定性"
-                                            value={formatDegrees(roadHeadingCheck?.details?.maxDeltaRadians)}
-                                        />
-                                        <InfoPair label="地图边界" value={roadBoundaryValue} />
-                                        <InfoPair label="当前 pose" value={roadPoseValue} wrap />
-                                    </div>
-                                    <Alert
-                                        variant={roadReadinessStatus === 'error' ? 'destructive' : 'default'}
-                                        className={cn(
-                                            'bg-card',
-                                            roadReadinessStatus === 'warning' && 'border-[rgba(245,158,11,0.5)]',
-                                            roadReadinessStatus === 'ok' && 'border-[rgba(34,197,94,0.45)]',
-                                        )}
-                                    >
-                                        {roadReadinessStatus === 'error' ? <XCircleIcon /> : <InfoIcon />}
-                                        <AlertTitle>{roadAlertTitle}</AlertTitle>
-                                        <AlertDescription>
-                                            {dynamicPoseLabel}
-                                            {roadReadiness?.blockerCount || roadReadiness?.warningCount ? (
-                                                <span className="ml-1">
-                                                    {`阻断 ${roadReadiness?.blockerCount || 0} 项，警告 ${
-                                                        roadReadiness?.warningCount || 0
-                                                    } 项。`}
+                                            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+                                                <span className="min-w-0">
+                                                    <strong className="block truncate text-sm text-foreground">
+                                                        预检明细
+                                                    </strong>
+                                                    <span className="block truncate text-xs text-muted-foreground">
+                                                        阻断项默认展开，通过项默认收起。
+                                                    </span>
                                                 </span>
-                                            ) : null}
-                                        </AlertDescription>
-                                    </Alert>
+                                                <Badge
+                                                    variant={
+                                                        blockingPreflightChecks.length > 0 ? 'destructive' : 'outline'
+                                                    }
+                                                    className="shrink-0"
+                                                >
+                                                    {`${blockingPreflightChecks.length} 阻断`}
+                                                </Badge>
+                                            </summary>
+                                            <div className="flex flex-col gap-3 border-t border-border p-3">
+                                                <PreflightGroup
+                                                    title="阻断部署"
+                                                    description="这些问题会直接阻止地图下发"
+                                                    items={blockingPreflightChecks}
+                                                    group="blocking"
+                                                    defaultOpen={blockingPreflightChecks.length > 0}
+                                                    emptyText="没有阻断项。"
+                                                />
+                                                <PreflightGroup
+                                                    title="部署后必须确认"
+                                                    description="可以下发，但上线前必须现场确认"
+                                                    items={confirmPreflightChecks}
+                                                    group="confirm"
+                                                    defaultOpen={confirmPreflightChecks.length > 0}
+                                                    emptyText="没有需要现场确认的警告。"
+                                                />
+                                                <PreflightGroup
+                                                    title="已通过"
+                                                    description="设备、发布包和坐标链路已经检查通过"
+                                                    items={passedPreflightChecks}
+                                                    group="passed"
+                                                    defaultOpen={false}
+                                                    emptyText="还没有通过项。"
+                                                />
+                                            </div>
+                                        </details>
+                                    ) : (
+                                        <div className="rounded-lg border border-border bg-muted/20 px-4 py-3 text-sm leading-6 text-muted-foreground">
+                                            打开弹窗后会自动检查固定设备。也可以点击底部“刷新设备状态”手动重试。
+                                        </div>
+                                    )}
+
+                                    <details
+                                        className="rounded-lg border border-border bg-muted/15"
+                                        open={roadReadinessStatus === 'error' && Boolean(preflight)}
+                                    >
+                                        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+                                            <span className="min-w-0">
+                                                <strong className="block truncate text-sm text-foreground">
+                                                    动态定位明细
+                                                </strong>
+                                                <span className="block truncate text-xs text-muted-foreground">
+                                                    只影响动车验证，不影响地图文件下发。
+                                                </span>
+                                            </span>
+                                            <Badge
+                                                variant={roadReadinessStatus === 'error' ? 'destructive' : 'outline'}
+                                                className="shrink-0"
+                                            >
+                                                {roadReadinessText}
+                                            </Badge>
+                                        </summary>
+                                        <div className="flex flex-col gap-3 border-t border-border p-3">
+                                            <div className="grid gap-2 sm:grid-cols-2">
+                                                <InfoPair
+                                                    label="最近车道中心线"
+                                                    value={formatMeters(roadNearest?.distanceMeters)}
+                                                />
+                                                <InfoPair label="pose 延迟" value={formatSeconds(roadPoseDelayValue)} />
+                                                <InfoPair
+                                                    label="RTK / INS"
+                                                    value={roadPose?.rtkFix?.raw || roadRtkCheck?.message || '待验证'}
+                                                />
+                                                <InfoPair
+                                                    label="heading 稳定性"
+                                                    value={formatDegrees(roadHeadingCheck?.details?.maxDeltaRadians)}
+                                                />
+                                                <InfoPair label="地图边界" value={roadBoundaryValue} />
+                                                <InfoPair label="当前 pose" value={roadPoseValue} wrap />
+                                            </div>
+                                            <Alert
+                                                variant={roadReadinessStatus === 'error' ? 'destructive' : 'default'}
+                                                className={cn(
+                                                    'bg-card',
+                                                    roadReadinessStatus === 'warning' &&
+                                                        'border-[rgba(245,158,11,0.5)]',
+                                                    roadReadinessStatus === 'ok' && 'border-[rgba(34,197,94,0.45)]',
+                                                )}
+                                            >
+                                                {roadReadinessStatus === 'error' ? <XCircleIcon /> : <InfoIcon />}
+                                                <AlertTitle>{roadAlertTitle}</AlertTitle>
+                                                <AlertDescription>
+                                                    {dynamicPoseLabel}
+                                                    {roadReadiness?.blockerCount || roadReadiness?.warningCount ? (
+                                                        <span className="ml-1">
+                                                            {`阻断 ${roadReadiness?.blockerCount || 0} 项，警告 ${
+                                                                roadReadiness?.warningCount || 0
+                                                            } 项。`}
+                                                        </span>
+                                                    ) : null}
+                                                </AlertDescription>
+                                            </Alert>
+                                        </div>
+                                    </details>
+
+                                    {!lastDeployVerification ? (
+                                        <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-sm leading-6 text-muted-foreground">
+                                            部署成功后才显示设备验证结果；当前不会把动态定位包装成已通过。
+                                        </div>
+                                    ) : null}
                                 </CardContent>
                             </Card>
 
-                            <Card>
-                                <CardHeader>
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div>
-                                            <CardTitle className="flex items-center gap-2">
-                                                <ShieldCheckIcon data-icon="inline-start" />
-                                                设备验证
-                                            </CardTitle>
-                                            <CardDescription>
-                                                部署成功后固定显示 Dreamview/runtime/map_dir
-                                                是否一致；动态定位单独标记。
-                                            </CardDescription>
-                                        </div>
-                                        <Badge
-                                            variant={deployVerificationStatus === 'ok' ? 'outline' : 'secondary'}
-                                            className="shrink-0"
-                                        >
-                                            {deployVerificationBadgeText}
-                                        </Badge>
-                                    </div>
-                                </CardHeader>
-                                <CardContent className="flex flex-col gap-4">
-                                    {lastDeployVerification ? (
-                                        <>
-                                            <div className="grid gap-2 sm:grid-cols-2">
-                                                <InfoPair label="期望地图" value={verificationExpectedMap} />
-                                                <InfoPair label="Dreamview 当前地图" value={verificationDreamviewMap} />
-                                                <InfoPair label="runtime 当前地图" value={verificationRuntimeMap} />
-                                                <InfoPair label="验证时间" value={verificationTime} />
+                            {lastDeployVerification ? (
+                                <Card>
+                                    <CardHeader>
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <CardTitle className="flex items-center gap-2">
+                                                    <ShieldCheckIcon data-icon="inline-start" />
+                                                    设备验证
+                                                </CardTitle>
+                                                <CardDescription>
+                                                    部署后确认 Dreamview、runtime 和 map_dir 是否一致。
+                                                </CardDescription>
                                             </div>
-                                            <div className="grid gap-2">
-                                                <InfoPair
-                                                    label="目标目录 / map_dir"
-                                                    value={verificationTargetDir}
-                                                    wrap
-                                                />
-                                                <InfoPair label="动态定位" value={dynamicPoseLabel} wrap />
-                                            </div>
-                                        </>
-                                    ) : (
-                                        <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-sm leading-6 text-muted-foreground">
-                                            部署成功后这里会显示 Dreamview 当前地图、runtime 当前地图和 map_dir
-                                            写入结果。当前只保留动态定位提示：
-                                            <span className="ml-1 text-foreground">{dynamicPoseLabel}</span>
+                                            <Badge
+                                                variant={deployVerificationStatus === 'ok' ? 'outline' : 'secondary'}
+                                                className="shrink-0"
+                                            >
+                                                {deployVerificationBadgeText}
+                                            </Badge>
                                         </div>
-                                    )}
-                                    <div className="flex flex-wrap justify-end gap-2">
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            onClick={refreshStatus}
-                                            disabled={loading || !values.mapName}
-                                        >
-                                            <RefreshCwIcon data-icon="inline-start" />
-                                            重新验证
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            onClick={() => {
-                                                if (dreamviewHttpUrl) {
-                                                    window.open(dreamviewHttpUrl, '_blank', 'noreferrer');
-                                                }
-                                            }}
-                                            disabled={!dreamviewHttpUrl}
-                                        >
-                                            <ExternalLinkIcon data-icon="inline-start" />
-                                            打开 Dreamview
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            variant="destructive"
-                                            disabled={!rollbackableDeployment || loading}
-                                            onClick={() => setRollbackCandidate(rollbackableDeployment)}
-                                        >
-                                            <RotateCcwIcon data-icon="inline-start" />
-                                            回滚
-                                        </Button>
-                                    </div>
-                                </CardContent>
-                            </Card>
+                                    </CardHeader>
+                                    <CardContent className="flex flex-col gap-4">
+                                        <div className="grid gap-2 sm:grid-cols-2">
+                                            <InfoPair label="期望地图" value={verificationExpectedMap} />
+                                            <InfoPair label="Dreamview 当前地图" value={verificationDreamviewMap} />
+                                            <InfoPair label="runtime 当前地图" value={verificationRuntimeMap} />
+                                            <InfoPair label="验证时间" value={verificationTime} />
+                                        </div>
+                                        <div className="grid gap-2">
+                                            <InfoPair label="目标目录 / map_dir" value={verificationTargetDir} wrap />
+                                            <InfoPair label="动态定位" value={dynamicPoseLabel} wrap />
+                                        </div>
+                                        <div className="flex flex-wrap justify-end gap-2">
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                onClick={() => {
+                                                    if (dreamviewHttpUrl) {
+                                                        window.open(dreamviewHttpUrl, '_blank', 'noreferrer');
+                                                    }
+                                                }}
+                                                disabled={!dreamviewHttpUrl}
+                                            >
+                                                <ExternalLinkIcon data-icon="inline-start" />
+                                                打开 Dreamview
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant="destructive"
+                                                disabled={!rollbackableDeployment || loading}
+                                                onClick={() => setRollbackCandidate(rollbackableDeployment)}
+                                            >
+                                                <RotateCcwIcon data-icon="inline-start" />
+                                                回滚
+                                            </Button>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            ) : null}
 
                             <details className="rounded-lg border border-border bg-card">
                                 <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
