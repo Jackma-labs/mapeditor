@@ -1456,7 +1456,9 @@ function buildEditorMapHistoryDir(mapName) {
 async function loadEditorMap(mapName) {
   const filePath = buildEditorMapPath(mapName);
   const content = await fsp.readFile(filePath, "utf8");
-  return JSON.parse(content);
+  const map = JSON.parse(content);
+  const binding = await stampEditorMapBaseMapBinding(mapName, map);
+  return binding.map;
 }
 
 function coordinateFromAny(value) {
@@ -1614,6 +1616,10 @@ async function resolveBaseMapDirForMap(map) {
       return resolved;
     }
   }
+  const matchedByCenter = await findBaseMapDirByCenter(getEditorMapBaseCenter(map));
+  if (matchedByCenter?.baseMapDir) {
+    return matchedByCenter.baseMapDir;
+  }
   if (lastAccessedBaseMapDir && (await pathExists(lastAccessedBaseMapDir))) {
     return lastAccessedBaseMapDir;
   }
@@ -1656,13 +1662,86 @@ async function readBaseMapCoordinateSource(baseMapDir) {
   return null;
 }
 
+async function findBaseMapDirByCenter(baseCenter) {
+  if (!baseCenter) {
+    return null;
+  }
+  const maxDistanceMeters = Number(process.env.MAP_BASE_MAP_CENTER_MATCH_METERS || 2);
+  const baseMaps = await listBaseMaps();
+  let best = null;
+  for (const baseMapName of baseMaps) {
+    const baseMapDir = path.join(config.baseMapRoot, baseMapName);
+    const source = await readBaseMapCoordinateSource(baseMapDir).catch((error) => {
+      log("Failed to inspect base-map center:", baseMapDir, error.message);
+      return null;
+    });
+    const center = coordinateFromAny(source?.center) || coordinateFromAny(source?.editorOrigin);
+    if (!center) {
+      continue;
+    }
+    const distanceMeters = coordinateDistanceMeters(baseCenter, center);
+    if (!Number.isFinite(distanceMeters) || distanceMeters > maxDistanceMeters) {
+      continue;
+    }
+    if (!best || distanceMeters < best.distanceMeters) {
+      best = {
+        baseMapName,
+        baseMapDir,
+        sourceFile: source.sourceFile,
+        center,
+        distanceMeters,
+      };
+    }
+  }
+  return best;
+}
+
+async function stampEditorMapBaseMapBinding(mapName, map) {
+  if (!map || map.baseMapDir || map.base_map_dir || map.baseMapName || map.base_map_name) {
+    return { map, matched: null };
+  }
+  const matched = await findBaseMapDirByCenter(getEditorMapBaseCenter(map));
+  if (!matched) {
+    return { map, matched: null };
+  }
+  const stampedMap = JSON.parse(JSON.stringify(map));
+  stampedMap.baseMapDir = matched.baseMapName;
+  stampedMap.coordinateMetadata = {
+    ...(stampedMap.coordinateMetadata || {}),
+    baseMap: {
+      ...((stampedMap.coordinateMetadata || {}).baseMap || {}),
+      name: matched.baseMapName,
+      sourceFile: matched.sourceFile,
+      center: matched.center,
+      matchDistanceMeters: Number(matched.distanceMeters.toFixed(3)),
+      matchSource: "basemapCenter",
+    },
+  };
+  log(`Matched base map for ${mapName} by center: ${matched.baseMapName} (${matched.distanceMeters.toFixed(3)}m)`);
+  return { map: stampedMap, matched };
+}
+
 async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
   if (!map) {
     return { map, enriched: null };
   }
+  const binding = await stampEditorMapBaseMapBinding(mapName, map);
+  map = binding.map;
   const sourceCrs = getEditorMapCoordinateFrame(map);
   if (sourceCrs === "APOLLO_UTM_ZONE_50" || sourceCrs === "WGS84_LON_LAT" || getEditorMapApolloAnchor(map)) {
-    return { map, enriched: null };
+    return {
+      map,
+      enriched: binding.matched
+        ? {
+            mapName,
+            baseMap: binding.matched.baseMapName,
+            sourceFile: binding.matched.sourceFile,
+            origin: binding.matched.center,
+            sourceCrs: sourceCrs || null,
+            targetCrs: APOLLO_TARGET_CRS,
+          }
+        : null,
+    };
   }
   const baseMapDir = await resolveBaseMapDirForMap(map);
   const baseMapCoordinate = await readBaseMapCoordinateSource(baseMapDir);
@@ -2091,10 +2170,16 @@ async function handleSaveMapFile(ws, requestId, info) {
 }
 
 async function runConverter(mapName, jsonPath, releaseDir) {
-  const baseMapDir =
-    lastAccessedBaseMapDir && (await pathExists(lastAccessedBaseMapDir))
-      ? lastAccessedBaseMapDir
-      : null;
+  let baseMapDir = null;
+  try {
+    const map = JSON.parse((await fsp.readFile(jsonPath, "utf8")).replace(/^\uFEFF/, ""));
+    baseMapDir = await resolveBaseMapDirForMap(map);
+  } catch (error) {
+    log(`Failed to resolve base map for release ${mapName}:`, error.message);
+  }
+  if (!baseMapDir && lastAccessedBaseMapDir && (await pathExists(lastAccessedBaseMapDir))) {
+    baseMapDir = lastAccessedBaseMapDir;
+  }
   log(`Launching converter for ${mapName} with ${config.runtimeMode} runtime`);
   return runtime.convertEditorMap(config, {
     mapName,
