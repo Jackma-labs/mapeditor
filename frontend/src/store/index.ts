@@ -148,6 +148,7 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
             baseMapDir,
         } = loadHdmp(json);
         let newState = get().mapState;
+        const currentBaseMapDir = String(newState.baseMapDir || '').trim();
 
         newState = {
             ...cloneDeep(initialMapState),
@@ -180,6 +181,9 @@ export const useManagerStore = create<ManagerStore>((set, get) => ({
         if (
             hdBasemapCenter &&
             newState.imageBasemapCenter &&
+            baseMapDir &&
+            currentBaseMapDir &&
+            baseMapDir === currentBaseMapDir &&
             (hdBasemapCenter.x !== newState.imageBasemapCenter?.x ||
                 hdBasemapCenter.y !== newState.imageBasemapCenter?.y)
         ) {

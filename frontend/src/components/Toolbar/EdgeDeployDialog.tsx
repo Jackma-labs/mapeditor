@@ -1391,7 +1391,14 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
     let primaryActionLabel = '部署所选地图';
     let PrimaryActionIcon = CloudUploadIcon;
     let primaryAction: () => void | Promise<void> = deploySelected;
-    let primaryActionDisabled = loading || !hasSelectedReadyMap;
+    let primaryActionDisabled =
+        loading ||
+        checkingDevice ||
+        !hasSavedDevice ||
+        editingDevice ||
+        !hasSelectedReadyMap ||
+        !preflight ||
+        errorCheckCount > 0;
     if (!hasReadyMaps) {
         primaryActionLabel = '去发布检查';
         PrimaryActionIcon = ShieldCheckIcon;

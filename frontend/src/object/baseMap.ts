@@ -251,7 +251,12 @@ export default class BaseMap {
         this.pointCloudIndex = null;
         this.scale = this.getAvailableTileScale(json.tiles, this.scale);
         const tiles = json.tiles[this.scale];
-        const { points: allPoints, imageBasemapCenter, hdBasemapCenter } = useManagerStore.getState().mapState;
+        const {
+            points: allPoints,
+            imageBasemapCenter,
+            hdBasemapCenter,
+            baseMapDir: currentBaseMapDir,
+        } = useManagerStore.getState().mapState;
         useManagerStore.getState().setMapState({
             ...useManagerStore.getState().mapState,
             baseMapDir: dir,
@@ -267,6 +272,7 @@ export default class BaseMap {
         // 换底图的时候或者底图的中心点和标注地图的中心点不一样，记得去更新标注数据的偏移值
         const needOffset =
             Object.keys(allPoints).length !== 0 &&
+            (!currentBaseMapDir || currentBaseMapDir === dir) &&
             (dir !== this.dir ||
                 (hdBasemapCenter && !this.isSameVec(imageBasemapCenter, hdBasemapCenter)) ||
                 (!hdBasemapCenter && Object.keys(allPoints).length !== 0));
@@ -319,7 +325,12 @@ export default class BaseMap {
             return;
         }
         const center = json.center || { x: 0, y: 0, z: 0 };
-        const { points: allPoints, imageBasemapCenter, hdBasemapCenter } = useManagerStore.getState().mapState;
+        const {
+            points: allPoints,
+            imageBasemapCenter,
+            hdBasemapCenter,
+            baseMapDir: currentBaseMapDir,
+        } = useManagerStore.getState().mapState;
         useManagerStore.getState().setMapState({
             ...useManagerStore.getState().mapState,
             baseMapDir: dir,
@@ -327,6 +338,7 @@ export default class BaseMap {
         });
         const needOffset =
             Object.keys(allPoints).length !== 0 &&
+            (!currentBaseMapDir || currentBaseMapDir === dir) &&
             (dir !== this.dir ||
                 (hdBasemapCenter && imageBasemapCenter && !this.isSameVec(imageBasemapCenter, hdBasemapCenter)) ||
                 (!hdBasemapCenter && Object.keys(allPoints).length !== 0));

@@ -4,6 +4,7 @@ import React, { ReactNode, useRef, useState } from 'react';
 import { Modal, Menu, Tooltip, Button, message } from 'antd';
 import { ModalProps } from 'antd/lib/modal';
 import FileService from 'src/service/index';
+import { useManagerStore } from 'src/store';
 import FileIcon from '../../assets/images/ic_base_map.svg';
 import MapIcon from '../../assets/images/ic_map.svg';
 import CloseIcon from '../../assets/images/ic_close.svg';
@@ -68,6 +69,39 @@ const formatCount = (value: any) => {
     return Number.isFinite(numberValue) ? numberValue.toLocaleString() : '0';
 };
 
+const hasAnnotationData = (state: any) =>
+    Boolean(state?.hdMapFile) ||
+    Object.keys(state?.points || {}).length > 0 ||
+    Object.keys(state?.lanes || {}).length > 0 ||
+    Object.keys(state?.boundarys || {}).length > 0;
+
+const getEditorMapBaseMapDir = (map: any) =>
+    String(map?.baseMapDir || map?.base_map_dir || map?.baseMapName || map?.base_map_name || '').trim();
+
+const clearAnnotationForBaseMap = (baseMapDir: string, baseMapJson: any) => {
+    const center = baseMapJson?.center || { x: 0, y: 0 };
+    PubSub.publish('renderHDMap', {
+        file: '',
+        json: {
+            basemapCenter: center,
+            baseMapDir,
+            point: [],
+            boundary: [],
+            roadBoundary: [],
+            lane: [],
+            junction: [],
+            crosswalk: [],
+            speedBump: [],
+            stopLine: [],
+            trafficSignal: [],
+            parkingSpace: [],
+            sign: [],
+            area: [],
+            barrierGate: [],
+        },
+    });
+};
+
 // eslint-disable-next-line react/function-component-definition
 const Dialog: React.FC<DialogProps> = ({ title, mode: requestedMode, open, onCancel, items, ...rest }) => {
     const dialogMode = requestedMode || (title === '打开底图' ? 'baseMap' : 'editorMap');
@@ -98,59 +132,107 @@ const Dialog: React.FC<DialogProps> = ({ title, mode: requestedMode, open, onCan
         onCancel();
     };
 
-    const onOkButton = () => {
-        menuData.forEach(async (item) => {
-            if (item.key === currentKey) {
-                if (isBaseMapDialog) {
-                    const response = await FileService.getBaseMapInfo(item.content);
-                    if (!response) {
-                        messageFunc({
-                            type: 'error',
-                            content: <span>加载失败</span>,
-                        });
-                        return;
-                    }
-                    if (response.tiles || response.type === 'point_cloud') {
-                        PubSub.publish('renderMap', {
-                            dir: item.content,
-                            json: response,
-                        });
-                    }
-                    if (response?.code) {
-                        messageFunc({
-                            type: 'error',
-                            content: <span>{response.message}</span>,
-                        });
-                        return;
-                    }
-                } else if (isEditorMapDialog) {
-                    const response = await FileService.getHDMap(item.content);
-                    if (response?.info?.code !== 0) {
-                        messageFunc({
-                            type: 'error',
-                            content: <span>{response?.info?.message || '加载失败'}</span>,
-                        });
-                        return;
-                    }
+    const openBaseMap = async (baseMapDir: string, baseMapJson: any, clearCurrentAnnotation = false) => {
+        if (clearCurrentAnnotation) {
+            clearAnnotationForBaseMap(baseMapDir, baseMapJson);
+        }
+        PubSub.publish('renderMap', {
+            dir: baseMapDir,
+            json: baseMapJson,
+        });
+        message.destroy();
+        handleCancel();
+        messageFunc({
+            type: 'success',
+            content: <span>导入成功</span>,
+        });
+    };
 
-                    PubSub.publish('renderHDMap', {
-                        file: item.content,
-                        json: response.info.data.map,
-                    });
-                    if (response.info.data.lockGranted === false) {
-                        message.warning(
-                            `该标注地图正在被 ${response.info.data.lock?.username || '其他用户'} 编辑，当前以只读方式打开。`,
-                        );
-                    }
-                }
-
-                message.destroy();
-                handleCancel();
+    const onOkButton = async () => {
+        const item = menuData.find((menuItem) => menuItem.key === currentKey);
+        if (!item) {
+            return;
+        }
+        if (isBaseMapDialog) {
+            const response = await FileService.getBaseMapInfo(item.content);
+            if (!response) {
                 messageFunc({
-                    type: 'success',
-                    content: <span>导入成功</span>,
+                    type: 'error',
+                    content: <span>加载失败</span>,
                 });
+                return;
             }
+            if (response?.code) {
+                messageFunc({
+                    type: 'error',
+                    content: <span>{response.message}</span>,
+                });
+                return;
+            }
+            if (!(response.tiles || response.type === 'point_cloud')) {
+                return;
+            }
+            const currentState = useManagerStore.getState().mapState;
+            const expectedBaseMapDir = String(currentState.baseMapDir || '').trim();
+            if (hasAnnotationData(currentState) && expectedBaseMapDir && expectedBaseMapDir !== item.content) {
+                Modal.confirm({
+                    title: '底图与当前标注地图不匹配',
+                    width: 640,
+                    content: (
+                        <div>
+                            <p>{`当前标注地图绑定底图：${expectedBaseMapDir}`}</p>
+                            <p>{`你选择的底图：${item.content}`}</p>
+                            <p>继续打开会清空当前标注，作为新的标注任务开始；取消则保持当前标注和底图关系不变。</p>
+                        </div>
+                    ),
+                    okText: '清空标注并打开底图',
+                    cancelText: '取消',
+                    onOk: () => openBaseMap(item.content, response, true),
+                });
+                return;
+            }
+            await openBaseMap(item.content, response);
+            return;
+        }
+        if (isEditorMapDialog) {
+            const response = await FileService.getHDMap(item.content);
+            if (response?.info?.code !== 0) {
+                messageFunc({
+                    type: 'error',
+                    content: <span>{response?.info?.message || '加载失败'}</span>,
+                });
+                return;
+            }
+
+            const editorMap = response.info.data.map;
+            const boundBaseMapDir = getEditorMapBaseMapDir(editorMap);
+            PubSub.publish('renderHDMap', {
+                file: item.content,
+                json: editorMap,
+            });
+            if (boundBaseMapDir) {
+                const baseMapResponse = await FileService.getBaseMapInfo(boundBaseMapDir);
+                if (baseMapResponse?.tiles || baseMapResponse?.type === 'point_cloud') {
+                    PubSub.publish('renderMap', {
+                        dir: boundBaseMapDir,
+                        json: baseMapResponse,
+                    });
+                } else {
+                    message.warning(`标注地图绑定的底图 ${boundBaseMapDir} 不可用，请不要手动选择其他底图强行叠加。`);
+                }
+            }
+            if (response.info.data.lockGranted === false) {
+                message.warning(
+                    `该标注地图正在被 ${response.info.data.lock?.username || '其他用户'} 编辑，当前以只读方式打开。`,
+                );
+            }
+        }
+
+        message.destroy();
+        handleCancel();
+        messageFunc({
+            type: 'success',
+            content: <span>导入成功</span>,
         });
     };
 
