@@ -130,6 +130,16 @@ const APOLLO_TARGET_CRS = {
   proj4: "+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs",
   unit: "meter",
 };
+const GAUSS_KRUGER_CM114_CRS = {
+  datum: "CGCS2000/WGS84-compatible",
+  projection: "Transverse_Mercator",
+  centralMeridianDeg: 114,
+  latitudeOfOriginDeg: 0,
+  scaleFactor: 1,
+  falseEastingMeters: 500000,
+  falseNorthingMeters: 0,
+  unit: "meter",
+};
 
 function getBaseMapLayerDir(layer = "enhanced") {
   return BASE_MAP_LAYER_DIRS[layer] || null;
@@ -1481,6 +1491,108 @@ function coordinateDistanceMeters(left, right) {
   return Math.hypot(Number(left.x) - Number(right.x), Number(left.y) - Number(right.y));
 }
 
+const WGS84_A = 6378137;
+const WGS84_F = 1 / 298.257223563;
+const WGS84_E_SQ = WGS84_F * (2 - WGS84_F);
+const WGS84_E_PRIME_SQ = WGS84_E_SQ / (1 - WGS84_E_SQ);
+
+function forwardTransverseMercator(lon, lat, crs, z = 0) {
+  const latRad = (lat * Math.PI) / 180;
+  const lonRad = (lon * Math.PI) / 180;
+  const lonOriginRad = (crs.centralMeridianDeg * Math.PI) / 180;
+  const n = WGS84_A / Math.sqrt(1 - WGS84_E_SQ * Math.sin(latRad) * Math.sin(latRad));
+  const t = Math.tan(latRad) * Math.tan(latRad);
+  const c = WGS84_E_PRIME_SQ * Math.cos(latRad) * Math.cos(latRad);
+  const aa = Math.cos(latRad) * (lonRad - lonOriginRad);
+  const m =
+    WGS84_A *
+    ((1 - WGS84_E_SQ / 4 - (3 * WGS84_E_SQ ** 2) / 64 - (5 * WGS84_E_SQ ** 3) / 256) * latRad -
+      ((3 * WGS84_E_SQ) / 8 + (3 * WGS84_E_SQ ** 2) / 32 + (45 * WGS84_E_SQ ** 3) / 1024) *
+        Math.sin(2 * latRad) +
+      ((15 * WGS84_E_SQ ** 2) / 256 + (45 * WGS84_E_SQ ** 3) / 1024) * Math.sin(4 * latRad) -
+      ((35 * WGS84_E_SQ ** 3) / 3072) * Math.sin(6 * latRad));
+  return {
+    x:
+      crs.falseEastingMeters +
+      crs.scaleFactor *
+        n *
+        (aa + ((1 - t + c) * aa ** 3) / 6 + ((5 - 18 * t + t * t + 72 * c - 58 * WGS84_E_PRIME_SQ) * aa ** 5) / 120),
+    y:
+      (crs.falseNorthingMeters || 0) +
+      crs.scaleFactor *
+        (m +
+          n *
+            Math.tan(latRad) *
+            ((aa * aa) / 2 +
+              ((5 - t + 9 * c + 4 * c * c) * aa ** 4) / 24 +
+              ((61 - 58 * t + t * t + 600 * c - 330 * WGS84_E_PRIME_SQ) * aa ** 6) / 720)),
+    z,
+  };
+}
+
+function inverseTransverseMercator(x, y, crs, z = 0) {
+  const e1 = (1 - Math.sqrt(1 - WGS84_E_SQ)) / (1 + Math.sqrt(1 - WGS84_E_SQ));
+  const adjustedX = x - crs.falseEastingMeters;
+  const adjustedY = y - (crs.falseNorthingMeters || 0);
+  const m = adjustedY / crs.scaleFactor;
+  const mu = m / (WGS84_A * (1 - WGS84_E_SQ / 4 - (3 * WGS84_E_SQ ** 2) / 64 - (5 * WGS84_E_SQ ** 3) / 256));
+  const phi1 =
+    mu +
+    ((3 * e1) / 2 - (27 * e1 ** 3) / 32) * Math.sin(2 * mu) +
+    ((21 * e1 ** 2) / 16 - (55 * e1 ** 4) / 32) * Math.sin(4 * mu) +
+    ((151 * e1 ** 3) / 96) * Math.sin(6 * mu) +
+    ((1097 * e1 ** 4) / 512) * Math.sin(8 * mu);
+  const c1 = WGS84_E_PRIME_SQ * Math.cos(phi1) * Math.cos(phi1);
+  const t1 = Math.tan(phi1) * Math.tan(phi1);
+  const n1 = WGS84_A / Math.sqrt(1 - WGS84_E_SQ * Math.sin(phi1) * Math.sin(phi1));
+  const r1 = (WGS84_A * (1 - WGS84_E_SQ)) / (1 - WGS84_E_SQ * Math.sin(phi1) * Math.sin(phi1)) ** 1.5;
+  const d = adjustedX / (n1 * crs.scaleFactor);
+  const lat =
+    phi1 -
+    ((n1 * Math.tan(phi1)) / r1) *
+      ((d * d) / 2 -
+        ((5 + 3 * t1 + 10 * c1 - 4 * c1 * c1 - 9 * WGS84_E_PRIME_SQ) * d ** 4) / 24 +
+        ((61 + 90 * t1 + 298 * c1 + 45 * t1 * t1 - 252 * WGS84_E_PRIME_SQ - 3 * c1 * c1) * d ** 6) / 720);
+  const lon =
+    (crs.centralMeridianDeg * Math.PI) / 180 +
+    (d -
+      ((1 + 2 * t1 + c1) * d ** 3) / 6 +
+      ((5 - 2 * c1 + 28 * t1 - 3 * c1 * c1 + 8 * WGS84_E_PRIME_SQ + 24 * t1 * t1) * d ** 5) / 120) /
+      Math.cos(phi1);
+  return {
+    lon: (lon * 180) / Math.PI,
+    lat: (lat * 180) / Math.PI,
+    z,
+  };
+}
+
+function wgs84LonLatToApolloUtm(lon, lat, z = 0) {
+  return forwardTransverseMercator(lon, lat, {
+    ...APOLLO_TARGET_CRS,
+    scaleFactor: 0.9996,
+    centralMeridianDeg: 117,
+    falseEastingMeters: 500000,
+    falseNorthingMeters: 0,
+  }, z);
+}
+
+function projectCoordinateToApollo(point, sourceCrs) {
+  if (!point) {
+    return null;
+  }
+  if (sourceCrs === "APOLLO_UTM_ZONE_50") {
+    return point;
+  }
+  if (sourceCrs === "GAUSS_KRUGER_CM114") {
+    const lonLat = inverseTransverseMercator(point.x, point.y, GAUSS_KRUGER_CM114_CRS, point.z || 0);
+    return wgs84LonLatToApolloUtm(lonLat.lon, lonLat.lat, point.z || 0);
+  }
+  if (sourceCrs === "WGS84_LON_LAT") {
+    return wgs84LonLatToApolloUtm(point.x, point.y, point.z || 0);
+  }
+  return null;
+}
+
 function getEditorMapBaseCenter(map) {
   return coordinateFromAny(map?.basemapCenter || map?.baseMapCenter || map?.base_map_center);
 }
@@ -1527,6 +1639,19 @@ function normalizeCoordinateFrame(value) {
   }
   if (["WGS84_LON_LAT", "WGS84", "EPSG:4326", "LON_LAT", "LONGITUDE_LATITUDE"].includes(raw)) {
     return "WGS84_LON_LAT";
+  }
+  if (
+    [
+      "GAUSS_KRUGER_CM114",
+      "GAUSS_KRUGER_3_DEGREE_CM114",
+      "GK_CM114",
+      "CM114",
+      "CGCS2000_GK_CM114",
+      "CGCS2000_GAUSS_KRUGER_CM114",
+      "XIAN80_GK_CM114",
+    ].includes(raw)
+  ) {
+    return "GAUSS_KRUGER_CM114";
   }
   if (["LOCAL_ENU_METERS", "LOCAL_ENU", "LOCAL", "EDITOR_LOCAL", "BASE_MAP_XY"].includes(raw)) {
     return "LOCAL_ENU_METERS";
@@ -1644,19 +1769,31 @@ async function readBaseMapCoordinateSource(baseMapDir) {
       continue;
     }
     const metadata = payload.coordinateMetadata || null;
+    const rawPointCloud = metadata?.rawPointCloud || null;
+    const rawSourceCrs = normalizeCoordinateFrame(
+      rawPointCloud?.sourceCrs ||
+        metadata?.sourceCrs ||
+        metadata?.source_crs ||
+        payload.sourceCrs ||
+        payload.source_crs,
+    );
+    const rawCenter = coordinateFromAny(rawPointCloud?.center) || coordinateFromAny(payload.center);
+    const localOriginInTargetCrs = coordinateFromAny(metadata?.editorLocalFrame?.localOriginInTargetCrs);
     const editorOrigin =
-      coordinateFromAny(metadata?.editorLocalFrame?.localOriginInTargetCrs) ||
-      coordinateFromAny(metadata?.rawPointCloud?.center) ||
-      coordinateFromAny(payload.center);
+      localOriginInTargetCrs ||
+      (rawSourceCrs === "APOLLO_UTM_ZONE_50" ? rawCenter : null);
     return {
       baseMapName: path.basename(baseMapDir),
       baseMapDir,
       sourceFile,
-      center: coordinateFromAny(payload.center) || editorOrigin,
+      center: rawCenter || editorOrigin,
       bounds: boundsFromAny(payload.bounds || metadata?.rawPointCloud?.bounds),
       coordinate: payload.coordinate || null,
       coordinateMetadata: metadata,
       editorOrigin,
+      rawCenter,
+      rawSourceCrs,
+      localOriginInTargetCrs,
     };
   }
   return null;
@@ -1721,6 +1858,56 @@ async function stampEditorMapBaseMapBinding(mapName, map) {
   return { map: stampedMap, matched };
 }
 
+async function inferBaseMapSourceCrsFromEdgePose(baseMapCoordinate) {
+  const rawCenter = coordinateFromAny(baseMapCoordinate?.rawCenter || baseMapCoordinate?.center);
+  if (!rawCenter || !config.edgeDeploy?.host || typeof runtime.readEdgeLocalizationPose !== "function") {
+    return null;
+  }
+  const pose = await runtime.readEdgeLocalizationPose(config).catch((error) => {
+    log("Failed to read edge pose for base-map CRS inference:", error.message);
+    return null;
+  });
+  if (!pose || !Number.isFinite(pose.x) || !Number.isFinite(pose.y)) {
+    return null;
+  }
+  const posePoint = { x: pose.x, y: pose.y, z: 0 };
+  const candidates = ["APOLLO_UTM_ZONE_50", "GAUSS_KRUGER_CM114"]
+    .map((sourceCrs) => {
+      const projected = projectCoordinateToApollo(rawCenter, sourceCrs);
+      return projected
+        ? {
+            sourceCrs,
+            projectedCenter: projected,
+            distanceToEdgePoseMeters: coordinateDistanceMeters(projected, posePoint),
+          }
+        : null;
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.distanceToEdgePoseMeters - right.distanceToEdgePoseMeters);
+  const best = candidates[0];
+  const next = candidates[1];
+  const maxDistanceMeters = Number(process.env.MAP_BASE_MAP_EDGE_POSE_INFER_METERS || 1000);
+  const ratio = next?.distanceToEdgePoseMeters
+    ? best.distanceToEdgePoseMeters / Math.max(next.distanceToEdgePoseMeters, 1)
+    : 0;
+  if (best && best.distanceToEdgePoseMeters <= maxDistanceMeters && (!next || ratio <= 0.2)) {
+    return {
+      ...best,
+      edgePose: posePoint,
+      maxDistanceMeters,
+      confidence: "edge_pose_nearest_projection",
+      candidates,
+    };
+  }
+  return {
+    sourceCrs: null,
+    edgePose: posePoint,
+    maxDistanceMeters,
+    confidence: "no_projection_close_to_edge_pose",
+    candidates,
+  };
+}
+
 async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
   if (!map) {
     return { map, enriched: null };
@@ -1728,7 +1915,12 @@ async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
   const binding = await stampEditorMapBaseMapBinding(mapName, map);
   map = binding.map;
   const sourceCrs = getEditorMapCoordinateFrame(map);
-  if (sourceCrs === "APOLLO_UTM_ZONE_50" || sourceCrs === "WGS84_LON_LAT" || getEditorMapApolloAnchor(map)) {
+  if (
+    sourceCrs === "APOLLO_UTM_ZONE_50" ||
+    sourceCrs === "WGS84_LON_LAT" ||
+    sourceCrs === "GAUSS_KRUGER_CM114" ||
+    getEditorMapApolloAnchor(map)
+  ) {
     return {
       map,
       enriched: binding.matched
@@ -1745,6 +1937,56 @@ async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
   }
   const baseMapDir = await resolveBaseMapDirForMap(map);
   const baseMapCoordinate = await readBaseMapCoordinateSource(baseMapDir);
+  const explicitBaseSourceCrs = ["APOLLO_UTM_ZONE_50", "WGS84_LON_LAT", "GAUSS_KRUGER_CM114"].includes(
+    baseMapCoordinate?.rawSourceCrs,
+  )
+    ? baseMapCoordinate.rawSourceCrs
+    : null;
+  const inferredSource = explicitBaseSourceCrs
+    ? null
+    : await inferBaseMapSourceCrsFromEdgePose(baseMapCoordinate);
+  const baseSourceCrs = explicitBaseSourceCrs || inferredSource?.sourceCrs || null;
+  if (["APOLLO_UTM_ZONE_50", "WGS84_LON_LAT", "GAUSS_KRUGER_CM114"].includes(baseSourceCrs)) {
+    const enrichedMap = JSON.parse(JSON.stringify(map));
+    enrichedMap.sourceCrs = baseSourceCrs;
+    enrichedMap.coordinateFrame = baseSourceCrs;
+    enrichedMap.baseMapDir = baseMapCoordinate.baseMapName;
+    enrichedMap.basemapCenter = coordinateFromAny(enrichedMap.basemapCenter) || baseMapCoordinate.rawCenter || baseMapCoordinate.center;
+    enrichedMap.coordinateMetadata = {
+      ...(enrichedMap.coordinateMetadata || {}),
+      sourceCrs: baseSourceCrs,
+      targetCrs: APOLLO_TARGET_CRS,
+      baseMap: {
+        name: baseMapCoordinate.baseMapName,
+        sourceFile: baseMapCoordinate.sourceFile,
+        center: baseMapCoordinate.center || baseMapCoordinate.rawCenter,
+        bounds: baseMapCoordinate.bounds,
+        coordinate: baseMapCoordinate.coordinate,
+        rawPointCloud: baseMapCoordinate.coordinateMetadata?.rawPointCloud || {
+          sourceCrs: baseSourceCrs,
+          confidence: inferredSource?.confidence || "base_map_metadata",
+          center: baseMapCoordinate.rawCenter || baseMapCoordinate.center,
+          bounds: baseMapCoordinate.bounds,
+        },
+        sourceInference: inferredSource || null,
+      },
+    };
+    enrichedMap.header = {
+      ...(enrichedMap.header || {}),
+      projection: { proj: APOLLO_TARGET_CRS.proj4 },
+    };
+    return {
+      map: enrichedMap,
+      enriched: {
+        mapName,
+        baseMap: baseMapCoordinate.baseMapName,
+        sourceFile: baseMapCoordinate.sourceFile,
+        sourceCrs: baseSourceCrs,
+        targetCrs: APOLLO_TARGET_CRS,
+        inferredFromEdgePose: inferredSource || null,
+      },
+    };
+  }
   const origin = coordinateFromAny(baseMapCoordinate?.editorOrigin);
   if (!coordinateLooksGlobalApollo(origin)) {
     return { map, enriched: null };

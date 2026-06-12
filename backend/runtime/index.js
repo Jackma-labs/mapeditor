@@ -928,6 +928,23 @@ async function validateReleasedMapApolloMetadata(config, sourceDir, localBounds)
         : 'coordinate transform source is not recorded; traceability is limited',
       { sourceCrs: coordinateMetadata.sourceCrs, transform },
     );
+    const unsafeBaseMapAutoAnchor =
+      coordinateMetadata.sourceCrs === 'LOCAL_ENU_METERS' &&
+      transform.mode === 'offset' &&
+      /base_map_coordinate_metadata/i.test(String(transform.source || '')) &&
+      !coordinateMetadata.sourceCrsDefinition;
+    addCheck(
+      'coordinate-source-traceability',
+      unsafeBaseMapAutoAnchor ? 'error' : 'ok',
+      unsafeBaseMapAutoAnchor
+        ? 'coordinate transform used base-map center as Apollo origin without explicit point-cloud CRS; regenerate the release with confirmed source projection'
+        : 'coordinate source traceability is acceptable for edge deployment',
+      {
+        sourceCrs: coordinateMetadata.sourceCrs || null,
+        sourceCrsDefinition: coordinateMetadata.sourceCrsDefinition || null,
+        transform,
+      },
+    );
     const captureDistance = Number(coordinateMetadata.captureTrajectoryCenter?.distanceToMapCenterMeters);
     if (Number.isFinite(captureDistance)) {
       const warningDistanceMeters = 100;
@@ -1116,19 +1133,22 @@ async function readEdgeLocalizationPose(config) {
     'set +e',
     'cd /apollo 2>/dev/null || true',
     'source /apollo/cyber/setup.bash >/dev/null 2>&1 || true',
+    'CYBER_CHANNEL=$(command -v cyber_channel 2>/dev/null || true)',
+    '[ -n "$CYBER_CHANNEL" ] || CYBER_CHANNEL=/apollo/bazel-bin/cyber/tools/cyber_channel/cyber_channel',
     "echo '__MAPEDITOR_POSE__'",
-    "timeout 4 cyber_channel echo /apollo/localization/pose 2>/dev/null | sed -n '1,260p' || true",
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 6 "$CYBER_CHANNEL" echo /apollo/localization/pose 2>/dev/null | sed -n \'1,260p\' || true',
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 6 "$CYBER_CHANNEL" echo -c /apollo/localization/pose 2>/dev/null | sed -n \'1,260p\' || true',
     "timeout 4 cyber_echo /apollo/localization/pose 2>/dev/null | sed -n '1,260p' || true",
     "echo '__MAPEDITOR_GNSS_STATUS__'",
-    "timeout 2 cyber_channel echo /apollo/sensor/gnss/ins_stat 2>/dev/null | sed -n '1,120p' || true",
-    "timeout 2 cyber_channel echo /apollo/gnss/ins_stat 2>/dev/null | sed -n '1,120p' || true",
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 3 "$CYBER_CHANNEL" echo /apollo/sensor/gnss/ins_stat 2>/dev/null | sed -n \'1,120p\' || true',
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 3 "$CYBER_CHANNEL" echo /apollo/gnss/ins_stat 2>/dev/null | sed -n \'1,120p\' || true',
     "timeout 2 cyber_echo /apollo/sensor/gnss/ins_stat 2>/dev/null | sed -n '1,120p' || true",
     "timeout 2 cyber_echo /apollo/gnss/ins_stat 2>/dev/null | sed -n '1,120p' || true",
     'true',
   ].join('\n');
   const container = String(config.edgeDeploy.dockerContainer || '').trim();
   const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
-    timeoutMs: 15000,
+    timeoutMs: 25000,
   });
   return parseLocalizationPose(result.stdout || '');
 }
@@ -6649,9 +6669,8 @@ function isLikelyApolloUtmZone50Bounds(bounds) {
 }
 
 function buildPointCloudCoordinateMetadata({ mapName, coordinate, bounds, center, sourceFiles, sourceAsset }) {
-  const targetAligned = isLikelyApolloUtmZone50Bounds(bounds);
-  const rawSourceCrs = targetAligned ? 'APOLLO_UTM_ZONE_50' : coordinate?.kind || 'UNKNOWN';
-  const localOriginInTargetCrs = targetAligned ? center : null;
+  const rawSourceCrs = coordinate?.kind || 'UNKNOWN';
+  const localOriginInTargetCrs = null;
   return {
     version: 1,
     source: 'point_cloud_import',
@@ -6660,7 +6679,7 @@ function buildPointCloudCoordinateMetadata({ mapName, coordinate, bounds, center
     targetCrs: APOLLO_DEPLOY_TARGET_CRS,
     rawPointCloud: {
       sourceCrs: rawSourceCrs,
-      confidence: targetAligned ? 'inferred_from_utm_meter_bounds' : 'coordinate_range_only',
+      confidence: 'coordinate_range_only',
       coordinateKind: coordinate?.kind || 'unknown',
       message: coordinate?.message || '',
       bounds,
@@ -6673,11 +6692,11 @@ function buildPointCloudCoordinateMetadata({ mapName, coordinate, bounds, center
       localOriginInTargetCrs,
       transform:
         'editor_xy = raw_point_cloud_xy - localOriginInTargetCrs.xy; apollo_xy = editor_xy + localOriginInTargetCrs.xy',
-      requiresExternalAnchor: !localOriginInTargetCrs,
+      requiresExternalAnchor: true,
     },
     deployment: {
       targetCrs: APOLLO_DEPLOY_TARGET_CRS,
-      transformPolicy: localOriginInTargetCrs ? 'scene_xy_plus_local_origin' : 'requires_control_point_or_anchor',
+      transformPolicy: 'requires_explicit_source_crs_or_edge_pose_inference',
     },
   };
 }
@@ -11200,6 +11219,7 @@ module.exports = {
   getDeployConfig,
   discoverEdgeMapRoot,
   configureEdgeDeploy,
+  readEdgeLocalizationPose,
   preflightEdgeDeploy,
   listReleasedMaps,
   listDeployments,

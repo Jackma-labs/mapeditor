@@ -67,6 +67,19 @@ const APOLLO_TARGET_CRS = {
   unit: 'meter',
 };
 const APOLLO_TARGET_PROJECTION = { proj: APOLLO_TARGET_CRS.proj4 };
+const GAUSS_KRUGER_CM114_CRS = {
+  datum: 'CGCS2000/WGS84-compatible',
+  ellipsoid: 'GRS80/WGS84-compatible',
+  projection: 'Transverse_Mercator',
+  centralMeridianDeg: 114,
+  latitudeOfOriginDeg: 0,
+  scaleFactor: 1,
+  falseEastingMeters: 500000,
+  falseNorthingMeters: 0,
+  axisOrder: ['easting', 'northing', 'up'],
+  unit: 'meter',
+  note: '3-degree Gauss-Kruger / transverse Mercator with central meridian 114E',
+};
 
 function addType(parent, name, fields) {
   const type = new protobuf.Type(name);
@@ -452,6 +465,19 @@ function normalizeCoordinateFrame(value) {
   if (['WGS84_LON_LAT', 'WGS84', 'EPSG:4326', 'LON_LAT', 'LONGITUDE_LATITUDE'].includes(raw)) {
     return 'WGS84_LON_LAT';
   }
+  if (
+    [
+      'GAUSS_KRUGER_CM114',
+      'GAUSS_KRUGER_3_DEGREE_CM114',
+      'GK_CM114',
+      'CM114',
+      'CGCS2000_GK_CM114',
+      'CGCS2000_GAUSS_KRUGER_CM114',
+      'XIAN80_GK_CM114',
+    ].includes(raw)
+  ) {
+    return 'GAUSS_KRUGER_CM114';
+  }
   if (['SCREEN_PIXELS', 'SCREEN', 'PIXELS', 'CANVAS_PIXELS'].includes(raw)) {
     return 'SCREEN_PIXELS';
   }
@@ -555,9 +581,6 @@ function anchorUtmFromEditorMap(editorMap) {
   if (baseMapCenterAsOrigin && baseMapCenter) {
     return { coordinate: baseMapCenter, source: 'basemapCenter(explicit)' };
   }
-  if (sourceCrs === 'LOCAL_ENU_METERS' && pointLooksGlobalApollo(baseMapCenter)) {
-    return { coordinate: baseMapCenter, source: 'basemapCenter(auto-origin)' };
-  }
   return null;
 }
 
@@ -574,42 +597,95 @@ function shouldTreatAnchorAsTargetCenter(editorMap, anchorUtm) {
   return !coordinateFrameFromEditorMap(editorMap) && !firstAnchorUtmFromEditorMap(editorMap);
 }
 
-function wgs84LonLatToUtmZone50(lon, lat, z = 0) {
-  const a = 6378137;
-  const f = 1 / 298.257223563;
-  const k0 = 0.9996;
-  const e = Math.sqrt(f * (2 - f));
-  const eSq = e * e;
-  const ePrimeSq = eSq / (1 - eSq);
-  const lonOrigin = 117;
+const WGS84_A = 6378137;
+const WGS84_F = 1 / 298.257223563;
+const WGS84_E = Math.sqrt(WGS84_F * (2 - WGS84_F));
+const WGS84_E_SQ = WGS84_E * WGS84_E;
+const WGS84_E_PRIME_SQ = WGS84_E_SQ / (1 - WGS84_E_SQ);
+
+function forwardTransverseMercator(lon, lat, options, z = 0) {
+  const a = WGS84_A;
+  const k0 = options.scaleFactor;
+  const falseEasting = options.falseEastingMeters;
+  const falseNorthing = lat < 0 ? options.falseNorthingSouthMeters || 0 : options.falseNorthingMeters || 0;
+  const lonOrigin = options.centralMeridianDeg;
   const latRad = (lat * Math.PI) / 180;
   const lonRad = (lon * Math.PI) / 180;
   const lonOriginRad = (lonOrigin * Math.PI) / 180;
-  const n = a / Math.sqrt(1 - eSq * Math.sin(latRad) * Math.sin(latRad));
+  const n = a / Math.sqrt(1 - WGS84_E_SQ * Math.sin(latRad) * Math.sin(latRad));
   const t = Math.tan(latRad) * Math.tan(latRad);
-  const c = ePrimeSq * Math.cos(latRad) * Math.cos(latRad);
+  const c = WGS84_E_PRIME_SQ * Math.cos(latRad) * Math.cos(latRad);
   const aa = Math.cos(latRad) * (lonRad - lonOriginRad);
   const m =
     a *
-    ((1 - eSq / 4 - (3 * eSq * eSq) / 64 - (5 * eSq * eSq * eSq) / 256) * latRad -
-      ((3 * eSq) / 8 + (3 * eSq * eSq) / 32 + (45 * eSq * eSq * eSq) / 1024) * Math.sin(2 * latRad) +
-      ((15 * eSq * eSq) / 256 + (45 * eSq * eSq * eSq) / 1024) * Math.sin(4 * latRad) -
-      ((35 * eSq * eSq * eSq) / 3072) * Math.sin(6 * latRad));
+    ((1 - WGS84_E_SQ / 4 - (3 * WGS84_E_SQ * WGS84_E_SQ) / 64 - (5 * WGS84_E_SQ ** 3) / 256) * latRad -
+      ((3 * WGS84_E_SQ) / 8 + (3 * WGS84_E_SQ * WGS84_E_SQ) / 32 + (45 * WGS84_E_SQ ** 3) / 1024) *
+        Math.sin(2 * latRad) +
+      ((15 * WGS84_E_SQ * WGS84_E_SQ) / 256 + (45 * WGS84_E_SQ ** 3) / 1024) * Math.sin(4 * latRad) -
+      ((35 * WGS84_E_SQ ** 3) / 3072) * Math.sin(6 * latRad));
   const x =
-    k0 * n * (aa + ((1 - t + c) * aa ** 3) / 6 + ((5 - 18 * t + t * t + 72 * c - 58 * ePrimeSq) * aa ** 5) / 120) +
-    500000;
-  let y =
+    falseEasting +
+    k0 * n * (aa + ((1 - t + c) * aa ** 3) / 6 + ((5 - 18 * t + t * t + 72 * c - 58 * WGS84_E_PRIME_SQ) * aa ** 5) / 120);
+  const y =
+    falseNorthing +
     k0 *
-    (m +
-      n *
-        Math.tan(latRad) *
-        ((aa * aa) / 2 +
-          ((5 - t + 9 * c + 4 * c * c) * aa ** 4) / 24 +
-          ((61 - 58 * t + t * t + 600 * c - 330 * ePrimeSq) * aa ** 6) / 720));
-  if (lat < 0) {
-    y += 10000000;
-  }
+      (m +
+        n *
+          Math.tan(latRad) *
+          ((aa * aa) / 2 +
+            ((5 - t + 9 * c + 4 * c * c) * aa ** 4) / 24 +
+            ((61 - 58 * t + t * t + 600 * c - 330 * WGS84_E_PRIME_SQ) * aa ** 6) / 720));
   return { x, y, z };
+}
+
+function inverseTransverseMercator(x, y, options, z = 0) {
+  const a = WGS84_A;
+  const k0 = options.scaleFactor;
+  const falseEasting = options.falseEastingMeters;
+  const falseNorthing = options.falseNorthingMeters || 0;
+  const lonOriginRad = (options.centralMeridianDeg * Math.PI) / 180;
+  const e1 = (1 - Math.sqrt(1 - WGS84_E_SQ)) / (1 + Math.sqrt(1 - WGS84_E_SQ));
+  const adjustedX = x - falseEasting;
+  const adjustedY = y - falseNorthing;
+  const m = adjustedY / k0;
+  const mu = m / (a * (1 - WGS84_E_SQ / 4 - (3 * WGS84_E_SQ ** 2) / 64 - (5 * WGS84_E_SQ ** 3) / 256));
+  const phi1 =
+    mu +
+    ((3 * e1) / 2 - (27 * e1 ** 3) / 32) * Math.sin(2 * mu) +
+    ((21 * e1 ** 2) / 16 - (55 * e1 ** 4) / 32) * Math.sin(4 * mu) +
+    ((151 * e1 ** 3) / 96) * Math.sin(6 * mu) +
+    ((1097 * e1 ** 4) / 512) * Math.sin(8 * mu);
+  const c1 = WGS84_E_PRIME_SQ * Math.cos(phi1) * Math.cos(phi1);
+  const t1 = Math.tan(phi1) * Math.tan(phi1);
+  const n1 = a / Math.sqrt(1 - WGS84_E_SQ * Math.sin(phi1) * Math.sin(phi1));
+  const r1 = (a * (1 - WGS84_E_SQ)) / (1 - WGS84_E_SQ * Math.sin(phi1) * Math.sin(phi1)) ** 1.5;
+  const d = adjustedX / (n1 * k0);
+  const lat =
+    phi1 -
+    ((n1 * Math.tan(phi1)) / r1) *
+      ((d * d) / 2 -
+        ((5 + 3 * t1 + 10 * c1 - 4 * c1 * c1 - 9 * WGS84_E_PRIME_SQ) * d ** 4) / 24 +
+        ((61 + 90 * t1 + 298 * c1 + 45 * t1 * t1 - 252 * WGS84_E_PRIME_SQ - 3 * c1 * c1) * d ** 6) / 720);
+  const lon =
+    lonOriginRad +
+    (d -
+      ((1 + 2 * t1 + c1) * d ** 3) / 6 +
+      ((5 - 2 * c1 + 28 * t1 - 3 * c1 * c1 + 8 * WGS84_E_PRIME_SQ + 24 * t1 * t1) * d ** 5) / 120) /
+      Math.cos(phi1);
+  return {
+    lon: (lon * 180) / Math.PI,
+    lat: (lat * 180) / Math.PI,
+    z,
+  };
+}
+
+function wgs84LonLatToUtmZone50(lon, lat, z = 0) {
+  return forwardTransverseMercator(lon, lat, APOLLO_TARGET_CRS, z);
+}
+
+function gaussKrugerCm114ToUtmZone50(x, y, z = 0) {
+  const lonLat = inverseTransverseMercator(x, y, GAUSS_KRUGER_CM114_CRS, z);
+  return wgs84LonLatToUtmZone50(lonLat.lon, lonLat.lat, z);
 }
 
 function rawPointFromEditor(point) {
@@ -662,6 +738,30 @@ function createCoordinateTransform(editorMap) {
       mode: 'wgs84-to-utm-zone-50',
       source: 'wgs84-lon-lat',
       sourceCrs,
+      targetCrs: APOLLO_TARGET_CRS,
+      origin: null,
+      targetCenter: {
+        x: (targetBounds.left + targetBounds.right) / 2,
+        y: (targetBounds.bottom + targetBounds.top) / 2,
+        z: 0,
+      },
+      localCenter,
+      offset: { x: 0, y: 0, z: 0 },
+    };
+  }
+  if (sourceCrs === 'GAUSS_KRUGER_CM114') {
+    const convertedPoints = rawPoints.map((point) => gaussKrugerCm114ToUtmZone50(point.x, point.y, point.z));
+    const targetBounds = {
+      left: Math.min(...convertedPoints.map((point) => point.x)),
+      right: Math.max(...convertedPoints.map((point) => point.x)),
+      bottom: Math.min(...convertedPoints.map((point) => point.y)),
+      top: Math.max(...convertedPoints.map((point) => point.y)),
+    };
+    return {
+      mode: 'gauss-kruger-cm114-to-utm-zone-50',
+      source: 'gauss-kruger-cm114',
+      sourceCrs,
+      sourceCrsDefinition: GAUSS_KRUGER_CM114_CRS,
       targetCrs: APOLLO_TARGET_CRS,
       origin: null,
       targetCenter: {
@@ -731,6 +831,9 @@ function applyCoordinateTransform(point, transform) {
   }
   if (transform.mode === 'wgs84-to-utm-zone-50') {
     return wgs84LonLatToUtmZone50(point.x, point.y, point.z);
+  }
+  if (transform.mode === 'gauss-kruger-cm114-to-utm-zone-50') {
+    return gaussKrugerCm114ToUtmZone50(point.x, point.y, point.z);
   }
   return {
     x: point.x + transform.offset.x,
@@ -2465,7 +2568,8 @@ function extractCaptureCenter(editorMap) {
 function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransform) {
   const bounds = headerBounds(cleanMap);
   const captureCenter = extractCaptureCenter(editorMap);
-  const captureCenterAlreadyTarget = pointLooksGlobalApollo(captureCenter?.coordinate);
+  const sourceCrs = coordinateTransform?.sourceCrs || coordinateFrameFromEditorMap(editorMap) || 'LOCAL_ENU_METERS';
+  const captureCenterAlreadyTarget = sourceCrs === 'APOLLO_UTM_ZONE_50';
   const captureCenterTarget = captureCenter
     ? captureCenterAlreadyTarget
       ? captureCenter.coordinate
@@ -2479,13 +2583,19 @@ function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransfo
     frames: {
       acceptedSourceCrs: {
         WGS84_LON_LAT: 'longitude, latitude, height on WGS84; converted to UTM zone 50N',
+        GAUSS_KRUGER_CM114:
+          '3-degree Gauss-Kruger / transverse Mercator meters, central meridian 114E; converted to UTM zone 50N',
         LOCAL_ENU_METERS: 'editor-local meter coordinates; requires apolloOrigin/utmOrigin or explicit map center',
         APOLLO_UTM_ZONE_50: 'Apollo map coordinates already in WGS84 UTM zone 50N meters',
+      },
+      knownProjectedSourceCrs: {
+        GAUSS_KRUGER_CM114: GAUSS_KRUGER_CM114_CRS,
       },
       targetCrs: APOLLO_TARGET_CRS,
       apolloHeaderProjection: APOLLO_TARGET_CRS.proj4,
     },
-    sourceCrs: coordinateTransform?.sourceCrs || coordinateFrameFromEditorMap(editorMap) || 'LOCAL_ENU_METERS',
+    sourceCrs,
+    sourceCrsDefinition: coordinateTransform?.sourceCrsDefinition || null,
     targetCrs: APOLLO_TARGET_CRS,
     apolloHeaderProjection: APOLLO_TARGET_CRS.proj4,
     transform: coordinateTransform
@@ -2534,6 +2644,25 @@ function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateM
       ? `Target CRS is fixed to ${APOLLO_TARGET_CRS.epsg} / UTM zone ${APOLLO_TARGET_CRS.zone}N`
       : 'Target CRS metadata is missing or inconsistent',
     coordinateMetadata?.targetCrs || null,
+  );
+  const sourceCrs = coordinateMetadata?.sourceCrs || 'UNKNOWN';
+  const transformMode = coordinateMetadata?.transform?.mode || '';
+  const sourceIsTrusted =
+    sourceCrs === 'APOLLO_UTM_ZONE_50' ||
+    ['wgs84-to-utm-zone-50', 'gauss-kruger-cm114-to-utm-zone-50'].includes(transformMode) ||
+    (sourceCrs === 'LOCAL_ENU_METERS' && transformMode === 'offset' && coordinateMetadata?.transform?.source);
+  addCheck(
+    'coordinate-source-crs',
+    sourceIsTrusted ? 'ok' : 'error',
+    'Source coordinate reference',
+    sourceIsTrusted
+      ? `Source CRS ${sourceCrs} is explicitly handled by transform ${transformMode || 'pass-through'}`
+      : `Source CRS ${sourceCrs} is not explicit enough for production publishing; confirm the point-cloud projection or provide an Apollo anchor`,
+    {
+      sourceCrs,
+      transform: coordinateMetadata?.transform || null,
+      sourceCrsDefinition: coordinateMetadata?.sourceCrsDefinition || null,
+    },
   );
   addCheck(
     'coordinate-bounds',
@@ -3029,8 +3158,10 @@ async function convertEditorMapToApolloPackage(options) {
         },
         coordinateTransform: coordinateTransform
           ? {
+              mode: coordinateTransform.mode,
               source: coordinateTransform.source,
               sourceCrs: coordinateTransform.sourceCrs,
+              sourceCrsDefinition: coordinateTransform.sourceCrsDefinition || null,
               targetCrs: coordinateTransform.targetCrs,
               offset: {
                 x: coordinateTransform.offset.x,

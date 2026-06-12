@@ -209,14 +209,42 @@ async function main() {
     await fs.readFile(path.join(autoOriginReleaseDir, 'coordinate_metadata.json'), 'utf8'),
   );
   const autoQualityGate = JSON.parse(await fs.readFile(path.join(autoOriginReleaseDir, 'quality_gate.json'), 'utf8'));
-  assert.strictEqual(autoManifest.coordinateTransform.source, 'basemapCenter(auto-origin)');
-  assert.deepStrictEqual(autoManifest.coordinateTransform.offset, { x: 500000, y: 4300000, z: 0 });
-  assert.strictEqual(autoQualityGate.ready, true);
-  assert.strictEqual(autoQualityGate.errors, 0);
-  assert.ok(autoManifest.bounds.xMin > 499000);
-  assert.ok(autoManifest.bounds.yMin > 4299000);
+  assert.strictEqual(autoManifest.coordinateTransform, null);
+  assert.strictEqual(autoQualityGate.ready, false);
+  assert.ok(autoQualityGate.errors > 0);
+  assert.ok(autoQualityGate.checks.find((item) => item.id === 'coordinate-source-crs' && item.status === 'error'));
+  assert.ok(autoManifest.bounds.xMin < 1000);
+  assert.ok(autoManifest.bounds.yMin < 1000);
   assert.strictEqual(autoCoordinateMetadata.captureTrajectoryCenter.enforcement, 'advisory');
-  assert.ok(autoCoordinateMetadata.captureTrajectoryCenter.distanceToMapCenterMeters < 100);
+  assert.ok(autoCoordinateMetadata.captureTrajectoryCenter.distanceToMapCenterMeters > 100000);
+
+  const cm114JsonPath = path.join(tmpDir, 'editor_map_cm114.json');
+  const cm114ReleaseDir = path.join(tmpDir, 'release-cm114');
+  const cm114Map = JSON.parse(JSON.stringify(editorMap));
+  delete cm114Map.coordinateCenter;
+  delete cm114Map.trajectoryCenter;
+  cm114Map.sourceCrs = 'GAUSS_KRUGER_CM114';
+  const cm114Origin = { x: 729003.7468, y: 4298924.2408, z: 0 };
+  for (const item of cm114Map.point) {
+    item.position.x += cm114Origin.x;
+    item.position.y += cm114Origin.y;
+  }
+  cm114Map.basemapCenter = cm114Origin;
+  await fs.writeFile(cm114JsonPath, JSON.stringify(cm114Map), 'utf8');
+  await convertEditorMapToApolloPackage({
+    mapName: 'cm114-test',
+    jsonPath: cm114JsonPath,
+    releaseDir: cm114ReleaseDir,
+  });
+  const cm114Manifest = JSON.parse(await fs.readFile(path.join(cm114ReleaseDir, 'manifest.json'), 'utf8'));
+  const cm114CoordinateMetadata = JSON.parse(await fs.readFile(path.join(cm114ReleaseDir, 'coordinate_metadata.json'), 'utf8'));
+  const cm114QualityGate = JSON.parse(await fs.readFile(path.join(cm114ReleaseDir, 'quality_gate.json'), 'utf8'));
+  assert.strictEqual(cm114Manifest.coordinateTransform.mode, 'gauss-kruger-cm114-to-utm-zone-50');
+  assert.strictEqual(cm114CoordinateMetadata.sourceCrs, 'GAUSS_KRUGER_CM114');
+  assert.strictEqual(cm114QualityGate.ready, true);
+  assert.strictEqual(cm114QualityGate.errors, 0);
+  assert.ok(cm114Manifest.bounds.xMin > 468250 && cm114Manifest.bounds.xMax < 468450);
+  assert.ok(cm114Manifest.bounds.yMin > 4293850 && cm114Manifest.bounds.yMax < 4294050);
 
   const originJsonPath = path.join(tmpDir, 'editor_map_origin_anchor.json');
   const originReleaseDir = path.join(tmpDir, 'release-origin-anchor');
