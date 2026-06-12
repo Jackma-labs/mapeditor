@@ -1363,14 +1363,14 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
 
     const primaryBlockedMap = nonReadyMaps[0] || null;
 
-    const renderMapOption = (item: any, optionIndex: number) => (
+    const renderMapOption = (item: any) => (
         <SelectItem
             key={item.mapName}
             value={item.mapName}
             disabled={!item.ready}
             className="h-8 text-foreground focus:bg-[var(--landing-primary)] focus:text-white data-[disabled]:text-muted-foreground data-[disabled]:opacity-70 data-[state=checked]:bg-[var(--landing-primary)] data-[state=checked]:text-white"
         >
-            <span className="block min-w-0 truncate text-sm">{`${optionIndex + 1}. ${item.mapName}`}</span>
+            <span className="block min-w-0 truncate text-sm">{item.mapName}</span>
         </SelectItem>
     );
 
@@ -1760,9 +1760,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                                     <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
                                                         可部署发布包
                                                     </SelectLabel>
-                                                    {readyMaps.map((item: any, index: number) =>
-                                                        renderMapOption(item, index),
-                                                    )}
+                                                    {readyMaps.map((item: any) => renderMapOption(item))}
                                                 </SelectGroup>
                                             </SelectContent>
                                         </Select>
@@ -2191,9 +2189,7 @@ export default function EdgeDeployDialog({ open, onCancel }: EdgeDeployDialogPro
                                                         <SelectLabel className="px-2 text-[11px] font-medium text-muted-foreground">
                                                             可部署
                                                         </SelectLabel>
-                                                        {readyMaps.map((item: any, index: number) =>
-                                                            renderMapOption(item, index),
-                                                        )}
+                                                        {readyMaps.map((item: any) => renderMapOption(item))}
                                                     </SelectGroup>
                                                 ) : null}
                                                 {readyMaps.length === 0 ? (
