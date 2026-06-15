@@ -1627,6 +1627,19 @@ function getEditorMapBaseCenter(map) {
 
 function getEditorMapApolloAnchor(map) {
   const anchor = map?.anchor || map?.coordinateAnchor || map?.coordinate_anchor || map?.coordinateMetadata?.anchor;
+  const anchorSourceCrs = normalizeCoordinateFrame(
+    anchor?.sourceCrs || anchor?.source_crs || anchor?.rawPointCloudCrs,
+  );
+  const anchorTargetOrigin = coordinateFromAny(anchor?.targetOrigin) || coordinateFromAny(anchor?.target_origin);
+  if (
+    anchorTargetOrigin &&
+    ["APOLLO_UTM_ZONE_50", "WGS84_LON_LAT", "GAUSS_KRUGER_CM114"].includes(anchorSourceCrs)
+  ) {
+    return {
+      coordinate: anchorTargetOrigin,
+      source: anchor?.source || "anchor.targetOrigin",
+    };
+  }
   const anchorCoordinate =
     coordinateFromAny(anchor?.utm) ||
     coordinateFromAny(anchor?.apolloUtm) ||
@@ -1655,6 +1668,43 @@ function getEditorMapApolloAnchor(map) {
   }
   const headerOrigin = coordinateFromAny(map?.header?.origin);
   return headerOrigin ? { coordinate: headerOrigin, source: "header.origin" } : null;
+}
+
+function getEditorMapProjectedAnchor(map) {
+  const anchor = map?.anchor || map?.coordinateAnchor || map?.coordinate_anchor || map?.coordinateMetadata?.anchor;
+  if (!anchor || typeof anchor !== "object") {
+    return null;
+  }
+  const sourceCrs = normalizeCoordinateFrame(anchor.sourceCrs || anchor.source_crs || anchor.rawPointCloudCrs);
+  if (!["APOLLO_UTM_ZONE_50", "WGS84_LON_LAT", "GAUSS_KRUGER_CM114"].includes(sourceCrs)) {
+    return null;
+  }
+  const sourceOrigin =
+    coordinateFromAny(anchor.sourceOrigin) ||
+    coordinateFromAny(anchor.source_origin) ||
+    coordinateFromAny(anchor.rawOrigin) ||
+    coordinateFromAny(anchor.raw_origin) ||
+    coordinateFromAny(anchor.baseMapCenter) ||
+    coordinateFromAny(anchor.base_map_center);
+  const targetOrigin =
+    coordinateFromAny(anchor.targetOrigin) ||
+    coordinateFromAny(anchor.target_origin) ||
+    coordinateFromAny(anchor.utm) ||
+    coordinateFromAny(anchor.apolloUtm) ||
+    coordinateFromAny(anchor.apollo_utm) ||
+    coordinateFromAny(anchor.origin);
+  if (!targetOrigin || (sourceCrs === "GAUSS_KRUGER_CM114" && !sourceOrigin)) {
+    return null;
+  }
+  return {
+    source: anchor.source || "anchor",
+    sourceCrs,
+    ...(sourceOrigin ? { sourceOrigin } : {}),
+    targetOrigin,
+    ...(anchor.baseMap ? { baseMap: anchor.baseMap } : {}),
+    ...(anchor.sourceFile ? { sourceFile: anchor.sourceFile } : {}),
+    ...(anchor.confidence ? { confidence: anchor.confidence } : {}),
+  };
 }
 
 function editorMapHasUnsafeBaseMapAnchor(map) {
@@ -2131,6 +2181,10 @@ async function enrichEditorMapCoordinateFromBaseMap(mapName, map) {
   };
 }
 
+function isBackupMapName(mapName) {
+  return /\.bak(?:-|$)/u.test(String(mapName || ""));
+}
+
 async function findApolloAnchorForBaseCenter(mapName, baseCenter) {
   if (!baseCenter) {
     return null;
@@ -2140,11 +2194,26 @@ async function findApolloAnchorForBaseCenter(mapName, baseCenter) {
     if (!candidateName || candidateName === mapName || !(await pathExists(filePath))) {
       return;
     }
+    if (kind === "released_map") {
+      if (isBackupMapName(candidateName)) {
+        return;
+      }
+      const qualityGate = await readJsonIfExists(path.join(config.releaseRoot, candidateName, "quality_gate.json")).catch(
+        () => null,
+      );
+      if (qualityGate?.ready !== true) {
+        return;
+      }
+    }
     try {
       const stat = await fsp.stat(filePath);
       const candidate = JSON.parse(await fsp.readFile(filePath, "utf8"));
+      if (editorMapHasUnsafeBaseMapAnchor(candidate)) {
+        return;
+      }
       const candidateBaseCenter = getEditorMapBaseCenter(candidate);
       const anchor = getEditorMapApolloAnchor(candidate);
+      const projectedAnchor = getEditorMapProjectedAnchor(candidate);
       if (!candidateBaseCenter || !anchor) {
         return;
       }
@@ -2155,6 +2224,8 @@ async function findApolloAnchorForBaseCenter(mapName, baseCenter) {
           kind,
           filePath,
           anchor,
+          projectedAnchor,
+          baseMapMetadata: candidate.coordinateMetadata?.baseMap || null,
           baseCenterDistance,
           mtimeMs: stat.mtimeMs,
         });
@@ -2206,18 +2277,48 @@ async function inferMissingApolloAnchor(mapName, map) {
   }
   const inferredMap = JSON.parse(JSON.stringify(map));
   const origin = match.anchor.coordinate;
-  inferredMap.apolloOrigin = origin;
-  inferredMap.anchor = {
-    source: `inferred_same_basemap:${match.mapName}:${match.anchor.source}`,
-    utm: origin,
-    referenceMap: match.mapName,
-    referenceKind: match.kind,
-    baseCenterDistanceMeters: Number(match.baseCenterDistance.toFixed(3)),
-  };
-  inferredMap.header = {
-    ...(inferredMap.header || {}),
-    origin,
-  };
+  if (match.projectedAnchor) {
+    delete inferredMap.apolloOrigin;
+    delete inferredMap.apollo_origin;
+    delete inferredMap.utmOrigin;
+    delete inferredMap.utm_origin;
+    delete inferredMap.mapOrigin;
+    delete inferredMap.map_origin;
+    inferredMap.anchor = {
+      ...match.projectedAnchor,
+      source: `inferred_same_basemap:${match.mapName}:${match.projectedAnchor.source || match.anchor.source}`,
+      referenceMap: match.mapName,
+      referenceKind: match.kind,
+      baseCenterDistanceMeters: Number(match.baseCenterDistance.toFixed(3)),
+    };
+    inferredMap.coordinateMetadata = {
+      ...(inferredMap.coordinateMetadata || {}),
+      sourceCrs: "LOCAL_ENU_METERS",
+      targetCrs: APOLLO_TARGET_CRS,
+      anchor: inferredMap.anchor,
+      ...(match.baseMapMetadata ? { baseMap: match.baseMapMetadata } : {}),
+    };
+    inferredMap.header = {
+      ...(inferredMap.header || {}),
+      projection: { proj: APOLLO_TARGET_CRS.proj4 },
+    };
+    if (inferredMap.header) {
+      delete inferredMap.header.origin;
+    }
+  } else {
+    inferredMap.apolloOrigin = origin;
+    inferredMap.anchor = {
+      source: `inferred_same_basemap:${match.mapName}:${match.anchor.source}`,
+      utm: origin,
+      referenceMap: match.mapName,
+      referenceKind: match.kind,
+      baseCenterDistanceMeters: Number(match.baseCenterDistance.toFixed(3)),
+    };
+    inferredMap.header = {
+      ...(inferredMap.header || {}),
+      origin,
+    };
+  }
   return {
     map: inferredMap,
     inferred: {

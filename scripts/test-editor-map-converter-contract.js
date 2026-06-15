@@ -256,7 +256,7 @@ async function main() {
   localCm114Map.anchor = {
     source: 'base_map_coordinate_metadata:gauss_kruger_cm114_local_origin',
     sourceCrs: 'GAUSS_KRUGER_CM114',
-    sourceOrigin: cm114Origin,
+    sourceOrigin: { ...cm114Origin, z: 2.5934 },
   };
   await fs.writeFile(localCm114JsonPath, JSON.stringify(localCm114Map), 'utf8');
   await convertEditorMapToApolloPackage({
@@ -272,6 +272,8 @@ async function main() {
   assert.strictEqual(localCm114Manifest.coordinateTransform.mode, 'local-enu-gauss-kruger-cm114-to-utm-zone-50');
   assert.strictEqual(localCm114CoordinateMetadata.sourceCrs, 'LOCAL_ENU_METERS');
   assert.strictEqual(localCm114CoordinateMetadata.transform.sourceProjectedCrs, 'GAUSS_KRUGER_CM114');
+  assert.strictEqual(localCm114CoordinateMetadata.captureTrajectoryCenter.sourceProjectedOrigin, true);
+  assert.ok(localCm114CoordinateMetadata.captureTrajectoryCenter.distanceToMapCenterMeters < 100);
   assert.strictEqual(localCm114QualityGate.ready, true);
   assert.strictEqual(localCm114QualityGate.errors, 0);
   assert.ok(localCm114Manifest.bounds.xMin > 468250 && localCm114Manifest.bounds.xMax < 468450);

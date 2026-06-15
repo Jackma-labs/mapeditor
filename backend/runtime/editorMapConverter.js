@@ -521,6 +521,15 @@ function coordinatesNearlyEqual(a, b, tolerance = 0.001) {
   );
 }
 
+function horizontalCoordinatesNearlyEqual(a, b, tolerance = 0.001) {
+  return (
+    finiteCoordinate(a) &&
+    finiteCoordinate(b) &&
+    Math.abs(a.x - b.x) <= tolerance &&
+    Math.abs(a.y - b.y) <= tolerance
+  );
+}
+
 function firstAnchorUtmFromEditorMap(editorMap) {
   const anchorSources = [
     editorMap.anchor,
@@ -2692,7 +2701,7 @@ function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransfo
   const captureCenterIsProjectedOrigin =
     coordinateTransform?.mode === 'local-enu-gauss-kruger-cm114-to-utm-zone-50' &&
     /basemapcenter|base_map_center/i.test(String(captureCenter?.source || '')) &&
-    coordinatesNearlyEqual(captureCenter?.coordinate, coordinateTransform.sourceOrigin, 0.001);
+    horizontalCoordinatesNearlyEqual(captureCenter?.coordinate, coordinateTransform.sourceOrigin, 0.001);
   const captureCenterTarget = captureCenter
     ? captureCenterIsProjectedOrigin
       ? coordinateTransform.targetOrigin
