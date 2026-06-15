@@ -34,13 +34,18 @@ jobs:
             backend/package-lock.json
             frontend/package-lock.json
 
-      - name: Backend syntax and map regression
+      - name: Backend syntax and converter tests
         run: |
           npm ci --prefix backend
           node --check backend/server.js
           node --check backend/config.js
           node --check backend/runtime/index.js
           node --check backend/runtime/editorMapConverter.js
+          node --check backend/runtime/editorMapConverterWorker.js
+          # Self-contained converter gates (no data/ fixtures needed on CI):
+          node scripts/test-editor-map-converter-contract.js
+          npm run test:converter-worker
+          # Fixture regression: runs locally where data/ exists; skips on CI.
           npm run regression:maps
 
       - name: Skip when cloud secrets are missing
