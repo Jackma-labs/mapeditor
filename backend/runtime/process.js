@@ -45,7 +45,16 @@ function runCommand(command, args, options = {}) {
       const reason = killedByTimeout
         ? `command timed out after ${timeoutMs} ms`
         : `command exited with code ${code}`;
-      const error = new Error(`${reason}: ${command} ${args.join(' ')}\n${stderr || stdout}`);
+      // Do NOT embed the full command line / binary paths in the message: it is
+      // frequently surfaced to API clients and would leak internal paths,
+      // container names and flags. Keep a short stderr/stdout tail for the
+      // actual cause; full detail stays on error.result for server-side logs.
+      const outputTail = (stderr || stdout || '')
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .slice(-8)
+        .join('\n');
+      const error = new Error(outputTail ? `${reason}\n${outputTail}` : reason);
       error.result = result;
       reject(error);
     });

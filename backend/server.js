@@ -1458,6 +1458,31 @@ function buildEditorMapPath(mapName) {
   );
 }
 
+// Join arbitrary (client-supplied) path segments under baseMapRoot and verify
+// the resolved path never escapes the root. Returns null on any traversal
+// attempt (e.g. "..", absolute paths, encoded separators) so callers can 404
+// without leaking why. Used by all /mapcreator tile-serving routes.
+function safeBaseMapJoin(...segments) {
+  try {
+    const root = path.resolve(config.baseMapRoot);
+    const target = path.resolve(
+      root,
+      ...segments.map((segment) => String(segment == null ? "" : segment)),
+    );
+    const relative = path.relative(root, target);
+    if (
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) {
+      return null;
+    }
+    return target;
+  } catch {
+    return null;
+  }
+}
+
 function buildEditorMapHistoryDir(mapName) {
   return path.join(
     config.editorMapRoot,
@@ -2254,6 +2279,33 @@ async function saveEditorMap(mapName, data) {
   return filePath;
 }
 
+const AUTOSAVE_DRAFTS_KEPT = 5;
+
+// Persist a non-destructive editor draft. Writes to data/editor_map/.autosave/
+// and NEVER touches the canonical map file or any release artifact, so a client
+// crash leaves a recoverable draft without ever overwriting saved work.
+async function saveEditorMapAutosaveDraft(mapName, data) {
+  const safeName = normalizeEditorMapName(mapName);
+  const draftDir = path.join(config.editorMapRoot, ".autosave", safeName);
+  await ensureDir(draftDir);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const draftPath = path.join(draftDir, `${stamp}.json`);
+  await fsp.writeFile(draftPath, JSON.stringify(data), "utf8");
+  // Keep only the most recent drafts to bound disk usage.
+  try {
+    const entries = (await fsp.readdir(draftDir))
+      .filter((name) => name.endsWith(".json"))
+      .sort();
+    const stale = entries.slice(0, Math.max(0, entries.length - AUTOSAVE_DRAFTS_KEPT));
+    await Promise.all(
+      stale.map((name) => fsp.unlink(path.join(draftDir, name)).catch(() => {})),
+    );
+  } catch {
+    // best-effort pruning; never fail the autosave because of it
+  }
+  return draftPath;
+}
+
 function editorMapArrayCount(map, ...keys) {
   for (const key of keys) {
     const value = map?.[key];
@@ -2786,6 +2838,29 @@ app.get("/runtime/released-maps", requirePermission("canView"), async (_req, res
     sendError(res, 500, 500, error.message);
   }
 });
+
+app.post(
+  "/runtime/editor-map-autosave",
+  requirePermission("canEdit"),
+  async (req, res) => {
+    try {
+      const body = req.body || {};
+      const mapName = String(body.mapName || "").trim();
+      if (!mapName) {
+        sendError(res, 400, 400, "mapName is required");
+        return;
+      }
+      if (!body.map || typeof body.map !== "object") {
+        sendError(res, 400, 400, "map payload is required");
+        return;
+      }
+      const draftPath = await saveEditorMapAutosaveDraft(mapName, body.map);
+      sendSuccess(res, { savedAt: new Date().toISOString(), draft: path.basename(draftPath) });
+    } catch (error) {
+      sendError(res, 500, 500, error.message);
+    }
+  },
+);
 
 app.get("/runtime/ai-assistant/status", requirePermission("canView"), (_req, res) => {
   sendSuccess(res, {
@@ -4026,13 +4101,8 @@ app.post("/runtime/create-base-map", requirePermission("canEdit"), async (req, r
 
 app.get("/mapcreator/:mapName/point_cloud/index.json", async (req, res) => {
   const { mapName } = req.params;
-  const indexPath = path.join(
-    config.baseMapRoot,
-    mapName,
-    "point_cloud",
-    "index.json",
-  );
-  if (!(await pathExists(indexPath))) {
+  const indexPath = safeBaseMapJoin(mapName, "point_cloud", "index.json");
+  if (!indexPath || !(await pathExists(indexPath))) {
     res
       .status(404)
       .json({ code: 404, message: `point_cloud/index.json not found for ${mapName}` });
@@ -4056,14 +4126,13 @@ app.get("/mapcreator/:mapName/point_cloud/blocks/:file", async (req, res) => {
     res.status(404).send("Not Found");
     return;
   }
-  const blockPath = path.join(
-    config.baseMapRoot,
+  const blockPath = safeBaseMapJoin(
     mapName,
     "point_cloud",
     "blocks",
     safeFile,
   );
-  if (!(await pathExists(blockPath))) {
+  if (!blockPath || !(await pathExists(blockPath))) {
     res.status(404).send("Not Found");
     return;
   }
@@ -4192,13 +4261,8 @@ app.post(
 
 app.get("/mapcreator/:mapName/tiles.json", async (req, res) => {
   const { mapName } = req.params;
-  const tilePath = path.join(
-    config.baseMapRoot,
-    mapName,
-    "map_images",
-    "tiles.json",
-  );
-  if (!(await pathExists(tilePath))) {
+  const tilePath = safeBaseMapJoin(mapName, "map_images", "tiles.json");
+  if (!tilePath || !(await pathExists(tilePath))) {
     res
       .status(404)
       .json({ code: 404, message: `tiles.json not found for ${mapName}` });
@@ -4223,13 +4287,8 @@ app.get("/mapcreator/:mapName/layers/:layer/tiles.json", async (req, res) => {
       .json({ code: 404, message: `unknown base map layer: ${layer}` });
     return;
   }
-  const tilePath = path.join(
-    config.baseMapRoot,
-    mapName,
-    layerDir,
-    "tiles.json",
-  );
-  if (!(await pathExists(tilePath))) {
+  const tilePath = safeBaseMapJoin(mapName, layerDir, "tiles.json");
+  if (!tilePath || !(await pathExists(tilePath))) {
     res
       .status(404)
       .json({
@@ -4253,14 +4312,13 @@ app.get("/mapcreator/:mapName/layers/:layer/tiles.json", async (req, res) => {
 
 app.get("/mapcreator/:mapName/:level/proj.png", async (req, res) => {
   const { mapName, level } = req.params;
-  const pngPath = path.join(
-    config.baseMapRoot,
+  const pngPath = safeBaseMapJoin(
     mapName,
     "traffic_light_data",
     level,
     "proj.png",
   );
-  if (!(await pathExists(pngPath))) {
+  if (!pngPath || !(await pathExists(pngPath))) {
     res.status(404).send("Not Found");
     return;
   }
@@ -4271,13 +4329,10 @@ app.get("/mapcreator/:mapName/:level/proj.png", async (req, res) => {
 
 app.get("/mapcreator/:mapName/source_images/:file", async (req, res) => {
   const { mapName, file } = req.params;
-  const imagePath = path.join(
-    config.baseMapRoot,
-    mapName,
-    "source_images",
-    file,
-  );
-  if (!(await pathExists(imagePath))) {
+  const safeFile = path.basename(file);
+  const imagePath =
+    safeFile === file ? safeBaseMapJoin(mapName, "source_images", safeFile) : null;
+  if (!imagePath || !(await pathExists(imagePath))) {
     res.status(404).send("Not Found");
     return;
   }
@@ -4287,8 +4342,8 @@ app.get("/mapcreator/:mapName/source_images/:file", async (req, res) => {
 
 app.get("/mapcreator/:mapName/image_index.json", async (req, res) => {
   const { mapName } = req.params;
-  const indexPath = path.join(config.baseMapRoot, mapName, "image_index.json");
-  if (!(await pathExists(indexPath))) {
+  const indexPath = safeBaseMapJoin(mapName, "image_index.json");
+  if (!indexPath || !(await pathExists(indexPath))) {
     res
       .status(404)
       .json({
@@ -4310,15 +4365,8 @@ app.get(
       res.status(404).send("Not Found");
       return;
     }
-    const pngPath = path.join(
-      config.baseMapRoot,
-      mapName,
-      layerDir,
-      level,
-      y,
-      file,
-    );
-    if (!(await pathExists(pngPath))) {
+    const pngPath = safeBaseMapJoin(mapName, layerDir, level, y, file);
+    if (!pngPath || !(await pathExists(pngPath))) {
       res.status(404).send("Not Found");
       return;
     }
@@ -4330,15 +4378,8 @@ app.get(
 
 app.get("/mapcreator/:mapName/:level/:y/:file", async (req, res) => {
   const { mapName, level, y, file } = req.params;
-  const pngPath = path.join(
-    config.baseMapRoot,
-    mapName,
-    "map_images",
-    level,
-    y,
-    file,
-  );
-  if (!(await pathExists(pngPath))) {
+  const pngPath = safeBaseMapJoin(mapName, "map_images", level, y, file);
+  if (!pngPath || !(await pathExists(pngPath))) {
     res.status(404).send("Not Found");
     return;
   }
@@ -4391,6 +4432,10 @@ server.listen(config.port, async () => {
   startCaptureAutoSyncScheduler();
   startInboxAutoPrebuildScheduler();
   log(`Simple map backend listening on ${config.port}`);
+  log(`Auth: ${config.auth?.enabled ? "enabled" : "DISABLED"}`);
+  if (config.auth?.warning) {
+    console.warn(config.auth.warning);
+  }
   log("Base map root:", config.baseMapRoot);
   log("Editor map root:", config.editorMapRoot);
   log("Release root:", config.releaseRoot);

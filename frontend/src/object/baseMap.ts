@@ -114,6 +114,11 @@ export default class BaseMap {
 
     private pointCloudRequestSeq: number = 0;
 
+    // 保存订阅 token 与相机监听器，便于销毁时解绑，避免重复挂载时事件叠加与闭包泄漏。
+    private subscriptionTokens: string[] = [];
+
+    private cameraUpdateHandler: ((...args: any[]) => void) | null = null;
+
     /**
      * @class RenderHelper
      * @description 渲染辅助类，主要用于实现地图和相机之间的同步操作
@@ -130,51 +135,61 @@ export default class BaseMap {
         this.control = control;
         this.loading = false;
 
-        this.control.cameraControls.addEventListener(
-            'update',
-            throttle(() => {
-                PubSub.publish('closeRemind');
-                if (this.pointCloudIndex) {
-                    this.updatePointCloudBlocks().catch((error) => console.error(error));
-                    return;
-                }
-                if (!this.dir || Object.keys(this.tiles).length === 0 || this.loading) {
-                    return;
-                }
-                const vFOV = THREE.MathUtils.degToRad(camera.fov);
-                const height = 2 * Math.tan(vFOV / 2) * camera.position.z;
+        this.cameraUpdateHandler = throttle(() => {
+            PubSub.publish('closeRemind');
+            if (this.pointCloudIndex) {
+                this.updatePointCloudBlocks().catch((error) => console.error(error));
+                return;
+            }
+            if (!this.dir || Object.keys(this.tiles).length === 0 || this.loading) {
+                return;
+            }
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const height = 2 * Math.tan(vFOV / 2) * camera.position.z;
 
-                let scale = Math.round(this.render.domElement.clientHeight / height);
-                if (scale > 4) {
-                    scale = 4;
-                } else if (scale < 0) {
-                    scale = 0;
-                }
-                const offsetX = Math.abs(camera.position.x - this.position.x);
-                const offsetY = Math.abs(camera.position.y - this.position.y);
-                const isReresh = offsetX > 32 * scale || offsetY > 32 * scale || this.scale !== scale;
-                this.scale = scale;
+            let scale = Math.round(this.render.domElement.clientHeight / height);
+            if (scale > 4) {
+                scale = 4;
+            } else if (scale < 0) {
+                scale = 0;
+            }
+            const offsetX = Math.abs(camera.position.x - this.position.x);
+            const offsetY = Math.abs(camera.position.y - this.position.y);
+            const isReresh = offsetX > 32 * scale || offsetY > 32 * scale || this.scale !== scale;
+            this.scale = scale;
 
-                // XY轴或者Z轴方向移动偏移在一定范围内重新绘制瓦片
-                if (isReresh) {
-                    this.rereshRenderMap();
-                    this.position.copy(camera.position);
-                }
-            }, 100),
+            // XY轴或者Z轴方向移动偏移在一定范围内重新绘制瓦片
+            if (isReresh) {
+                this.rereshRenderMap();
+                this.position.copy(camera.position);
+            }
+        }, 100);
+        this.control.cameraControls.addEventListener('update', this.cameraUpdateHandler);
+
+        this.subscriptionTokens.push(
+            PubSub.subscribe('cameraMove', (_name, payload: number[][] | CameraMovePayload) =>
+                this.cameraMoveToHdMapcenter(payload),
+            ),
+            PubSub.subscribe('fitBaseMap', () => this.fitCurrentMap()),
+            PubSub.subscribe('baseMapOpacity', (_name, opacity: number) => {
+                this.transparency(opacity);
+                this.renderer();
+            }),
+            PubSub.subscribe('baseMapPointSize', (_name, pointSize: number) => {
+                this.updatePointSize(pointSize);
+                this.renderer();
+            }),
         );
+    }
 
-        PubSub.subscribe('cameraMove', (_name, payload: number[][] | CameraMovePayload) =>
-            this.cameraMoveToHdMapcenter(payload),
-        );
-        PubSub.subscribe('fitBaseMap', () => this.fitCurrentMap());
-        PubSub.subscribe('baseMapOpacity', (_name, opacity: number) => {
-            this.transparency(opacity);
-            this.renderer();
-        });
-        PubSub.subscribe('baseMapPointSize', (_name, pointSize: number) => {
-            this.updatePointSize(pointSize);
-            this.renderer();
-        });
+    // 解绑所有订阅与相机监听，配合编辑器卸载使用，防止重复挂载导致事件叠加。
+    public dispose(): void {
+        this.subscriptionTokens.forEach((token) => PubSub.unsubscribe(token));
+        this.subscriptionTokens = [];
+        if (this.cameraUpdateHandler) {
+            this.control?.cameraControls?.removeEventListener('update', this.cameraUpdateHandler);
+            this.cameraUpdateHandler = null;
+        }
     }
 
     get Scene(): THREE.Scene {

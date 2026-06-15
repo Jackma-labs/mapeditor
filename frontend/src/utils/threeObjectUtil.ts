@@ -4,12 +4,30 @@ import { useManagerStore } from 'src/store';
 import * as THREE from 'three';
 import { canPickThreeElementType } from './editorLayerUtil';
 
+// 释放材质及其自带的纹理贴图。标注元素（标志牌/红绿灯/停车位等）的纹理是每元素独立生成
+// 或克隆的 canvas 纹理，不与底图瓦片共享，因此元素移除时可安全释放，避免 GPU 显存泄漏。
+// 注意：底图瓦片（name === 'tile'）由 BaseMap 单独管理，不会走到这里。
+export const disposeMaterialWithTextures = (material: THREE.Material | THREE.Material[]) => {
+    const materials = Array.isArray(material) ? material : [material];
+    materials.forEach((mat) => {
+        if (!mat) {
+            return;
+        }
+        const anyMat = mat as any;
+        anyMat.map?.dispose?.();
+        anyMat.alphaMap?.dispose?.();
+        mat.dispose();
+    });
+};
+
 export const disposeMesh = (mesh: THREE.Mesh | THREE.Line, scene: THREE.Scene) => {
     if (!mesh) {
         return;
     }
     mesh.geometry?.dispose();
-    (mesh.material as THREE.Material)?.dispose();
+    if (mesh.material) {
+        disposeMaterialWithTextures(mesh.material as THREE.Material | THREE.Material[]);
+    }
     if (mesh.parent?.name === 'dragControlGroup' || mesh.parent?.name === 'rotateGroup') {
         mesh.parent.remove(mesh);
     } else {
@@ -87,7 +105,9 @@ export function removeAllElement() {
     newState.scene.traverse((child: any) => {
         if ((child.type === 'Mesh' || child.type === 'Line2' || child.type === 'Sprite') && child.name !== 'tile') {
             child.geometry?.dispose();
-            (child.material as THREE.Material)?.dispose();
+            if (child.material) {
+                disposeMaterialWithTextures(child.material);
+            }
         }
     });
     for (let i = 0; i < newState.scene.children.length; i += 1) {

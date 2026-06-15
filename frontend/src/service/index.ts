@@ -158,6 +158,17 @@ class FileService {
         return this.requestJson('/runtime/doctor');
     }
 
+    /**
+     * 服务端草稿自动保存（非破坏性）。写入服务器 .autosave 目录，不会覆盖正式地图，
+     * 用于浏览器/本机异常时的兜底恢复。失败应被调用方静默处理，不影响编辑。
+     */
+    async autosaveEditorMapDraft(mapName: string, map: object) {
+        return this.requestJson('/runtime/editor-map-autosave', {
+            method: 'POST',
+            body: JSON.stringify({ mapName, map }),
+        });
+    }
+
     async getRuntimeStatus() {
         return this.requestJson('/runtime/status');
     }

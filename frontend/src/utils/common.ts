@@ -405,10 +405,19 @@ export function loadHdmp(data: any): any {
     const areas: { [id: string]: Area } = {};
     const barrierGates: { [id: string]: BarrierGate } = {};
 
+    let skippedRecords = 0;
     point?.forEach((item: any) => {
+        const px = Number(item?.position?.x);
+        const py = Number(item?.position?.y);
+        // Skip malformed point records instead of throwing: a single bad record
+        // must not abort the whole map import (and leave the editor half-loaded).
+        if (item?.id === undefined || item?.id === null || !Number.isFinite(px) || !Number.isFinite(py)) {
+            skippedRecords += 1;
+            return;
+        }
         const position = new THREE.Vector3(
-            Number(item.position.x.toFixed(4)),
-            Number(item.position.y.toFixed(4)),
+            Number(px.toFixed(4)),
+            Number(py.toFixed(4)),
             mapElementZ[item.type as ThreeElementType],
         );
         points[item.id] = {
@@ -417,6 +426,9 @@ export function loadHdmp(data: any): any {
             type: item.type,
         };
     });
+    if (skippedRecords > 0) {
+        console.warn(`[loadHdmp] 跳过 ${skippedRecords} 条缺少有效坐标的点记录`);
+    }
     boundary?.forEach((item: any) => {
         const pointIds = item.pointId || item.point_id || item.pointIds || [];
         boundarys[item.id] = {

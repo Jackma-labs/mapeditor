@@ -603,8 +603,16 @@ export default function MapQualityPanel({ embedded = false }: MapQualityPanelPro
         state.setMapState,
         state.addCommand,
     ]);
-    const report = useMemo(() => inspectMapQuality(mapState), [mapState]);
-    const repairActions = useMemo(() => buildMapQualityRepairActions(mapState), [mapState]);
+    // inspectMapQuality / buildMapQualityRepairActions 是 O(L^2) 计算。原实现直接以
+    // mapState 为 useMemo 依赖，意味着每一次编辑（拖动、选中、绘制）都会同步在渲染线程
+    // 重算两遍，大图下会卡顿。这里对 mapState 做防抖，仅在停止操作约 400ms 后才重算。
+    const [debouncedMapState, setDebouncedMapState] = useState(mapState);
+    useEffect(() => {
+        const timer = setTimeout(() => setDebouncedMapState(mapState), 400);
+        return () => clearTimeout(timer);
+    }, [mapState]);
+    const report = useMemo(() => inspectMapQuality(debouncedMapState), [debouncedMapState]);
+    const repairActions = useMemo(() => buildMapQualityRepairActions(debouncedMapState), [debouncedMapState]);
     const repairableTargetIds = useMemo(
         () => new Set(repairActions.flatMap((action) => getRepairActionTargetIds(action).filter(Boolean))),
         [repairActions],

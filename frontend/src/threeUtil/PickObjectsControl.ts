@@ -13,15 +13,25 @@ interface PickObject {
 export class PickObjectsControl {
     private pickObjects: PickObject[];
 
+    private subscriptionToken: string | null = null;
+
     constructor() {
         this.pickObjects = [];
         this.initEvent();
     }
 
     initEvent() {
-        PubSub.subscribe('emptyPickObjects', () => {
+        this.subscriptionToken = PubSub.subscribe('emptyPickObjects', () => {
             this.emptyPickObjects();
         });
+    }
+
+    // 解绑订阅，配合编辑器卸载使用，避免重复挂载导致回调叠加。
+    dispose() {
+        if (this.subscriptionToken) {
+            PubSub.unsubscribe(this.subscriptionToken);
+            this.subscriptionToken = null;
+        }
     }
 
     // 更新当前选中元素

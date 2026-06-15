@@ -27,13 +27,28 @@ const defaults = {
     autoMerge: process.env.MAP_CAPTURE_AUTO_MERGE !== 'false',
     mergedMapName: process.env.MAP_CAPTURE_AUTO_MERGED_MAP_NAME || 'capture_source_merged',
   },
-  auth: {
-    enabled: process.env.MAP_AUTH_ENABLED === 'true',
-    username: process.env.MAP_AUTH_USERNAME || 'admin',
-    password: process.env.MAP_AUTH_PASSWORD || '',
-    role: process.env.MAP_AUTH_ROLE || 'admin',
-    sessionTtlHours: Number(process.env.MAP_AUTH_SESSION_TTL_HOURS || 12),
-  },
+  auth: (() => {
+    const password = process.env.MAP_AUTH_PASSWORD || '';
+    // Fail-closed by default: auth is ON unless explicitly disabled with
+    // MAP_AUTH_ENABLED=false. But enabling requires a configured password,
+    // otherwise nobody could ever log in (login rejects empty passwords) and a
+    // live deployment would be bricked. So when auth is wanted but no password
+    // is set we stay OPEN and surface a loud warning instead of locking out.
+    const wantEnabled = process.env.MAP_AUTH_ENABLED !== 'false';
+    const enabled = wantEnabled && password.length > 0;
+    const warning =
+      wantEnabled && password.length === 0
+        ? '[security] 鉴权未启用：未配置 MAP_AUTH_PASSWORD。当前所有写入/部署接口可被未授权访问，请在 .env.server 设置 MAP_AUTH_PASSWORD 后重启以开启登录保护。'
+        : '';
+    return {
+      enabled,
+      warning,
+      username: process.env.MAP_AUTH_USERNAME || 'admin',
+      password,
+      role: process.env.MAP_AUTH_ROLE || 'admin',
+      sessionTtlHours: Number(process.env.MAP_AUTH_SESSION_TTL_HOURS || 12),
+    };
+  })(),
   security: {
     corsOrigins: (process.env.MAP_CORS_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
       .split(',')

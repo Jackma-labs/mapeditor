@@ -26,62 +26,66 @@ export function updateElements() {
         operationType,
         signs,
     } = mapState;
-    const pointMeshes = scene.getObjectsByProperty('name', `${ThreeObject.Point}`);
+    // 单次遍历场景按类型分桶，替代原先每次渲染 8 次 getObjectsByProperty 全场景遍历。
+    // 大图下这是渲染热路径的主要开销来源。
     const scenePoints: { [id: string]: Object3D } = {};
-    pointMeshes.forEach((mesh) => {
-        const { id } = mesh.userData;
-        scenePoints[id] = mesh;
-    });
-
-    const boundaryMeshes = scene.getObjectsByProperty('name', `${ThreeObject.Boundary}`);
-    const lin2Meshs = scene.getObjectsByProperty('name', `${ThreeObject.Line2}`);
     const sceneBoundarys: {
         [id: string]: {
             line: THREE.Object3D;
             line2: Line2;
         };
     } = {};
-    boundaryMeshes.forEach((mesh) => {
-        const { id } = mesh.userData;
-        if (!sceneBoundarys[id]) {
-            sceneBoundarys[id] = { line: null, line2: null };
-        }
-        sceneBoundarys[id].line = mesh;
-    });
-    lin2Meshs.forEach((mesh) => {
-        const { id } = mesh.userData;
-        if (!sceneBoundarys[id]) {
-            sceneBoundarys[id] = { line: null, line2: null };
-        }
-        sceneBoundarys[id].line2 = mesh as Line2;
-    });
-
-    const groudMeshes = scene.getObjectsByProperty('name', `${ThreeObject.Groud}`);
     const sceneGrouds: { [id: string]: THREE.Object3D } = {};
-    groudMeshes.forEach((mesh) => {
-        const { id } = mesh.userData;
-        sceneGrouds[id] = mesh;
-    });
-
-    const arrowMeshes = scene.getObjectsByProperty('name', `${ThreeObject.Arrow}`);
     const sceneArrows: { [id: string]: THREE.Object3D } = {};
-    arrowMeshes.forEach((mesh) => {
-        const { id } = mesh.userData;
-        sceneArrows[id] = mesh;
-    });
-
-    const trafficLightMeshes = scene.getObjectsByProperty('name', `${ThreeObject.TrafficLight}`);
     const sceneTrafficLights: { [id: string]: Object3D } = {};
-    trafficLightMeshes.forEach((mesh) => {
-        const { id } = mesh.userData;
-        sceneTrafficLights[id] = mesh;
-    });
-
-    const signMeshes = scene.getObjectsByProperty('name', `${ThreeObject.Sign}`);
     const sceneSigns: { [id: string]: Object3D } = {};
-    signMeshes.forEach((mesh) => {
-        const { id } = mesh.userData;
-        sceneSigns[id] = mesh;
+
+    const NAME_POINT = `${ThreeObject.Point}`;
+    const NAME_BOUNDARY = `${ThreeObject.Boundary}`;
+    const NAME_LINE2 = `${ThreeObject.Line2}`;
+    const NAME_GROUD = `${ThreeObject.Groud}`;
+    const NAME_ARROW = `${ThreeObject.Arrow}`;
+    const NAME_TRAFFIC_LIGHT = `${ThreeObject.TrafficLight}`;
+    const NAME_SIGN = `${ThreeObject.Sign}`;
+
+    const ensureBoundaryEntry = (id: string) => {
+        if (!sceneBoundarys[id]) {
+            sceneBoundarys[id] = { line: null, line2: null };
+        }
+        return sceneBoundarys[id];
+    };
+
+    scene.traverse((obj) => {
+        const { name } = obj;
+        if (!name) {
+            return;
+        }
+        const { id } = obj.userData;
+        switch (name) {
+            case NAME_POINT:
+                scenePoints[id] = obj;
+                break;
+            case NAME_BOUNDARY:
+                ensureBoundaryEntry(id).line = obj;
+                break;
+            case NAME_LINE2:
+                ensureBoundaryEntry(id).line2 = obj as Line2;
+                break;
+            case NAME_GROUD:
+                sceneGrouds[id] = obj;
+                break;
+            case NAME_ARROW:
+                sceneArrows[id] = obj;
+                break;
+            case NAME_TRAFFIC_LIGHT:
+                sceneTrafficLights[id] = obj;
+                break;
+            case NAME_SIGN:
+                sceneSigns[id] = obj;
+                break;
+            default:
+                break;
+        }
     });
 
     Object.keys(needRenderElements[ThreeObject.Point]).forEach((id: string) => {

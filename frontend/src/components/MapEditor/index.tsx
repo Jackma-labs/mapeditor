@@ -19,6 +19,7 @@ import { rotateElementsUpdate } from 'src/threeUtil/RotateControl/util';
 import { PickObjectsControl } from 'src/threeUtil/PickObjectsControl';
 import RangingControl from 'src/threeUtil/ RangingControl';
 import RecoverDataRemind from 'src/components/RecoverDataRemind';
+import { message } from 'src/components/Message';
 import { Button } from 'src/components/ui/button';
 import { Slider } from 'src/components/ui/slider';
 import { comparePointsWithPreCheck } from 'src/diff/compareWithPreCheck';
@@ -194,6 +195,8 @@ export default function MapEditor() {
     }, [mapState]);
     // 初始化操作
     useEffect(() => {
+        const subscriptionTokens: string[] = [];
+        let baseMapInstance: BaseMap | null = null;
         if (!renderer.current) {
             // 初始化three相关的元素
             dom.current = document.getElementById('webgl');
@@ -233,44 +236,58 @@ export default function MapEditor() {
 
             // 监听一些事件
             const baseMap = new BaseMap(renderer.current, scene.current, camera.current, cameraControl.current);
-            PubSub.subscribe('renderMap', (_name, data: any) => {
-                if (!data.options?.keepCamera) {
-                    baseMap.scale = 4;
-                }
-                setBaseMapUi((prev) => ({
-                    ...prev,
-                    dir: data.dir,
-                    supportsPointSize:
-                        data.json?.type === 'point_cloud' || data.json?.sourceType === 'point_cloud_stream',
-                }));
-                setShowRemind(false);
-                baseMap.renderMap(data.dir, data.json, data.options || {}).then(() => {
-                    applyEditorLayerVisibility(useManagerStore.getState().mapState);
+            baseMapInstance = baseMap;
+            subscriptionTokens.push(
+                PubSub.subscribe('renderMap', (_name, data: any) => {
+                    if (!data.options?.keepCamera) {
+                        baseMap.scale = 4;
+                    }
+                    setBaseMapUi((prev) => ({
+                        ...prev,
+                        dir: data.dir,
+                        supportsPointSize:
+                            data.json?.type === 'point_cloud' || data.json?.sourceType === 'point_cloud_stream',
+                    }));
+                    setShowRemind(false);
+                    baseMap.renderMap(data.dir, data.json, data.options || {}).then(() => {
+                        applyEditorLayerVisibility(useManagerStore.getState().mapState);
+                        render();
+                    });
+                }),
+                PubSub.subscribe('renderHDMap', (_name, data: any) => {
+                    // 当切换标注地图的时候，不可以回退和重做了
+                    useManagerStore.getState().resetCommand();
+                    try {
+                        dataImport(data);
+                    } catch (error) {
+                        // 防止单个损坏的地图文件让编辑器停留在半加载状态
+                        console.error('[renderHDMap] 地图导入失败', error);
+                        message({ type: 'error', content: '地图文件解析失败，可能已损坏或格式不兼容，请检查后重试' });
+                    }
+                }),
+                PubSub.subscribe('addObject', (_name, mesh: THREE.Object3D) => {
+                    if (mesh) {
+                        scene.current?.add(mesh);
+                    }
+                }),
+                PubSub.subscribe('removeObject', (_name, object: THREE.Object3D) => {
+                    if (object) {
+                        disposeGroup(object, scene.current);
+                    }
+                }),
+                PubSub.subscribe('render', () => {
                     render();
-                });
-            });
-            PubSub.subscribe('renderHDMap', (_name, data: any) => {
-                // 当切换标注地图的时候，不可以回退和重做了
-                useManagerStore.getState().resetCommand();
-                dataImport(data);
-            });
-            PubSub.subscribe('addObject', (_name, mesh: THREE.Object3D) => {
-                if (mesh) {
-                    scene.current?.add(mesh);
-                }
-            });
-            PubSub.subscribe('removeObject', (_name, object: THREE.Object3D) => {
-                if (object) {
-                    disposeGroup(object, scene.current);
-                }
-            });
-            PubSub.subscribe('render', () => {
-                render();
-            });
-            PubSub.subscribe('closeRemind', () => {
-                setShowRemind(false);
-            });
+                }),
+                PubSub.subscribe('closeRemind', () => {
+                    setShowRemind(false);
+                }),
+            );
         }
+        return () => {
+            // 卸载时解绑订阅与 baseMap 监听，避免重复挂载（含 React StrictMode）造成事件叠加与泄漏。
+            subscriptionTokens.forEach((token) => PubSub.unsubscribe(token));
+            baseMapInstance?.dispose();
+        };
     }, []);
     useEffect(() => {
         const filteredPickElements = filterPickElementsByEditorLayers(mapState, mapState.currentPickElement);
@@ -309,6 +326,7 @@ export default function MapEditor() {
             mouseMoveControl?.current?.dispose();
             rangingControl?.current?.dispose();
             rotateControl?.current?.dispose();
+            pickObjectsControl?.current?.dispose();
         };
     }, []);
 

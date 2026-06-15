@@ -12,8 +12,52 @@ const unzipper = require('unzipper');
 const { PNG } = require('pngjs');
 const WebSocketClient = require('ws');
 const { Client: SshClient } = require('ssh2');
+const { Worker } = require('worker_threads');
 const { convertEditorMapToApolloPackage } = require('./editorMapConverter');
 const { runCommand } = require('./process');
+
+const CONVERTER_WORKER_PATH = path.join(__dirname, 'editorMapConverterWorker.js');
+
+// Run the JS Apollo converter in a worker_thread so a large publish does not
+// block the event loop (and thus all other HTTP/WS requests). Falls back to an
+// in-process conversion only if the worker cannot be spawned at all.
+function runConverterInWorker(options) {
+  return new Promise((resolve, reject) => {
+    let worker;
+    try {
+      worker = new Worker(CONVERTER_WORKER_PATH, { workerData: options });
+    } catch (spawnError) {
+      // Environment cannot create workers: degrade gracefully to in-process.
+      convertEditorMapToApolloPackage(options).then(resolve, reject);
+      return;
+    }
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      fn(value);
+      worker.terminate().catch(() => {});
+    };
+    worker.on('message', (message) => {
+      if (message && message.ok) {
+        finish(resolve, message.result);
+      } else {
+        finish(
+          reject,
+          new Error((message && message.error && message.error.message) || 'converter worker failed'),
+        );
+      }
+    });
+    worker.on('error', (error) => finish(reject, error));
+    worker.on('exit', (code) => {
+      if (!settled && code !== 0) {
+        finish(reject, new Error(`converter worker stopped with exit code ${code}`));
+      }
+    });
+  });
+}
 const { generateAssistDrawingCandidates } = require('./assistDrawingCandidates');
 
 const EDGE_SSH_READY_TIMEOUT_MS = 15000;
@@ -297,7 +341,11 @@ function normalizeEdgeDeployParams(config, params = {}) {
   const password = String(rawPassword || '').trim();
   const port = Number(params.port ?? config.edgeDeploy.port ?? 22) || 22;
   const targetMapRoot = String(params.targetMapRoot ?? config.edgeDeploy.targetMapRoot ?? '').trim();
-  const postDeployCommand = String(params.postDeployCommand ?? config.edgeDeploy.postDeployCommand ?? '').trim();
+  // postDeployCommand runs raw on the edge device over SSH. It is intentionally
+  // NOT accepted from request params (which would be remote command execution by
+  // design); it can only be configured server-side via .env.server
+  // (MAP_EDGE_POST_DEPLOY_COMMAND) by an operator who already has shell access.
+  const postDeployCommand = String(config.edgeDeploy.postDeployCommand ?? '').trim();
   const dockerContainer = String(params.dockerContainer ?? config.edgeDeploy.dockerContainer ?? '').trim();
   const nativeMapTools =
     params.nativeMapTools !== undefined ? Boolean(params.nativeMapTools) : config.edgeDeploy.nativeMapTools !== false;
@@ -11004,7 +11052,7 @@ async function runEdgeNativeMapTools(config, mapDir, progress = async () => {}) 
 
 async function runLocalConverter(config, mapName, jsonPath, releaseDir, baseMapDir) {
   if (!(await pathExists(config.converterBinary))) {
-    return convertEditorMapToApolloPackage({
+    return runConverterInWorker({
       mapName,
       jsonPath,
       releaseDir,
