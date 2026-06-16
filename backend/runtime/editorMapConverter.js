@@ -1,6 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const protobuf = require('protobufjs');
+const { splitClosedLanes } = require('./splitClosedLanes');
 
 const LANE_TYPE = {
   NONE: 1,
@@ -3260,12 +3261,29 @@ async function writeBinary(root, typeName, message, outputPath) {
 async function convertEditorMapToApolloPackage(options) {
   const { mapName, jsonPath, releaseDir, baseMapDir = null } = options;
   await fs.mkdir(releaseDir, { recursive: true });
-  const editorMap = JSON.parse((await fs.readFile(jsonPath, 'utf8')).replace(/^\uFEFF/, ''));
+  const rawEditorMap = JSON.parse((await fs.readFile(jsonPath, 'utf8')).replace(/^\uFEFF/, ''));
+  // Auto-split closed/self-returning lanes into connected open segments so loops
+  // (circle/roundabout/ramp) publish as valid Apollo geometry without manual
+  // re-drawing. Operates in-memory only; the source editor_map on disk is
+  // untouched. Open lanes pass through unchanged.
+  const { map: editorMap, report: closedLaneSplit } = splitClosedLanes(rawEditorMap);
   const root = createProtoRoot();
   const mapMessage = createMapMessage(editorMap);
   const cleanMap = cleanMapForEncoding(mapMessage);
   const routingGraph = createRoutingGraph(mapMessage);
   const warnings = mapMessage._conversionWarnings || [];
+  if (closedLaneSplit && closedLaneSplit.splitLanes.length > 0) {
+    for (const split of closedLaneSplit.splitLanes) {
+      warnings.push({
+        severity: 'info',
+        code: 'closed-lane-auto-split',
+        element: 'lane',
+        id: split.laneId,
+        message: `Closed/looping lane ${split.laneId} was automatically split into ${split.segments} connected open segments (~${split.loopLength}m loop) for Apollo.`,
+        details: split,
+      });
+    }
+  }
   const coordinateTransform = mapMessage._coordinateTransform || null;
   const contract = buildConversionContract(editorMap, cleanMap, routingGraph, warnings);
   const coordinateMetadata = buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransform);

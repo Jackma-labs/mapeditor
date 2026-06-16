@@ -45,6 +45,7 @@ jobs:
           # Self-contained converter gates (no data/ fixtures needed on CI):
           node scripts/test-editor-map-converter-contract.js
           npm run test:converter-worker
+          npm run test:split-closed-lanes
           # Fixture regression: runs locally where data/ exists; skips on CI.
           npm run regression:maps
 

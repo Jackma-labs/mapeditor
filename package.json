@@ -14,6 +14,7 @@
     "runtime:verify": "node scripts/verify-mapeditor-runtime.js",
     "regression:maps": "node scripts/regression-map-fixtures.js",
     "test:converter-worker": "node scripts/test-converter-worker.js",
+    "test:split-closed-lanes": "node scripts/test-split-closed-lanes.js",
     "runtime:start:win": "powershell -ExecutionPolicy Bypass -File runtime/scripts/start-apollo-runtime.ps1",
     "runtime:stop:win": "powershell -ExecutionPolicy Bypass -File runtime/scripts/stop-apollo-runtime.ps1"
   }
