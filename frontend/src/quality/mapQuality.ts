@@ -101,6 +101,11 @@ const LANE_SUCCESSOR_SHARP_ANGLE_WARNING_DEGREES = 65;
 const LANE_MISSING_LINK_CANDIDATE_DISTANCE_METERS = 4;
 const LANE_MISSING_LINK_CANDIDATE_ANGLE_DEGREES = 35;
 const CURVE_SAMPLE_COUNT = 17;
+// A lane whose centerline returns to within this distance of its start while being
+// at least this long is a closed loop / fold-back. Apollo lanes must be open
+// directional segments, so these are flagged as publish-blocking errors.
+const CLOSED_LANE_MAX_CHORD_METERS = 2.0;
+const CLOSED_LANE_MIN_LENGTH_METERS = 8.0;
 
 interface Point2D {
     x: number;
@@ -756,6 +761,35 @@ export function inspectMapQuality(mapState: MapState): MapQualityReport {
                 target,
             });
             return;
+        }
+        const closedLoopLeft = getBoundaryGeometryPoints(mapState, lane.leftBoundaryId, lane.leftBoundaryReverse);
+        const closedLoopRight = getBoundaryGeometryPoints(mapState, lane.rightBoundaryId, lane.rightBoundaryReverse);
+        if (closedLoopLeft.length >= 2 && closedLoopRight.length >= 2) {
+            const startMid = {
+                x: (closedLoopLeft[0].x + closedLoopRight[0].x) / 2,
+                y: (closedLoopLeft[0].y + closedLoopRight[0].y) / 2,
+            };
+            const endMid = {
+                x: (closedLoopLeft[closedLoopLeft.length - 1].x + closedLoopRight[closedLoopRight.length - 1].x) / 2,
+                y: (closedLoopLeft[closedLoopLeft.length - 1].y + closedLoopRight[closedLoopRight.length - 1].y) / 2,
+            };
+            const laneLength = Math.max(polylineLength(closedLoopLeft), polylineLength(closedLoopRight));
+            const chord = distance(startMid, endMid);
+            if (laneLength >= CLOSED_LANE_MIN_LENGTH_METERS && chord < CLOSED_LANE_MAX_CHORD_METERS) {
+                buildIssue(issues, {
+                    severity: 'error',
+                    title: `车道 ${lane.id} 是闭合/折返环线`,
+                    description:
+                        '该车道首尾几乎重合（自成一个环或原路折返）。Apollo 车道必须是开放、有方向的线段，闭环无法正确发布，会导致曲线变直、宽度错乱、线条重叠嵌套。',
+                    suggestion:
+                        '把这个环拆成多段首尾相接的开放车道（像真实环岛那样逐段连接）；自交的八字还需要在交叉处加一个路口。',
+                    details: buildLaneRelationDetails(relation, laneComponentIndex, [
+                        `首尾间距约 ${chord.toFixed(2)} m`,
+                        `车道长度约 ${laneLength.toFixed(1)} m`,
+                    ]),
+                    target,
+                });
+            }
         }
         if (!mapState.grouds[lane.groudId]) {
             buildIssue(issues, {

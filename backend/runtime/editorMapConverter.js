@@ -49,6 +49,11 @@ const APOLLO_CURVE_MIN_SAMPLE_COUNT = 17;
 const APOLLO_CURVE_MAX_SAMPLE_COUNT = 97;
 const APOLLO_CURVE_TARGET_SEGMENT_LENGTH_METERS = 0.4;
 const APOLLO_CURVE_EXCESS_LENGTH_PER_EXTRA_SAMPLE_METERS = 0.25;
+// A lane whose centerline returns to (within this many meters of) its start while
+// being at least this long is a closed loop / fold-back. Apollo lanes must be open
+// directional segments, so such lanes are rejected at the release gate.
+const APOLLO_CLOSED_LANE_MAX_CHORD_METERS = 2.0;
+const APOLLO_CLOSED_LANE_MIN_LENGTH_METERS = 8.0;
 const APOLLO_TARGET_CRS = {
   datum: 'WGS84',
   ellipsoid: 'WGS84',
@@ -1433,6 +1438,13 @@ function smoothCenterlineForApolloPlanning(
   const startHeading = headingBetween(center[0], center[1]);
   const endHeading = headingBetween(center[center.length - 2], center[center.length - 1]);
   const chord = distance(start, end);
+  if (chord < APOLLO_CLOSED_LANE_MAX_CHORD_METERS) {
+    // Start and end are ~coincident: this is a closed loop / fold-back lane.
+    // Fitting a cubic between coincident endpoints is degenerate and would mangle
+    // the geometry, so leave the raw centerline untouched. Such lanes are blocked
+    // by the release gate (lane-closed-loop) before they can be deployed.
+    return center;
+  }
   const maxControl = Math.max(3, Math.min(originalLength * 1.4, Math.max(chord * 1.8, 8)));
   const controlCandidates = centerControlDistanceCandidates(maxControl, chord, originalLength);
   const findBestCandidate = (headingOffsets) => {
@@ -2947,6 +2959,29 @@ function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateM
           estimatedLengthMeters: routeArtifacts.loopPlan.estimatedLengthMeters,
         }
       : null,
+  );
+  const closedLoopLanes = arr(cleanMap.lane).filter((lane) => {
+    const points = lane.centralCurve?.segment?.[0]?.lineSegment?.point || [];
+    if (points.length < 2) {
+      return false;
+    }
+    const length = Number(lane.length) > 0 ? Number(lane.length) : polylineLength(points);
+    const chord = distance(points[0], points[points.length - 1]);
+    return length >= APOLLO_CLOSED_LANE_MIN_LENGTH_METERS && chord < APOLLO_CLOSED_LANE_MAX_CHORD_METERS;
+  });
+  addCheck(
+    'lane-closed-loop',
+    closedLoopLanes.length ? 'error' : 'ok',
+    'Closed / self-returning lanes 闭合或折返车道',
+    closedLoopLanes.length
+      ? `${closedLoopLanes.length} 条车道是闭合/折返环线（起点≈终点）。Apollo 车道必须是开放、有方向的线段，不能把一个环画成一条车道。请把每个环拆成多段首尾相接的开放车道；自交的八字还需在交叉处加路口(junction)。`
+      : 'No closed or self-returning lanes; all lanes are open directional segments.',
+    {
+      laneIds: closedLoopLanes
+        .map((lane) => lane.id?.id)
+        .filter(Boolean)
+        .slice(0, 50),
+    },
   );
   const errors = checks.filter((check) => check.status === 'error');
   const warningChecks = checks.filter((check) => check.status === 'warning');
