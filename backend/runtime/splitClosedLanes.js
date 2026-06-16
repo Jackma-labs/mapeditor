@@ -15,6 +15,7 @@
 // separate, opt-in step). The user's source editor_map is never modified — this
 // runs on the in-memory map during conversion only.
 
+const { distance: dist, polylineLength, cubicBezier: cubicBezierPoint } = require('./geometry');
 const { CLOSED_LANE_MAX_CHORD_METERS, CLOSED_LANE_MIN_LENGTH_METERS } = require('./closedLaneThresholds');
 const CLOSED_DUPLICATE_POINT_METERS = 0.6;
 const SEGMENT_TARGET_LENGTH_METERS = 40;
@@ -35,18 +36,6 @@ function arr(value) {
 function num(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
-}
-
-function dist(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function polylineLength(points) {
-  let total = 0;
-  for (let i = 1; i < points.length; i += 1) {
-    total += dist(points[i - 1], points[i]);
-  }
-  return total;
 }
 
 function boundaryPointIds(boundary) {
@@ -93,15 +82,6 @@ function resampleClosed(points, count) {
     return points.slice(0, count);
   }
   return Array.from({ length: count }, (_unused, i) => interpAtLength(points, (total * i) / count));
-}
-
-function cubicBezierPoint(p0, p1, p2, p3, t) {
-  const u = 1 - t;
-  return {
-    x: u ** 3 * p0.x + 3 * u ** 2 * t * p1.x + 3 * u * t ** 2 * p2.x + t ** 3 * p3.x,
-    y: u ** 3 * p0.y + 3 * u ** 2 * t * p1.y + 3 * u * t ** 2 * p2.y + t ** 3 * p3.y,
-    z: u ** 3 * p0.z + 3 * u ** 2 * t * p1.z + 3 * u * t ** 2 * p2.z + t ** 3 * p3.z,
-  };
 }
 
 // Resolve a boundary's drawn geometry (expanding a single cubic bezier when the

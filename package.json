@@ -18,6 +18,7 @@
     "test:converter-geometry": "node scripts/test-converter-geometry.js",
     "test:converter-determinism": "node scripts/test-converter-determinism.js",
     "test:converter-aliases": "node scripts/test-converter-aliases.js",
+    "test:converter-golden": "node scripts/test-converter-golden.js",
     "runtime:start:win": "powershell -ExecutionPolicy Bypass -File runtime/scripts/start-apollo-runtime.ps1",
     "runtime:stop:win": "powershell -ExecutionPolicy Bypass -File runtime/scripts/stop-apollo-runtime.ps1"
   }

@@ -1,6 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const protobuf = require('protobufjs');
+const { distance, polylineLength, cubicBezier } = require('./geometry');
 const { normalizeEditorMap } = require('./normalizeEditorMap');
 const { splitClosedLanes } = require('./splitClosedLanes');
 
@@ -989,20 +990,8 @@ function pointFromEditor(point, transform = null) {
   return applyCoordinateTransform(rawPointFromEditor(point), transform);
 }
 
-function distance(a, b) {
-  return Math.hypot(number(a.x) - number(b.x), number(a.y) - number(b.y));
-}
-
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
-}
-
-function polylineLength(points) {
-  let total = 0;
-  for (let i = 1; i < points.length; i += 1) {
-    total += distance(points[i - 1], points[i]);
-  }
-  return total;
 }
 
 function interpolate(points, ratio) {
@@ -1038,15 +1027,6 @@ function interpolate(points, ratio) {
 function resample(points, count) {
   const size = Math.max(2, count);
   return Array.from({ length: size }, (_unused, index) => interpolate(points, index / (size - 1)));
-}
-
-function cubicBezier(p0, p1, p2, p3, t) {
-  const u = 1 - t;
-  return {
-    x: u ** 3 * p0.x + 3 * u ** 2 * t * p1.x + 3 * u * t ** 2 * p2.x + t ** 3 * p3.x,
-    y: u ** 3 * p0.y + 3 * u ** 2 * t * p1.y + 3 * u * t ** 2 * p2.y + t ** 3 * p3.y,
-    z: u ** 3 * p0.z + 3 * u ** 2 * t * p1.z + 3 * u * t ** 2 * p2.z + t ** 3 * p3.z,
-  };
 }
 
 function cubicBezierSampleCount(p0, p1, p2, p3) {
