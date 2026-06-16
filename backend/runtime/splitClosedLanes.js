@@ -22,6 +22,12 @@ const SEGMENT_TARGET_LENGTH_METERS = 40;
 const MIN_SEGMENTS = 3;
 const MAX_SEGMENTS = 16;
 const MIN_POINTS_PER_SEGMENT = 4;
+// Phase 2 smoothing: Taubin (lambda/mu) smoothing removes hand-drawn jitter
+// without shrinking the loop; the lane is then rebuilt at constant width.
+const SMOOTH_ITERATIONS = 30;
+const SMOOTH_LAMBDA = 0.5;
+const SMOOTH_MU = -0.53;
+const MIN_LANE_WIDTH_METERS = 1.8;
 
 function arr(value) {
   return Array.isArray(value) ? value : [];
@@ -139,10 +145,63 @@ function segmentCount(loopLength) {
   return Math.max(MIN_SEGMENTS, Math.min(MAX_SEGMENTS, byLength));
 }
 
+// One Laplacian smoothing step on a CLOSED polyline (wraps at the ends).
+function laplacianStepClosed(points, factor) {
+  const n = points.length;
+  return points.map((p, i) => {
+    const a = points[(i - 1 + n) % n];
+    const b = points[(i + 1) % n];
+    return {
+      x: p.x + factor * ((a.x + b.x) / 2 - p.x),
+      y: p.y + factor * ((a.y + b.y) / 2 - p.y),
+      z: p.z,
+    };
+  });
+}
+
+// Taubin smoothing: alternating lambda (+) and mu (-) Laplacian passes remove
+// high-frequency jitter while preserving the loop's overall size (no shrinkage).
+function taubinSmoothClosed(points) {
+  if (points.length < 4) {
+    return points;
+  }
+  let result = points;
+  for (let k = 0; k < SMOOTH_ITERATIONS; k += 1) {
+    result = laplacianStepClosed(result, SMOOTH_LAMBDA);
+    result = laplacianStepClosed(result, SMOOTH_MU);
+  }
+  return result;
+}
+
+// Build two constant-width boundary rings by offsetting a closed centerline
+// along its local normal (central-difference tangent for smooth normals).
+function offsetConstantWidthRings(center, halfWidth) {
+  const n = center.length;
+  const outer = [];
+  const inner = [];
+  for (let i = 0; i < n; i += 1) {
+    const prev = center[(i - 1 + n) % n];
+    const next = center[(i + 1) % n];
+    let tx = next.x - prev.x;
+    let ty = next.y - prev.y;
+    const len = Math.hypot(tx, ty) || 1;
+    tx /= len;
+    ty /= len;
+    const nx = -ty;
+    const ny = tx;
+    outer.push({ x: center[i].x + nx * halfWidth, y: center[i].y + ny * halfWidth, z: center[i].z });
+    inner.push({ x: center[i].x - nx * halfWidth, y: center[i].y - ny * halfWidth, z: center[i].z });
+  }
+  return { outer, inner };
+}
+
 // Main entry. Returns { map, report }. `map` is a shallow clone with closed
 // lanes replaced by connected open segments. Open lanes are passed through.
-function splitClosedLanes(editorMap) {
-  const report = { splitLanes: [], segmentsAdded: 0, skipped: [] };
+function splitClosedLanes(editorMap, options = {}) {
+  // smooth: rebuild each split loop as a smooth, constant-width lane (Phase 2).
+  // Defaults on; pass { smooth: false } for shape-preserving split (Phase 1).
+  const smooth = options.smooth !== false;
+  const report = { splitLanes: [], segmentsAdded: 0, skipped: [], smooth };
   if (!editorMap || !Array.isArray(editorMap.lane) || editorMap.lane.length === 0) {
     return { map: editorMap, report };
   }
@@ -239,10 +298,37 @@ function splitClosedLanes(editorMap) {
     const ptsPerSeg = Math.max(MIN_POINTS_PER_SEGMENT, Math.round(Math.max(left.length, right.length) / K));
     const P = K * ptsPerSeg;
 
-    // Resample both rings around the loop into P arc-spaced points, then
-    // materialize them as new point objects (so segments can share node ids).
-    const outerPts = resampleClosed(left, P);
-    const innerPts = resampleClosed(right, P);
+    let outerPts;
+    let innerPts;
+    let laneWidth = num(lane.width, 3.5);
+    if (smooth) {
+      // Phase 2: rebuild the loop as a smooth, constant-width lane. Take the
+      // midpoint centerline, Taubin-smooth it (removes hand-drawn jitter, no
+      // shrinkage), and offset both sides by the measured average half-width.
+      const leftR = resampleClosed(left, P);
+      const rightR = resampleClosed(right, P);
+      let widthSum = 0;
+      for (let i = 0; i < P; i += 1) {
+        widthSum += dist(leftR[i], rightR[i]);
+      }
+      const measuredWidth = P > 0 ? widthSum / P : num(lane.width, 3.5);
+      laneWidth = Math.max(MIN_LANE_WIDTH_METERS, measuredWidth > 0 ? measuredWidth : num(lane.width, 3.5));
+      let center = leftR.map((p, i) => ({
+        x: (p.x + rightR[i].x) / 2,
+        y: (p.y + rightR[i].y) / 2,
+        z: (p.z + rightR[i].z) / 2,
+      }));
+      center = taubinSmoothClosed(center);
+      const rings = offsetConstantWidthRings(center, laneWidth / 2);
+      outerPts = rings.outer;
+      innerPts = rings.inner;
+    } else {
+      // Phase 1: shape-preserving (no smoothing).
+      outerPts = resampleClosed(left, P);
+      innerPts = resampleClosed(right, P);
+    }
+
+    // Materialize ring points as new point objects (segments share node ids).
     const z0 = num(left[0].z);
     const outerIds = outerPts.map((pt) => {
       const id = newPointId();
@@ -257,7 +343,7 @@ function splitClosedLanes(editorMap) {
 
     const baseId = `${lane.id}__cl`;
     const boundaryType = num(leftBoundary.type, 7);
-    const width = num(lane.width, 3.5);
+    const width = laneWidth;
     const attr = lane.attr ? JSON.parse(JSON.stringify(lane.attr)) : undefined;
     for (let s = 0; s < K; s += 1) {
       const a = s * ptsPerSeg;
