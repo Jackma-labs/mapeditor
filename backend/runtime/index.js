@@ -2412,10 +2412,14 @@ function getReleasedMapManifestErrors(manifest) {
     : [];
   if (gateErrors.length > 0) {
     errors.push(...gateErrors);
-  } else if (manifest.qualityGate && manifest.qualityGate.ready === false) {
-    errors.push('release quality gate is not ready');
   } else if (!manifest.qualityGate) {
     errors.push('release quality gate metadata is missing');
+  } else if (manifest.qualityGate.ready !== true) {
+    // Require an explicit positive ready (not merely "not false"): a converter
+    // that omits ready, or writes a {} stub, must NOT vacuously pass the gate.
+    errors.push('release quality gate is not ready');
+  } else if (!Array.isArray(manifest.qualityGate.checks) || manifest.qualityGate.checks.length === 0) {
+    errors.push('release quality gate produced no checks; readiness cannot be trusted');
   }
   return errors;
 }
@@ -11050,8 +11054,32 @@ async function runEdgeNativeMapTools(config, mapDir, progress = async () => {}) 
   });
 }
 
-async function runLocalConverter(config, mapName, jsonPath, releaseDir, baseMapDir) {
+// Is the native converter binary actually executable on this host? A file that
+// merely exists (wrong arch, corrupt, missing libs) would ENOEXEC and break ALL
+// publishes; prefer the tested JS converter unless the binary can be spawned.
+async function nativeConverterUsable(config) {
   if (!(await pathExists(config.converterBinary))) {
+    return false;
+  }
+  try {
+    await runCommand(config.converterBinary, ['--help'], { timeoutMs: 5000 });
+    return true;
+  } catch (error) {
+    // error.result is set when the process ran but exited non-zero (still a
+    // usable executable). A spawn-level failure (ENOEXEC/ENOENT/EACCES) has no
+    // result -> the binary cannot run here, fall back to JS.
+    if (error && error.result) {
+      return true;
+    }
+    console.warn(
+      `[converter] native binary present but not runnable (${(error && (error.code || error.message)) || 'unknown'}); using JS converter`,
+    );
+    return false;
+  }
+}
+
+async function runLocalConverter(config, mapName, jsonPath, releaseDir, baseMapDir) {
+  if (!(await nativeConverterUsable(config))) {
     return runConverterInWorker({
       mapName,
       jsonPath,

@@ -1,6 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const protobuf = require('protobufjs');
+const { normalizeEditorMap } = require('./normalizeEditorMap');
 const { splitClosedLanes } = require('./splitClosedLanes');
 
 const LANE_TYPE = {
@@ -52,9 +53,17 @@ const APOLLO_CURVE_TARGET_SEGMENT_LENGTH_METERS = 0.4;
 const APOLLO_CURVE_EXCESS_LENGTH_PER_EXTRA_SAMPLE_METERS = 0.25;
 // A lane whose centerline returns to (within this many meters of) its start while
 // being at least this long is a closed loop / fold-back. Apollo lanes must be open
-// directional segments, so such lanes are rejected at the release gate.
-const APOLLO_CLOSED_LANE_MAX_CHORD_METERS = 2.0;
-const APOLLO_CLOSED_LANE_MIN_LENGTH_METERS = 8.0;
+// directional segments, so such lanes are rejected at the release gate. Shared with
+// splitClosedLanes so the auto-split detector and this gate never drift.
+const {
+  CLOSED_LANE_MAX_CHORD_METERS: APOLLO_CLOSED_LANE_MAX_CHORD_METERS,
+  CLOSED_LANE_MIN_LENGTH_METERS: APOLLO_CLOSED_LANE_MIN_LENGTH_METERS,
+} = require('./closedLaneThresholds');
+// Deterministic fallback for the package timestamp so conversion output (incl.
+// the encoded base_map/sim_map .bin) is byte-stable for a given editor_map.
+const APOLLO_FALLBACK_DATE = '2026-01-01T00:00:00.000Z';
+// Counter for unique temp dirs used to make package writes atomic.
+let CONVERT_TMP_SEQ = 0;
 const APOLLO_TARGET_CRS = {
   datum: 'WGS84',
   ellipsoid: 'WGS84',
@@ -1155,7 +1164,7 @@ function resolveStopLineBoundaryId(item, stopLineIndex, boundaryIndex) {
 }
 
 function boundaryPointIds(boundary) {
-  return arr(boundary?.point_id || boundary?.pointIds);
+  return arr(boundary?.point_id || boundary?.pointIds || boundary?.pointId);
 }
 
 function laneEndpointPointIds(lane, boundaryIndex, endpoint) {
@@ -1220,9 +1229,15 @@ function pointsFromBoundary(boundary, pointIndex, reverse = false, transform = n
     .map((pointId) => pointIndex.get(String(pointId)))
     .filter(Boolean);
   const ordered = reverse ? points.slice().reverse() : points.slice();
-  const rawControls = arr(boundary.controlsPosition).map((point) => pointFromEditor(point, transform));
+  const rawControls = arr(boundary.controlsPosition || boundary.controls_position).map((point) =>
+    pointFromEditor(point, transform),
+  );
   const controls = reverse ? rawControls.slice().reverse() : rawControls;
-  if (ordered.length >= 2 && controls.length >= 2) {
+  // Only treat a boundary as a single cubic Bezier when it has EXACTLY two
+  // vertices + two controls. A multi-vertex boundary (>2 points) must keep its
+  // full polyline — collapsing it to one cubic over the endpoints silently
+  // deletes the road's middle.
+  if (ordered.length === 2 && controls.length >= 2) {
     const sampleCount = cubicBezierSampleCount(ordered[0], controls[0], controls[1], ordered[ordered.length - 1]);
     return Array.from({ length: sampleCount }, (_unused, index) =>
       cubicBezier(ordered[0], controls[0], controls[1], ordered[ordered.length - 1], index / (sampleCount - 1)),
@@ -1916,11 +1931,11 @@ function computeBounds(editorMap, transform = null) {
   };
 }
 
-function createHeader(editorMap, transform = null) {
+function createHeader(editorMap, transform = null, generatedAt = null) {
   const header = editorMap.header || {};
   return {
     version: bytes(header.version || '1.0'),
-    date: bytes(header.date || new Date().toISOString()),
+    date: bytes(generatedAt || header.date || APOLLO_FALLBACK_DATE),
     projection: APOLLO_TARGET_PROJECTION,
     district: bytes(header.district || ''),
     generation: bytes('mapeditor-compat-converter'),
@@ -2064,7 +2079,7 @@ function buildOverlaps(mapMessage, laneInfos, conversionWarnings) {
   return overlaps;
 }
 
-function createMapMessage(editorMap) {
+function createMapMessage(editorMap, generatedAt = null) {
   const coordinateTransform = createCoordinateTransform(editorMap);
   const pointIndex = buildPointIndex(editorMap, coordinateTransform);
   const boundaryIndex = buildBoundaryIndex(editorMap);
@@ -2191,7 +2206,7 @@ function createMapMessage(editorMap) {
   });
 
   const mapMessage = {
-    header: createHeader(editorMap, coordinateTransform),
+    header: createHeader(editorMap, coordinateTransform, generatedAt),
     lane: laneInfos.map((item) => item.proto),
     crosswalk: arr(editorMap.crosswalk)
       .map((item) => {
@@ -2531,7 +2546,7 @@ function chooseDefaultRouteLanePath(lanes) {
   return lanes.length ? [lanes.reduce((best, lane) => (lane.length > best.length ? lane : best), lanes[0])] : [];
 }
 
-function buildDefaultRouteArtifacts(mapName, mapMessage) {
+function buildDefaultRouteArtifacts(mapName, mapMessage, generatedAt = null) {
   const lanes = buildRouteLaneRecords(mapMessage);
   if (lanes.length === 0) {
     return null;
@@ -2566,7 +2581,7 @@ function buildDefaultRouteArtifacts(mapName, mapMessage) {
     version: 1,
     mapName,
     mode: 'closed_loop_candidate',
-    generatedAt: new Date().toISOString(),
+    generatedAt: generatedAt || APOLLO_FALLBACK_DATE,
     laneIds: lanePath.map((lane) => lane.id),
     estimatedLengthMeters: Number(estimatedLengthMeters.toFixed(3)),
     startLaneId: startLane.id,
@@ -2706,7 +2721,7 @@ function extractCaptureCenter(editorMap) {
   return candidates.find(Boolean) || null;
 }
 
-function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransform) {
+function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransform, generatedAt = null) {
   const bounds = headerBounds(cleanMap);
   const captureCenter = extractCaptureCenter(editorMap);
   const sourceCrs = coordinateTransform?.sourceCrs || coordinateFrameFromEditorMap(editorMap) || 'LOCAL_ENU_METERS';
@@ -2726,7 +2741,7 @@ function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransfo
   return {
     version: 1,
     mapName,
-    generatedAt: new Date().toISOString(),
+    generatedAt: generatedAt || APOLLO_FALLBACK_DATE,
     frames: {
       acceptedSourceCrs: {
         WGS84_LON_LAT: 'longitude, latitude, height on WGS84; converted to UTM zone 50N',
@@ -2775,7 +2790,7 @@ function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransfo
   };
 }
 
-function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateMetadata, routeArtifacts }) {
+function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateMetadata, routeArtifacts, contract }) {
   const checks = [];
   const addCheck = (idValue, status, title, message, details = null) => {
     checks.push({
@@ -2836,6 +2851,24 @@ function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateM
       : 'Map bounds look like local/editor coordinates; deployment must not proceed until the coordinate anchor is fixed',
     coordinateMetadata.bounds,
   );
+  // Zone-band hard check: valid UTM easting is ~166000..834000 m. Data from the
+  // wrong UTM zone (or a mis-applied projection) lands outside this band and
+  // would be hundreds of km off on the vehicle — block it at publish, not later.
+  const zb = coordinateMetadata.bounds || {};
+  const eastingInBand =
+    Number.isFinite(zb.minX) &&
+    Number.isFinite(zb.maxX) &&
+    zb.minX >= 166000 &&
+    zb.maxX <= 834000;
+  addCheck(
+    'coordinate-zone-band',
+    eastingInBand ? 'ok' : 'error',
+    'UTM zone band 投影带校验',
+    eastingInBand
+      ? `Easting ${Math.round(zb.minX)}..${Math.round(zb.maxX)} is within UTM zone ${APOLLO_TARGET_CRS.zone} band`
+      : `Easting ${Math.round(zb.minX)}..${Math.round(zb.maxX)} 超出 UTM zone ${APOLLO_TARGET_CRS.zone} 有效带(166000..834000),坐标系/投影带可能选错`,
+    { minX: zb.minX, maxX: zb.maxX, zone: APOLLO_TARGET_CRS.zone },
+  );
   const coordinateErrors = conversionErrors.filter((warning) => /^apollo-coordinate/u.test(warning.code || ''));
   if (coordinateErrors.length > 0) {
     addCheck(
@@ -2876,6 +2909,18 @@ function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateM
   const laneCount = arr(cleanMap.lane).length;
   const routingNodeCount = arr(routingGraph.node).length;
   const routingEdgeCount = arr(routingGraph.edge).length;
+  // A publishable map must have drivable, routable content. Without this, an
+  // empty / all-dropped map can pass the (otherwise short-circuiting) routing
+  // checks and be reported ready.
+  addCheck(
+    'map-drivable-content',
+    laneCount > 0 && routingNodeCount > 0 ? 'ok' : 'error',
+    'Drivable content 可行驶内容',
+    laneCount > 0 && routingNodeCount > 0
+      ? `${laneCount} lanes, ${routingNodeCount} routing nodes`
+      : '地图没有可行驶车道/路由节点,不能发布',
+    { laneCount, routingNodeCount },
+  );
   addCheck(
     'routing-node-coverage',
     laneCount === 0 || routingNodeCount === laneCount ? 'ok' : 'error',
@@ -2961,6 +3006,57 @@ function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateM
         }
       : null,
   );
+  // Integrity: fully-supported editor elements must convert 1:1. A drop here
+  // means lanes/junctions/crosswalks/etc. were silently lost during conversion.
+  const fullDrops = arr(contract && contract.mappings).filter(
+    (m) => m.support === 'full' && Number(m.output) < Number(m.input),
+  );
+  addCheck(
+    'conversion-coverage',
+    fullDrops.length ? 'error' : 'ok',
+    'Element conversion coverage 元素转换完整性',
+    fullDrops.length
+      ? `以下要素在转换中被丢弃: ${fullDrops.map((m) => `${m.editor} ${m.input}->${m.output}`).join('; ')}`
+      : 'All fully-supported elements converted 1:1',
+    { drops: fullDrops.map((m) => ({ element: m.editor, input: m.input, output: m.output })) },
+  );
+
+  // Catch-all: any error-severity conversion warning must block the gate (not
+  // just the coordinate ones). This surfaces silent lane/junction/crosswalk drops.
+  const otherConversionErrors = conversionErrors.filter((warning) => !/^apollo-coordinate/u.test(warning.code || ''));
+  if (otherConversionErrors.length > 0) {
+    addCheck(
+      'conversion-errors',
+      'error',
+      'Conversion errors 转换错误',
+      otherConversionErrors
+        .map((warning) => warning.message || warning.code)
+        .slice(0, 10)
+        .join('; '),
+      otherConversionErrors.slice(0, 30),
+    );
+  }
+
+  // Degenerate geometry: a lane with <2 distinct points or ~zero length produces
+  // length:0 / heading:0 protos that break planning. Hard-fail them.
+  const degenerateLanes = arr(cleanMap.lane).filter((lane) => {
+    const points = lane.centralCurve?.segment?.[0]?.lineSegment?.point || [];
+    if (points.length < 2) {
+      return true;
+    }
+    const length = Number(lane.length) > 0 ? Number(lane.length) : polylineLength(points);
+    return length < 0.5 && distance(points[0], points[points.length - 1]) < 0.5;
+  });
+  addCheck(
+    'lane-geometry-valid',
+    degenerateLanes.length ? 'error' : 'ok',
+    'Lane geometry valid 车道几何有效性',
+    degenerateLanes.length
+      ? `${degenerateLanes.length} 条车道退化(零长/重合端点),无法用于规划`
+      : 'No degenerate/zero-length lanes',
+    { laneIds: degenerateLanes.map((lane) => lane.id?.id).filter(Boolean).slice(0, 50) },
+  );
+
   const closedLoopLanes = arr(cleanMap.lane).filter((lane) => {
     const points = lane.centralCurve?.segment?.[0]?.lineSegment?.point || [];
     if (points.length < 2) {
@@ -3248,8 +3344,69 @@ function buildConversionContract(editorMap, cleanMap, routingGraph, warnings) {
   };
 }
 
+// Throw on any non-finite number anywhere in the message (NaN/Inf encode
+// silently into the .bin and corrupt the map downstream).
+function assertFiniteDeep(message, path) {
+  if (message == null) {
+    return;
+  }
+  if (typeof message === 'number') {
+    if (!Number.isFinite(message)) {
+      throw new Error(`non-finite number at ${path}: ${message}`);
+    }
+    return;
+  }
+  if (typeof message !== 'object' || ArrayBuffer.isView(message)) {
+    return;
+  }
+  if (Array.isArray(message)) {
+    for (let i = 0; i < message.length; i += 1) {
+      assertFiniteDeep(message[i], `${path}[${i}]`);
+    }
+    return;
+  }
+  for (const key of Object.keys(message)) {
+    assertFiniteDeep(message[key], path ? `${path}.${key}` : key);
+  }
+}
+
+// Throw if the source object has any key that is not a declared proto field:
+// protobufjs verify() ignores unknown keys and encode() silently drops them, so
+// a misspelled/snake_case field would vanish from the .bin without error.
+function assertKnownProtoFields(type, message, path) {
+  if (message == null) {
+    return;
+  }
+  if (Array.isArray(message)) {
+    for (let i = 0; i < message.length; i += 1) {
+      assertKnownProtoFields(type, message[i], `${path}[${i}]`);
+    }
+    return;
+  }
+  if (typeof message !== 'object' || ArrayBuffer.isView(message)) {
+    return;
+  }
+  for (const key of Object.keys(message)) {
+    const field = type.fields && type.fields[key];
+    if (!field) {
+      throw new Error(
+        `unknown proto field '${path ? `${path}.` : ''}${key}' for ${type.name} — would be silently dropped from the .bin`,
+      );
+    }
+    const resolved = field.resolvedType;
+    if (resolved && resolved.fields) {
+      assertKnownProtoFields(resolved, message[key], `${path ? `${path}.` : ''}${key}`);
+    }
+  }
+}
+
 async function writeBinary(root, typeName, message, outputPath) {
+  root.resolveAll();
   const Type = root.lookupType(typeName);
+  // Self-checks BEFORE encoding so corruption fails loudly instead of producing
+  // a silently-wrong .bin.
+  assertFiniteDeep(message, typeName);
+  assertKnownProtoFields(Type, message, '');
   const error = Type.verify(message);
   if (error) {
     throw new Error(`${typeName} verify failed: ${error}`);
@@ -3259,16 +3416,32 @@ async function writeBinary(root, typeName, message, outputPath) {
 }
 
 async function convertEditorMapToApolloPackage(options) {
-  const { mapName, jsonPath, releaseDir, baseMapDir = null } = options;
+  const { mapName, jsonPath, baseMapDir = null } = options;
+  const finalReleaseDir = options.releaseDir;
+  // Atomicity: build the whole package in a sibling temp dir, then rename it
+  // onto the final release dir. A failure mid-conversion (e.g. a proto verify
+  // throw) thus never leaves a half-written/corrupt release directory.
+  const releaseDir = `${finalReleaseDir}.tmp-${process.pid}-${(CONVERT_TMP_SEQ += 1)}`;
+  await fs.rm(releaseDir, { recursive: true, force: true });
   await fs.mkdir(releaseDir, { recursive: true });
-  const rawEditorMap = JSON.parse((await fs.readFile(jsonPath, 'utf8')).replace(/^\uFEFF/, ''));
+  try {
+    const parsedEditorMap = JSON.parse((await fs.readFile(jsonPath, 'utf8')).replace(/^\uFEFF/, ''));
+    // Canonicalize all field aliases ONCE so no downstream reader can miss a
+    // field (point_id/pointId/pointIds, boundary refs, controls).
+    const { map: rawEditorMap } = normalizeEditorMap(parsedEditorMap);
   // Auto-split closed/self-returning lanes into connected open segments so loops
   // (circle/roundabout/ramp) publish as valid Apollo geometry without manual
   // re-drawing. Operates in-memory only; the source editor_map on disk is
   // untouched. Open lanes pass through unchanged.
   const { map: editorMap, report: closedLaneSplit } = splitClosedLanes(rawEditorMap);
+  // Single deterministic timestamp for the whole package (derived from the
+  // editor_map, not the conversion wall-clock) so re-converting the same map
+  // yields byte-identical output.
+  const generatedAt = String(
+    (editorMap.header && editorMap.header.date) || editorMap.updatedAt || APOLLO_FALLBACK_DATE,
+  );
   const root = createProtoRoot();
-  const mapMessage = createMapMessage(editorMap);
+  const mapMessage = createMapMessage(editorMap, generatedAt);
   const cleanMap = cleanMapForEncoding(mapMessage);
   const routingGraph = createRoutingGraph(mapMessage);
   const warnings = mapMessage._conversionWarnings || [];
@@ -3286,8 +3459,8 @@ async function convertEditorMapToApolloPackage(options) {
   }
   const coordinateTransform = mapMessage._coordinateTransform || null;
   const contract = buildConversionContract(editorMap, cleanMap, routingGraph, warnings);
-  const coordinateMetadata = buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransform);
-  const routeArtifacts = buildDefaultRouteArtifacts(mapName, mapMessage);
+  const coordinateMetadata = buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransform, generatedAt);
+  const routeArtifacts = buildDefaultRouteArtifacts(mapName, mapMessage, generatedAt);
   const warningCounts = countBySeverity(warnings);
   const qualityGate = buildReleaseQualityGate({
     cleanMap,
@@ -3295,6 +3468,7 @@ async function convertEditorMapToApolloPackage(options) {
     warnings,
     coordinateMetadata,
     routeArtifacts,
+    contract,
   });
   const files = [
     'editor_map.json',
@@ -3340,7 +3514,7 @@ async function convertEditorMapToApolloPackage(options) {
     JSON.stringify(
       {
         mapName,
-        generatedAt: new Date().toISOString(),
+        generatedAt,
         converter: 'mapeditor-js-compat',
         nativeConverter: false,
         baseMapDir,
@@ -3423,13 +3597,34 @@ async function convertEditorMapToApolloPackage(options) {
     'utf8',
   );
 
-  return {
-    stdout: `Generated Apollo-compatible map package with JS fallback: ${releaseDir}`,
-    stderr: '',
-    code: 0,
-  };
+    await fs.rm(finalReleaseDir, { recursive: true, force: true });
+    await fs.rename(releaseDir, finalReleaseDir);
+    return {
+      stdout: `Generated Apollo-compatible map package with JS fallback: ${finalReleaseDir}`,
+      stderr: '',
+      code: 0,
+    };
+  } catch (error) {
+    await fs.rm(releaseDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 module.exports = {
   convertEditorMapToApolloPackage,
+  // Test-only exports: give numerically-sensitive internals a fast unit-test
+  // anchor (projection round-trip, geometry invariants) so refactors are safe.
+  __test__: {
+    APOLLO_TARGET_CRS,
+    forwardTransverseMercator,
+    inverseTransverseMercator,
+    wgs84LonLatToUtmZone50,
+    gaussKrugerCm114ToUtmZone50,
+    createCoordinateTransform,
+    applyCoordinateTransform,
+    distance,
+    polylineLength,
+    interpolate,
+    cubicBezier,
+  },
 };

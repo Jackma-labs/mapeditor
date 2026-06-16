@@ -15,8 +15,7 @@
 // separate, opt-in step). The user's source editor_map is never modified — this
 // runs on the in-memory map during conversion only.
 
-const CLOSED_LANE_MAX_CHORD_METERS = 2.0;
-const CLOSED_LANE_MIN_LENGTH_METERS = 8.0;
+const { CLOSED_LANE_MAX_CHORD_METERS, CLOSED_LANE_MIN_LENGTH_METERS } = require('./closedLaneThresholds');
 const CLOSED_DUPLICATE_POINT_METERS = 0.6;
 const SEGMENT_TARGET_LENGTH_METERS = 40;
 const MIN_SEGMENTS = 3;
@@ -173,6 +172,43 @@ function taubinSmoothClosed(points) {
   return result;
 }
 
+// Nearest point on segment a-b to p (with distance).
+function nearestOnSegment(p, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const l2 = dx * dx + dy * dy;
+  if (l2 <= 0) {
+    return { x: a.x, y: a.y, z: a.z, d: Math.hypot(p.x - a.x, p.y - a.y) };
+  }
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2;
+  t = Math.max(0, Math.min(1, t));
+  const x = a.x + dx * t;
+  const y = a.y + dy * t;
+  return { x, y, z: a.z, d: Math.hypot(p.x - x, p.y - y) };
+}
+
+// Nearest point (and distance) from p to a closed polyline. Phase/winding
+// independent — used to pair the two boundaries correctly regardless of where
+// each ring's point[0] starts or which way the loop is wound.
+function nearestOnClosedPolyline(p, poly) {
+  let best = null;
+  for (let i = 0; i < poly.length; i += 1) {
+    const q = nearestOnSegment(p, poly[i], poly[(i + 1) % poly.length]);
+    if (!best || q.d < best.d) {
+      best = q;
+    }
+  }
+  return best;
+}
+
+function avgDistanceToPolyline(ring, poly) {
+  let sum = 0;
+  for (const p of ring) {
+    sum += nearestOnClosedPolyline(p, poly).d;
+  }
+  return ring.length ? sum / ring.length : Infinity;
+}
+
 // Build two constant-width boundary rings by offsetting a closed centerline
 // along its local normal (central-difference tangent for smooth normals).
 function offsetConstantWidthRings(center, halfWidth) {
@@ -302,26 +338,31 @@ function splitClosedLanes(editorMap, options = {}) {
     let innerPts;
     let laneWidth = num(lane.width, 3.5);
     if (smooth) {
-      // Phase 2: rebuild the loop as a smooth, constant-width lane. Take the
-      // midpoint centerline, Taubin-smooth it (removes hand-drawn jitter, no
-      // shrinkage), and offset both sides by the measured average half-width.
+      // Phase 2: rebuild the loop as a smooth, constant-width lane.
+      // Pair the two boundaries by NEAREST POINT (not by index) so the result is
+      // independent of where each ring starts and which way the loop is wound —
+      // index-pairing inflated widths and swapped left/right (the two P1 bugs).
       const leftR = resampleClosed(left, P);
       const rightR = resampleClosed(right, P);
       let widthSum = 0;
-      for (let i = 0; i < P; i += 1) {
-        widthSum += dist(leftR[i], rightR[i]);
-      }
+      const center = leftR.map((p) => {
+        const np = nearestOnClosedPolyline(p, rightR);
+        widthSum += np.d;
+        return { x: (p.x + np.x) / 2, y: (p.y + np.y) / 2, z: (p.z + np.z) / 2 };
+      });
       const measuredWidth = P > 0 ? widthSum / P : num(lane.width, 3.5);
       laneWidth = Math.max(MIN_LANE_WIDTH_METERS, measuredWidth > 0 ? measuredWidth : num(lane.width, 3.5));
-      let center = leftR.map((p, i) => ({
-        x: (p.x + rightR[i].x) / 2,
-        y: (p.y + rightR[i].y) / 2,
-        z: (p.z + rightR[i].z) / 2,
-      }));
-      center = taubinSmoothClosed(center);
-      const rings = offsetConstantWidthRings(center, laneWidth / 2);
-      outerPts = rings.outer;
-      innerPts = rings.inner;
+      const smoothed = taubinSmoothClosed(center);
+      const rings = offsetConstantWidthRings(smoothed, laneWidth / 2);
+      // Assign the ring closest to the ORIGINAL left boundary as the left
+      // boundary (outerPts feeds left_boundary_id below), regardless of winding.
+      if (avgDistanceToPolyline(rings.outer, leftR) <= avgDistanceToPolyline(rings.inner, leftR)) {
+        outerPts = rings.outer;
+        innerPts = rings.inner;
+      } else {
+        outerPts = rings.inner;
+        innerPts = rings.outer;
+      }
     } else {
       // Phase 1: shape-preserving (no smoothing).
       outerPts = resampleClosed(left, P);
