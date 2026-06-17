@@ -700,7 +700,11 @@ function inverseTransverseMercator(x, y, options, z = 0) {
   const a = WGS84_A;
   const k0 = options.scaleFactor;
   const falseEasting = options.falseEastingMeters;
-  const falseNorthing = options.falseNorthingMeters || 0;
+  // Symmetric with forwardTransverseMercator's southern branch: a southern-
+  // hemisphere CRS carries a 10,000,000 m false northing that must be removed
+  // before the inverse series, otherwise the recovered latitude is ~90deg wrong.
+  const isSouth = String(options.hemisphere || '').toLowerCase() === 'south';
+  const falseNorthing = isSouth ? options.falseNorthingSouthMeters || 0 : options.falseNorthingMeters || 0;
   const lonOriginRad = (options.centralMeridianDeg * Math.PI) / 180;
   const e1 = (1 - Math.sqrt(1 - WGS84_E_SQ)) / (1 + Math.sqrt(1 - WGS84_E_SQ));
   const adjustedX = x - falseEasting;
@@ -744,6 +748,26 @@ function wgs84LonLatToUtmZone50(lon, lat, z = 0) {
 function gaussKrugerCm114ToUtmZone50(x, y, z = 0) {
   const lonLat = inverseTransverseMercator(x, y, GAUSS_KRUGER_CM114_CRS, z);
   return wgs84LonLatToUtmZone50(lonLat.lon, lonLat.lat, z);
+}
+
+// Quantify the editor-frame-axis assumption for LOCAL_ENU maps projected via the
+// GK grid. The converter adds local offsets straight onto the GK grid (treating
+// the editor axes as grid-aligned). If the editor frame were instead true-ENU,
+// the GK-grid convergence at the origin would rotate the map; this bounds that
+// potential error (= maxRadius * sin(convergence)) so the quality gate can
+// surface it, and records that the source datum is an unverified assumption.
+function gkFrameConvergenceMeta(sourceOrigin, rawPoints) {
+  const ll = inverseTransverseMercator(sourceOrigin.x, sourceOrigin.y, GAUSS_KRUGER_CM114_CRS);
+  const deltaLonRad = ((ll.lon - GAUSS_KRUGER_CM114_CRS.centralMeridianDeg) * Math.PI) / 180;
+  const gammaRad = Math.atan(Math.tan(deltaLonRad) * Math.sin((ll.lat * Math.PI) / 180));
+  const maxRadius = arr(rawPoints).reduce((m, p) => Math.max(m, Math.hypot(number(p.x), number(p.y))), 0);
+  return {
+    frameAxisAssumption: 'projected-grid-aligned',
+    gridConvergenceDeg: Number(((gammaRad * 180) / Math.PI).toFixed(4)),
+    maxFrameRotationErrorMeters: Number((maxRadius * Math.abs(Math.sin(gammaRad))).toFixed(3)),
+    sourceDatumAssumed: GAUSS_KRUGER_CM114_CRS.datum,
+    sourceDatumConfirmed: false,
+  };
 }
 
 function rawPointFromEditor(point) {
@@ -836,6 +860,7 @@ function createCoordinateTransform(editorMap) {
       sourceCrsDefinition: GAUSS_KRUGER_CM114_CRS,
       sourceOrigin: baseMapCenter,
       targetOrigin,
+      ...gkFrameConvergenceMeta(baseMapCenter, rawPoints),
       targetCrs: APOLLO_TARGET_CRS,
       origin: targetOrigin,
       targetCenter: {
@@ -899,6 +924,7 @@ function createCoordinateTransform(editorMap) {
       sourceCrsDefinition: GAUSS_KRUGER_CM114_CRS,
       sourceOrigin: projectedAnchor.sourceOrigin,
       targetOrigin,
+      ...gkFrameConvergenceMeta(projectedAnchor.sourceOrigin, rawPoints),
       targetCrs: APOLLO_TARGET_CRS,
       origin: targetOrigin,
       targetCenter: {
@@ -2770,6 +2796,16 @@ function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransfo
     sourceCrsDefinition: coordinateTransform?.sourceCrsDefinition || null,
     targetCrs: APOLLO_TARGET_CRS,
     apolloHeaderProjection: APOLLO_TARGET_CRS.proj4,
+    // Anchor provenance (carried from the editor map) so the quality gate / deploy
+    // can surface an inferred (vs surveyed) origin before production driving.
+    anchor: editorMap?.coordinateMetadata?.anchor || editorMap?.anchor
+      ? {
+          source: (editorMap.coordinateMetadata?.anchor || editorMap.anchor).source || null,
+          confidence: (editorMap.coordinateMetadata?.anchor || editorMap.anchor).confidence || null,
+          referenceMap: (editorMap.coordinateMetadata?.anchor || editorMap.anchor).referenceMap || null,
+          sourceCrs: (editorMap.coordinateMetadata?.anchor || editorMap.anchor).sourceCrs || null,
+        }
+      : null,
     transform: coordinateTransform
       ? {
           mode: coordinateTransform.mode,
@@ -2781,6 +2817,12 @@ function buildCoordinateMetadata(mapName, editorMap, cleanMap, coordinateTransfo
           targetOrigin: coordinateTransform.targetOrigin || null,
           localCenter: coordinateTransform.localCenter,
           targetCenter: coordinateTransform.targetCenter,
+          // Frame-axis / datum risk metadata (GK-projected LOCAL_ENU maps).
+          frameAxisAssumption: coordinateTransform.frameAxisAssumption || null,
+          gridConvergenceDeg: coordinateTransform.gridConvergenceDeg ?? null,
+          maxFrameRotationErrorMeters: coordinateTransform.maxFrameRotationErrorMeters ?? null,
+          sourceDatumAssumed: coordinateTransform.sourceDatumAssumed || null,
+          sourceDatumConfirmed: coordinateTransform.sourceDatumConfirmed ?? null,
         }
       : null,
     bounds,
@@ -2879,6 +2921,73 @@ function buildReleaseQualityGate({ cleanMap, routingGraph, warnings, coordinateM
       : `Easting ${Math.round(zb.minX)}..${Math.round(zb.maxX)} 超出 UTM zone ${APOLLO_TARGET_CRS.zone} 有效带(166000..834000),坐标系/投影带可能选错`,
     { minX: zb.minX, maxX: zb.maxX, zone: APOLLO_TARGET_CRS.zone },
   );
+  // Northern-hemisphere northing sanity (complements the easting band): valid UTM
+  // northing for zone 50N is ~0..9329005 m. A southern false-northing leak (10^7)
+  // or a broken inverse projection lands outside this and would be thousands of km
+  // off; the easting-only band would miss it.
+  const northingInBand =
+    Number.isFinite(zb.minY) && Number.isFinite(zb.maxY) && zb.minY >= 0 && zb.maxY <= 9400000;
+  addCheck(
+    'coordinate-northing-band',
+    northingInBand ? 'ok' : 'error',
+    'UTM northing band 北向带校验',
+    northingInBand
+      ? `Northing ${Math.round(zb.minY)}..${Math.round(zb.maxY)} is within the northern UTM band`
+      : `Northing ${Math.round(zb.minY)}..${Math.round(zb.maxY)} 超出北半球 UTM 有效带(0..9400000),投影/半球可能选错`,
+    { minY: zb.minY, maxY: zb.maxY },
+  );
+  // Frame-axis (grid-convergence) risk for LOCAL_ENU maps projected via the GK
+  // grid: the converter assumes editor axes are grid-aligned. If the editor frame
+  // were true-ENU instead, the map is rotated by the grid convergence, up to
+  // maxFrameRotationErrorMeters at the edge. Surface (not block) when non-trivial.
+  const tf = coordinateMetadata?.transform || {};
+  const frameRotErr = Number(tf.maxFrameRotationErrorMeters);
+  if (Number.isFinite(frameRotErr)) {
+    const frameOk = frameRotErr <= 0.5;
+    addCheck(
+      'coordinate-frame-convergence',
+      frameOk ? 'ok' : 'warning',
+      'Editor frame axis assumption 编辑器坐标轴假设',
+      frameOk
+        ? `Grid convergence ${tf.gridConvergenceDeg}deg implies <=0.5m even if the editor frame is not grid-aligned`
+        : `Grid convergence ${tf.gridConvergenceDeg}deg: if the editor frame is true-ENU (not GK-grid-aligned), the map is rotated up to ${frameRotErr}m at its edge — confirm the point-cloud frame is the projected grid`,
+      {
+        gridConvergenceDeg: tf.gridConvergenceDeg,
+        maxFrameRotationErrorMeters: frameRotErr,
+        frameAxisAssumption: tf.frameAxisAssumption || null,
+      },
+    );
+  }
+  // Source datum is an assumption (the GK point cloud carries no CRS); a non-WGS84/
+  // CGCS2000 datum (e.g. Beijing54) would shift the whole map tens of metres vs RTK.
+  if (tf.sourceDatumAssumed && tf.sourceDatumConfirmed !== true) {
+    addCheck(
+      'coordinate-source-datum',
+      'warning',
+      'Source datum 源基准',
+      `Source datum assumed "${tf.sourceDatumAssumed}" (unverified); confirm the point-cloud projection datum — a non-WGS84/CGCS2000 datum would misalign the map by tens of metres.`,
+      { sourceDatumAssumed: tf.sourceDatumAssumed, sourceDatumConfirmed: false },
+    );
+  }
+  // Anchor provenance: an inferred anchor (vs surveyed/explicit) directly sets the
+  // map origin; surface it so an operator can confirm before production driving.
+  const anchorMeta = coordinateMetadata?.anchor || {};
+  const anchorInferred =
+    /inferred_|edge_pose/i.test(String(anchorMeta.source || '')) ||
+    /edge_pose|inferred/i.test(String(anchorMeta.confidence || ''));
+  if (anchorInferred) {
+    addCheck(
+      'coordinate-anchor-provenance',
+      'warning',
+      'Anchor provenance 锚点来源',
+      `Coordinate anchor was inferred (${anchorMeta.confidence || anchorMeta.source}), not surveyed; verify the map origin against a known control point before production driving.`,
+      {
+        source: anchorMeta.source || null,
+        confidence: anchorMeta.confidence || null,
+        referenceMap: anchorMeta.referenceMap || null,
+      },
+    );
+  }
   const coordinateErrors = conversionErrors.filter((warning) => /^apollo-coordinate/u.test(warning.code || ''));
   if (coordinateErrors.length > 0) {
     addCheck(

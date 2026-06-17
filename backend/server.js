@@ -1916,7 +1916,7 @@ async function findBaseMapDirByCenter(baseCenter) {
   }
   const maxDistanceMeters = Number(process.env.MAP_BASE_MAP_CENTER_MATCH_METERS || 2);
   const baseMaps = await listBaseMaps();
-  let best = null;
+  const matches = [];
   for (const baseMapName of baseMaps) {
     const baseMapDir = path.join(config.baseMapRoot, baseMapName);
     const source = await readBaseMapCoordinateSource(baseMapDir).catch((error) => {
@@ -1931,15 +1931,26 @@ async function findBaseMapDirByCenter(baseCenter) {
     if (!Number.isFinite(distanceMeters) || distanceMeters > maxDistanceMeters) {
       continue;
     }
-    if (!best || distanceMeters < best.distanceMeters) {
-      best = {
-        baseMapName,
-        baseMapDir,
-        sourceFile: source.sourceFile,
-        center,
-        distanceMeters,
-      };
-    }
+    matches.push({ baseMapName, baseMapDir, sourceFile: source.sourceFile, center, distanceMeters });
+  }
+  if (matches.length === 0) {
+    return null;
+  }
+  matches.sort((left, right) => left.distanceMeters - right.distanceMeters);
+  const best = matches[0];
+  // Center proximity alone cannot distinguish adjacent/overlapping captures: if
+  // more than one base map centroid falls within the match tolerance, surface the
+  // ambiguity (and which others matched) rather than silently binding the nearest.
+  if (matches.length > 1) {
+    best.ambiguous = true;
+    best.otherMatches = matches
+      .slice(1, 4)
+      .map((match) => ({ baseMapName: match.baseMapName, distanceMeters: Number(match.distanceMeters.toFixed(3)) }));
+    log(
+      `Base-map center match is ambiguous: ${matches.length} base maps within ${maxDistanceMeters}m of the editor center ` +
+        `(nearest ${best.baseMapName} @${best.distanceMeters.toFixed(3)}m, next ${matches[1].baseMapName} @${matches[1].distanceMeters.toFixed(3)}m). ` +
+        `Confirm the correct base map before publishing.`,
+    );
   }
   return best;
 }
@@ -2250,7 +2261,24 @@ async function findApolloAnchorForBaseCenter(mapName, baseCenter) {
     }
   }
 
-  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  // Prefer the most TRUSTED anchor donor, not merely the most recently edited:
+  // released (quality-gate-passing) maps before unreleased editor maps; then the
+  // geometrically nearest base center; then a surveyed/explicit anchor over an
+  // inferred one; mtime only as a final tie-break. Picking newest-by-mtime let a
+  // recently re-saved but wrongly/loosely-anchored sibling win.
+  const isInferredAnchor = (candidate) =>
+    /inferred_|edge_pose/i.test(
+      String(candidate.anchor?.source || candidate.projectedAnchor?.source || candidate.anchor?.confidence || ""),
+    )
+      ? 1
+      : 0;
+  candidates.sort(
+    (left, right) =>
+      (left.kind === "released_map" ? 0 : 1) - (right.kind === "released_map" ? 0 : 1) ||
+      left.baseCenterDistance - right.baseCenterDistance ||
+      isInferredAnchor(left) - isInferredAnchor(right) ||
+      right.mtimeMs - left.mtimeMs,
+  );
   return candidates[0] || null;
 }
 

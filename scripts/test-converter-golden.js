@@ -18,8 +18,8 @@ const GOLDEN = {
   'base_map.bin': 'b5f3481c0392d350',
   'sim_map.bin': 'b5f3481c0392d350',
   'routing_map.bin': 'c8f8c309d19d9fdf',
-  'coordinate_metadata.json': '494eef8a26b866f3',
-  'quality_gate.json': 'd5f3edc5f3d75c44',
+  'coordinate_metadata.json': 'eb591eb8f4c60cb3',
+  'quality_gate.json': 'd7cca6c2f7b76b66',
 };
 
 function syntheticMap() {

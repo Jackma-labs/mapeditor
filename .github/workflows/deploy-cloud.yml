@@ -52,6 +52,7 @@ jobs:
           npm run test:converter-golden
           npm run test:edge-dreamview-switch
           npm run test:converter-default-routing
+          npm run test:converter-coordinate-safety
           # Fixture regression: runs locally where data/ exists; skips on CI.
           npm run regression:maps
 

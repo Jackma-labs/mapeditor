@@ -21,6 +21,7 @@
     "test:converter-golden": "node scripts/test-converter-golden.js",
     "test:edge-dreamview-switch": "node scripts/test-edge-dreamview-switch.js",
     "test:converter-default-routing": "node scripts/test-converter-default-routing.js",
+    "test:converter-coordinate-safety": "node scripts/test-converter-coordinate-safety.js",
     "runtime:start:win": "powershell -ExecutionPolicy Bypass -File runtime/scripts/start-apollo-runtime.ps1",
     "runtime:stop:win": "powershell -ExecutionPolicy Bypass -File runtime/scripts/stop-apollo-runtime.ps1"
   }

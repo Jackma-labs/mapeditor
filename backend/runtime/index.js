@@ -1301,6 +1301,28 @@ function buildLocalizationQualityGate({
       errorDistanceMeters,
     },
   );
+  // Heading-vs-lane alignment: a systematic frame rotation (e.g. grid
+  // convergence) shows up as the vehicle heading being consistently offset from
+  // the lane it sits on. Fold the 180deg forward/backward ambiguity, and only
+  // flag a SMALL suspicious offset (a gross offset just means the vehicle is
+  // parked off-heading, not a map rotation). Warning-only by design.
+  if (Number.isFinite(pose?.heading) && Number.isFinite(nearest?.heading)) {
+    const raw = pose.heading - nearest.heading;
+    const wrapped = Math.abs(Math.atan2(Math.sin(raw), Math.cos(raw)));
+    const headingDelta = Math.min(wrapped, Math.PI - wrapped);
+    const suspiciousRotation = headingDelta > headingErrorRadians && headingDelta < (15 * Math.PI) / 180;
+    addCheck(
+      'lane-heading-alignment',
+      suspiciousRotation ? 'warning' : 'ok',
+      `Vehicle heading differs from nearest lane heading by ${((headingDelta * 180) / Math.PI).toFixed(2)}deg`,
+      {
+        vehicleHeadingRad: pose.heading,
+        laneHeadingRad: nearest.heading,
+        deltaDegrees: (headingDelta * 180) / Math.PI,
+        headingErrorRadians,
+      },
+    );
+  }
   const rank = { ok: 0, warning: 1, error: 2 };
   const status = checks.reduce((current, check) => (rank[check.status] > rank[current] ? check.status : current), 'ok');
   return {
@@ -1364,6 +1386,35 @@ async function validateReleasedMapAgainstEdgePose(config, sourceDir, mapBounds =
     warningDistanceMeters,
     errorDistanceMeters,
     message: `vehicle to nearest lane centerline is ${nearest.distanceMeters.toFixed(2)}m; localization gate ${localizationGate.status}`,
+  };
+}
+
+// Decide whether a vehicle-pose validation result should BLOCK the edge deploy.
+// - present + misaligned (status 'error', e.g. nearest-lane distance exceeds
+//   vehicleLaneErrorDistanceMeters) blocks when the localization gate is required;
+// - a missing lane centerline always blocks (the check could not run at all);
+// - an unavailable live pose (the common deploy-from-office case) blocks ONLY
+//   when explicitly required via requireVehiclePoseForDeploy, so default behavior
+//   is preserved while a real present-but-misaligned vehicle can no longer ship.
+function evaluateVehiclePoseDeployCheck(vehiclePoseValidation, edgeDeploy = {}) {
+  if (!vehiclePoseValidation) {
+    return null;
+  }
+  const requireLocalizationGate = edgeDeploy.requireLocalizationGate !== false;
+  const requireVehiclePose = edgeDeploy.requireVehiclePoseForDeploy === true;
+  if (vehiclePoseValidation.available) {
+    const status = vehiclePoseValidation.status || 'warning';
+    return { available: true, ok: status === 'ok', status, blocking: requireLocalizationGate && status === 'error' };
+  }
+  const missingLaneCenterline = /no lane central_curve|nearest lane centerline could not be computed/i.test(
+    vehiclePoseValidation.message || '',
+  );
+  return {
+    available: false,
+    ok: false,
+    status: 'error',
+    missingLaneCenterline,
+    blocking: missingLaneCenterline || (requireLocalizationGate && requireVehiclePose),
   };
 }
 
@@ -10658,37 +10709,39 @@ async function preflightEdgeDeploy(config, params = {}) {
       vehiclePoseValidation,
       deployConfig,
     });
+    const vehiclePoseCheck = evaluateVehiclePoseDeployCheck(vehiclePoseValidation, config.edgeDeploy);
     if (vehiclePoseValidation?.available) {
-      const vehiclePoseStatus = vehiclePoseValidation.status || 'warning';
-      const vehiclePoseBlocksDeploy = false;
+      const blocks = vehiclePoseCheck.blocking;
       addCheck(
         'selected-map-vehicle-pose',
-        vehiclePoseStatus === 'ok',
-        vehiclePoseStatus === 'ok' ? 'warning' : 'warning',
-        vehiclePoseStatus === 'ok'
+        vehiclePoseCheck.ok,
+        blocks ? 'error' : 'warning',
+        vehiclePoseCheck.ok
           ? `${mapName}: ${vehiclePoseValidation.message}`
-          : `${mapName}: ${vehiclePoseValidation.message}; deployment allowed, verify localization before driving`,
+          : blocks
+            ? `${mapName}: ${vehiclePoseValidation.message}; deploy blocked: vehicle is misaligned with the published map (set edgeDeploy.requireLocalizationGate=false to override)`
+            : `${mapName}: ${vehiclePoseValidation.message}; deployment allowed, verify localization before driving`,
         {
           ...vehiclePoseValidation,
-          deploymentBlocking: vehiclePoseBlocksDeploy,
-          deploymentAdvisory: true,
+          deploymentBlocking: blocks,
+          deploymentAdvisory: !blocks,
         },
       );
     } else if (vehiclePoseValidation) {
-      const missingLaneCenterline = /no lane central_curve|nearest lane centerline could not be computed/i.test(
-        vehiclePoseValidation.message || '',
-      );
+      const blocks = vehiclePoseCheck.blocking;
       addCheck(
         'selected-map-vehicle-pose',
         false,
-        missingLaneCenterline ? 'error' : 'warning',
-        missingLaneCenterline
+        blocks ? 'error' : 'warning',
+        vehiclePoseCheck.missingLaneCenterline
           ? `${mapName}: vehicle-to-lane check skipped: ${vehiclePoseValidation.message}`
-          : `${mapName}: vehicle-to-lane check skipped: ${vehiclePoseValidation.message}; deployment allowed, verify localization before driving`,
+          : blocks
+            ? `${mapName}: vehicle-to-lane check could not run and a live pose is required: ${vehiclePoseValidation.message}`
+            : `${mapName}: vehicle-to-lane check skipped: ${vehiclePoseValidation.message}; deployment allowed, verify localization before driving`,
         {
           ...vehiclePoseValidation,
-          deploymentBlocking: missingLaneCenterline,
-          deploymentAdvisory: !missingLaneCenterline,
+          deploymentBlocking: blocks,
+          deploymentAdvisory: !blocks,
         },
       );
     }
@@ -11605,5 +11658,6 @@ module.exports = {
   // Dreamview switch command forces a clean restart + dedupes the flagfile.
   __test__: {
     buildEdgeDreamviewSwitchCommand,
+    evaluateVehiclePoseDeployCheck,
   },
 };
