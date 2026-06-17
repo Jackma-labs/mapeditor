@@ -13,7 +13,7 @@ const { PNG } = require('pngjs');
 const WebSocketClient = require('ws');
 const { Client: SshClient } = require('ssh2');
 const { Worker } = require('worker_threads');
-const { convertEditorMapToApolloPackage } = require('./editorMapConverter');
+const { convertEditorMapToApolloPackage, wgs84LonLatToUtmZone50 } = require('./editorMapConverter');
 const { runCommand } = require('./process');
 
 const CONVERTER_WORKER_PATH = path.join(__dirname, 'editorMapConverterWorker.js');
@@ -1196,6 +1196,139 @@ async function readEdgeLocalizationPose(config) {
     timeoutMs: 25000,
   });
   return parseLocalizationPose(result.stdout || '');
+}
+
+// ---- RTK georeference verification ----
+// Raw GNSS best_pose samples are the vehicle's INDEPENDENT WGS84 position (no map
+// involved), so they are valid ground truth for checking the published map's
+// georeference. Parse apollo.drivers.gnss.GnssBestPose text output.
+function parseRtkBestPoses(stdout) {
+  const re =
+    /sol_type:\s*(\w+)[\s\S]*?latitude:\s*(-?[\d.]+)\s*longitude:\s*(-?[\d.]+)\s*height_msl:\s*(-?[\d.]+)\s*latitude_std_dev:\s*(-?[\d.]+)\s*longitude_std_dev:\s*(-?[\d.]+)/g;
+  const samples = [];
+  let m;
+  while ((m = re.exec(stdout))) {
+    const lat = Number(m[2]);
+    const lon = Number(m[3]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      continue;
+    }
+    samples.push({
+      solType: m[1],
+      lat,
+      lon,
+      heightMsl: Number(m[4]),
+      latStd: Number(m[5]),
+      lonStd: Number(m[6]),
+      rtkFixed: /RTK_?FIXED|NARROW_INT/i.test(m[1]),
+    });
+  }
+  return samples;
+}
+
+async function readEdgeRtkBestPose(config, options = {}) {
+  const headLines = Number(options.headLines || 240);
+  const command = [
+    'set +e',
+    'source /apollo/cyber/setup.bash >/dev/null 2>&1 || true',
+    'CC=$(command -v cyber_channel 2>/dev/null || echo /apollo/bazel-bin/cyber/tools/cyber_channel/cyber_channel)',
+    `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python timeout 8 "$CC" echo /apollo/sensor/gnss/best_pose 2>/dev/null | head -n ${headLines} || true`,
+    'true',
+  ].join('\n');
+  const container = String(config.edgeDeploy.dockerContainer || '').trim();
+  const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
+    timeoutMs: 25000,
+  });
+  return parseRtkBestPoses(result.stdout || '');
+}
+
+// Verify the published map's georeference against independent RTK ground truth:
+// reproject each RTK sample (WGS84) into the map's UTM50 frame and measure its
+// distance to the nearest published lane centerline. A correct georeference puts
+// an on-loop, RTK-fixed vehicle within a lane; a wrong datum shows up as a
+// tens-of-metres offset, a frame rotation as ~metre-scale at the loop edge.
+async function verifyMapGeoreferenceAgainstRtk(config, mapName, sourceDir, options = {}) {
+  const toleranceMeters = Number(options.toleranceMeters ?? config.edgeDeploy.georeferenceToleranceMeters ?? 2.0);
+  const generatedAt = options.generatedAt || new Date().toISOString();
+  const laneCenterlines = await readApolloMapLaneCenterlines(sourceDir);
+  if (laneCenterlines.length === 0) {
+    return { confirmed: false, available: false, reason: 'base_map.txt has no lane central_curve points' };
+  }
+  const samples = options.samples || (await readEdgeRtkBestPose(config));
+  const fixed = samples.filter((sample) => sample.rtkFixed);
+  if (fixed.length === 0) {
+    return {
+      confirmed: false,
+      available: false,
+      rtkFixed: false,
+      sampleCount: samples.length,
+      reason: samples.length
+        ? 'no RTK-fixed (INS_RTKFIXED) GNSS samples available'
+        : 'no GNSS best_pose samples available from the edge',
+    };
+  }
+  const evaluated = fixed
+    .map((sample) => {
+      const utm = wgs84LonLatToUtmZone50(sample.lon, sample.lat);
+      const nearest = nearestPointOnLaneCenterlines({ x: utm.x, y: utm.y }, laneCenterlines);
+      return {
+        lat: sample.lat,
+        lon: sample.lon,
+        solType: sample.solType,
+        rtkStdMeters: Number(Math.hypot(sample.latStd || 0, sample.lonStd || 0).toFixed(3)),
+        utm: { x: Number(utm.x.toFixed(3)), y: Number(utm.y.toFixed(3)) },
+        laneDistanceMeters: nearest ? Number(nearest.distanceMeters.toFixed(3)) : null,
+      };
+    })
+    .filter((entry) => Number.isFinite(entry.laneDistanceMeters));
+  if (evaluated.length === 0) {
+    return { confirmed: false, available: false, rtkFixed: true, reason: 'could not project RTK samples onto lanes' };
+  }
+  const maxLaneDistanceMeters = Math.max(...evaluated.map((entry) => entry.laneDistanceMeters));
+  const xs = evaluated.map((entry) => entry.utm.x);
+  const ys = evaluated.map((entry) => entry.utm.y);
+  const rtkSpreadMeters = Number(Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)).toFixed(2));
+  let mnX = Infinity;
+  let mxX = -Infinity;
+  let mnY = Infinity;
+  let mxY = -Infinity;
+  for (const poly of laneCenterlines) {
+    for (const p of poly) {
+      mnX = Math.min(mnX, p.x);
+      mxX = Math.max(mxX, p.x);
+      mnY = Math.min(mnY, p.y);
+      mxY = Math.max(mxY, p.y);
+    }
+  }
+  const loopSpanMeters = Number(Math.hypot(mxX - mnX, mxY - mnY).toFixed(2));
+  const loopCoverageRatio = loopSpanMeters > 0 ? Number((rtkSpreadMeters / loopSpanMeters).toFixed(2)) : 0;
+  const withinTolerance = maxLaneDistanceMeters <= toleranceMeters;
+  // 'loop' coverage also excludes a position-dependent frame rotation; a single
+  // area still decisively excludes a gross datum/anchor error (tens of metres).
+  const confidence = loopCoverageRatio >= 0.4 ? 'loop' : 'point';
+  const verification = {
+    version: 1,
+    mapName,
+    method: 'rtk-best-pose-vs-lane',
+    generatedAt,
+    confirmed: Boolean(withinTolerance),
+    confidence,
+    toleranceMeters,
+    maxLaneDistanceMeters: Number(maxLaneDistanceMeters.toFixed(3)),
+    rtkFixedSampleCount: evaluated.length,
+    rtkSpreadMeters,
+    loopSpanMeters,
+    loopCoverageRatio,
+    samples: evaluated.slice(0, 50),
+    note:
+      confidence === 'loop'
+        ? 'RTK covered the loop: datum, anchor and frame-rotation all verified within tolerance.'
+        : 'Single-area RTK: datum and anchor verified (a datum error of tens of metres is excluded); drive the full loop to also lock the frame-rotation assumption.',
+  };
+  await fsp
+    .writeFile(path.join(sourceDir, 'georeference_verification.json'), `${JSON.stringify(verification, null, 2)}\n`, 'utf8')
+    .catch(() => {});
+  return verification;
 }
 
 function buildLocalizationQualityGate({
@@ -10745,6 +10878,28 @@ async function preflightEdgeDeploy(config, params = {}) {
         },
       );
     }
+    // Georeference confirmation against independent RTK ground truth. When
+    // requireConfirmedGeoreference is set, a production deploy BLOCKS until the
+    // map has been RTK-verified; otherwise it is advisory.
+    try {
+      const georefPath = path.join(sourceDir, 'georeference_verification.json');
+      const georef = (await pathExists(georefPath)) ? JSON.parse(await fsp.readFile(georefPath, 'utf8')) : null;
+      const requireConfirmed = config.edgeDeploy.requireConfirmedGeoreference === true;
+      const confirmed = Boolean(georef?.confirmed);
+      addCheck(
+        'selected-map-georeference',
+        confirmed,
+        requireConfirmed && !confirmed ? 'error' : 'warning',
+        confirmed
+          ? `${mapName}: georeference RTK-confirmed (${georef.confidence} coverage, max ${georef.maxLaneDistanceMeters}m to lane over ${georef.rtkFixedSampleCount} fixed samples)`
+          : requireConfirmed
+            ? `${mapName}: georeference not RTK-confirmed; run RTK verification before production deploy (requireConfirmedGeoreference)`
+            : `${mapName}: georeference not RTK-confirmed (advisory); verify against RTK before production driving`,
+        georef || { confirmed: false },
+      );
+    } catch (georefError) {
+      addCheck('selected-map-georeference', false, 'warning', `${mapName}: georeference verification not read: ${georefError.message}`);
+    }
   } catch (error) {
     const message = error?.message || String(error);
     const missingRelease = /no .*released map|released map not found/i.test(message);
@@ -11654,10 +11809,12 @@ module.exports = {
   deployReleasedMap,
   deployLatestReleasedMap,
   rollbackDeployment,
+  verifyMapGeoreferenceAgainstRtk,
   // Test-only: lets the deploy-hygiene unit test assert the generated edge
   // Dreamview switch command forces a clean restart + dedupes the flagfile.
   __test__: {
     buildEdgeDreamviewSwitchCommand,
     evaluateVehiclePoseDeployCheck,
+    parseRtkBestPoses,
   },
 };

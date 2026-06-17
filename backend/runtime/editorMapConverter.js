@@ -3745,6 +3745,10 @@ async function convertEditorMapToApolloPackage(options) {
 
 module.exports = {
   convertEditorMapToApolloPackage,
+  // Reusable coordinate primitives (RTK ground-truth verification reprojects raw
+  // WGS84 GNSS positions into the published UTM50 map frame).
+  wgs84LonLatToUtmZone50,
+  APOLLO_TARGET_CRS,
   // Test-only exports: give numerically-sensitive internals a fast unit-test
   // anchor (projection round-trip, geometry invariants) so refactors are safe.
   __test__: {

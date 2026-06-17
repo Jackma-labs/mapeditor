@@ -4388,6 +4388,28 @@ app.post(
   },
 );
 
+// Verify a released map's georeference against independent RTK ground truth and
+// record georeference_verification.json. Reprojects raw GNSS best_pose (WGS84)
+// into the map's UTM50 frame and measures distance to the nearest lane.
+app.post("/runtime/verify-georeference", requirePermission("canDeploy"), async (req, res) => {
+  try {
+    const mapName = String(req.body?.mapName || "").trim();
+    if (!mapName) {
+      sendError(res, 400, 15070, "mapName is required");
+      return;
+    }
+    const sourceDir = path.join(config.releaseRoot, mapName);
+    if (!(await pathExists(sourceDir))) {
+      sendError(res, 404, 15071, `released map not found: ${mapName}`);
+      return;
+    }
+    const result = await runtime.verifyMapGeoreferenceAgainstRtk(config, mapName, sourceDir, req.body || {});
+    res.json({ code: 0, message: "Success", data: result });
+  } catch (error) {
+    sendError(res, 500, 15072, error.message);
+  }
+});
+
 app.get("/mapcreator/:mapName/tiles.json", async (req, res) => {
   const { mapName } = req.params;
   const tilePath = safeBaseMapJoin(mapName, "map_images", "tiles.json");
