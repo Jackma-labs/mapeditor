@@ -50,6 +50,7 @@ jobs:
           npm run test:converter-determinism
           npm run test:converter-aliases
           npm run test:converter-golden
+          npm run test:edge-dreamview-switch
           # Fixture regression: runs locally where data/ exists; skips on CI.
           npm run regression:maps
 

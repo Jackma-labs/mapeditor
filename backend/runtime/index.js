@@ -10791,15 +10791,11 @@ function buildEdgeDreamviewSwitchCommand(mapDir) {
     'FLAG=/apollo/modules/common/data/global_flagfile.txt',
     'BIN=/apollo/bazel-bin/modules/dreamview/dreamview',
     'LOG=/apollo/data/log/mapeditor_dreamview_restart.log',
-    'if [ -x /apollo/scripts/landing_edge_runtime.sh ]; then',
-    '  if timeout 45 /apollo/scripts/landing_edge_runtime.sh switch-map "$MAP_DIR"; then',
-    '    exit 0',
-    '  fi',
-    '  echo "landing_edge_runtime switch-map timed out or failed; falling back to flagfile restart" >&2',
-    'fi',
-    '. "$SETUP"',
-    '[ -d "$MAP_DIR" ] || { echo "missing map dir: $MAP_DIR" >&2; exit 2; }',
     'mkdir -p "$(dirname "$FLAG")" "$(dirname "$LOG")"',
+    // Normalize global_flagfile to a single --map_dir. Defined up front so BOTH
+    // the blessed hot-switch path and the restart path dedupe the flag; the
+    // hot-switch path previously exited without normalizing, letting stale
+    // --map_dir lines accumulate across deploys.
     'write_map_flag() {',
     '  tmp=$(mktemp)',
     '  if [ -f "$FLAG" ]; then awk \'$0 !~ /^--map_dir=/ {print}\' "$FLAG" > "$tmp" || true; fi',
@@ -10807,10 +10803,34 @@ function buildEdgeDreamviewSwitchCommand(mapDir) {
     '  cat "$tmp" > "$FLAG"',
     '  rm -f "$tmp"',
     '}',
+    // Run the edge-specific switch helper best-effort (it may perform setup
+    // beyond the flagfile), but do NOT exit on success: a hot switch-map leaves
+    // the previous map's geometry in Dreamview's rendered scene, which overlays
+    // the new map as an offset "ghost". We always force a clean restart below.
+    'SWITCHED=0',
+    'if [ -x /apollo/scripts/landing_edge_runtime.sh ]; then',
+    '  if timeout 45 /apollo/scripts/landing_edge_runtime.sh switch-map "$MAP_DIR"; then',
+    '    SWITCHED=1',
+    '  else',
+    '    echo "landing_edge_runtime switch-map timed out or failed; falling back to flagfile restart" >&2',
+    '  fi',
+    'fi',
     'write_map_flag',
-    '[ -x "$BIN" ] || { echo "dreamview binary not found: $BIN" >&2; exit 3; }',
-    '[ -x "$LAUNCH" ] || { echo "cyber_launch not found: $LAUNCH" >&2; exit 4; }',
-    '[ -f "$LAUNCH_FILE" ] || { echo "dreamview launch not found: $LAUNCH_FILE" >&2; exit 5; }',
+    '[ -d "$MAP_DIR" ] || { echo "missing map dir: $MAP_DIR" >&2; exit 2; }',
+    // Force a clean Dreamview restart so the previous map's scene is fully
+    // cleared (prevents render ghosting). If the restart toolchain is missing
+    // but the blessed switch already succeeded, rely on it instead of failing.
+    'if [ ! -x "$BIN" ] || [ ! -x "$LAUNCH" ] || [ ! -f "$LAUNCH_FILE" ]; then',
+    '  if [ "$SWITCHED" = "1" ]; then',
+    '    write_map_flag',
+    '    echo "dreamview restart toolchain unavailable; relied on landing_edge_runtime switch-map for $MAP_DIR"',
+    '    exit 0',
+    '  fi',
+    '  [ -x "$BIN" ] || { echo "dreamview binary not found: $BIN" >&2; exit 3; }',
+    '  [ -x "$LAUNCH" ] || { echo "cyber_launch not found: $LAUNCH" >&2; exit 4; }',
+    '  [ -f "$LAUNCH_FILE" ] || { echo "dreamview launch not found: $LAUNCH_FILE" >&2; exit 5; }',
+    'fi',
+    '. "$SETUP"',
     'self=$$',
     'pids=$(ps -eo pid=,comm=,args= | awk -v self="$self" \'$1 != self && (($2 == "dreamview" && $0 ~ /bazel-bin\\/modules\\/dreamview\\/dreamview/) || ($2 == "python3" && $0 ~ /cyber_launch[.]py start \\/apollo\\/modules\\/dreamview\\/launch\\/dreamview[.]launch/)) {print $1}\')',
     'if [ -n "$pids" ]; then kill $pids || true; fi',
@@ -11565,4 +11585,9 @@ module.exports = {
   deployReleasedMap,
   deployLatestReleasedMap,
   rollbackDeployment,
+  // Test-only: lets the deploy-hygiene unit test assert the generated edge
+  // Dreamview switch command forces a clean restart + dedupes the flagfile.
+  __test__: {
+    buildEdgeDreamviewSwitchCommand,
+  },
 };
