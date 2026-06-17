@@ -51,6 +51,7 @@ jobs:
           npm run test:converter-aliases
           npm run test:converter-golden
           npm run test:edge-dreamview-switch
+          npm run test:converter-default-routing
           # Fixture regression: runs locally where data/ exists; skips on CI.
           npm run regression:maps
 

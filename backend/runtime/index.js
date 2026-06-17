@@ -11321,6 +11321,22 @@ async function deployReleasedMap(config, params = {}) {
     const activateResult = await runEdgeSshCommand(config, activateCommand, {
       timeoutMs: 2 * 60 * 1000,
     });
+    // Dreamview loads cycle routing from a SIBLING file "<mapDir>_default_cycle_routing.txt"
+    // (next to the map dir), while the converter writes default_cycle_routing.txt INSIDE the
+    // map dir. Mirror it so "default cycle routing" loads without the "Failed to load" error.
+    await progress(`Placing sibling default cycle routing for ${mapName}`);
+    const siblingCycleRouting = `${remoteMapDir}_default_cycle_routing.txt`;
+    const placeSiblingCmd = [
+      `if [ -f ${quoteShell(`${remoteMapDir}/default_cycle_routing.txt`)} ]; then`,
+      `cp -f ${quoteShell(`${remoteMapDir}/default_cycle_routing.txt`)} ${quoteShell(siblingCycleRouting)};`,
+      'fi',
+    ].join(' ');
+    await runEdgeSshCommand(
+      config,
+      dockerContainer ? dockerExecCommand(dockerContainer, placeSiblingCmd) : placeSiblingCmd,
+    ).catch(async (error) => {
+      await progress(`Sibling cycle-routing placement skipped: ${error.message}`);
+    });
     await progress(`Verifying deployed Apollo map package on edge: ${remoteMapDir}`);
     const remotePackageValidation = await validateRemoteMapPackageOnEdge(
       config,

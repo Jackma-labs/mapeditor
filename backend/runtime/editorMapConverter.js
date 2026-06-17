@@ -2526,6 +2526,35 @@ function chooseDefaultRouteLanePath(lanes) {
   return lanes.length ? [lanes.reduce((best, lane) => (lane.length > best.length ? lane : best), lanes[0])] : [];
 }
 
+function formatProtoDouble(value) {
+  return Number(value || 0).toFixed(9);
+}
+
+// apollo.routing.POI text proto that Dreamview loads as the map's default
+// routing / POI (default_end_way_point.txt + default_cycle_routing.txt). One
+// waypoint per lane along the default loop path (at each lane's midpoint), so
+// "Add Default Routing" reproduces the full loop. Without these files Dreamview
+// logs "Failed to load default routing/POI" for every MapEditor-converted map.
+// Format mirrors the existing edge maps (e.g. 2026-5-28/default_end_way_point.txt).
+function buildDefaultEndWayPointText(mapName, lanePath) {
+  const lines = ['landmark {', `  name: "${String(mapName).replace(/"/g, '\\"')} full loop"`];
+  for (const lane of lanePath) {
+    const point = pointAtPolylineFraction(lane.points, 0.5);
+    const s = 0.5 * Math.max(0, lane.length);
+    lines.push('  waypoint {');
+    lines.push(`    id: "${String(lane.id).replace(/"/g, '\\"')}"`);
+    lines.push(`    s: ${formatProtoDouble(s)}`);
+    lines.push('    pose {');
+    lines.push(`      x: ${formatProtoDouble(point.x)}`);
+    lines.push(`      y: ${formatProtoDouble(point.y)}`);
+    lines.push(`      z: ${formatProtoDouble(point.z)}`);
+    lines.push('    }');
+    lines.push('  }');
+  }
+  lines.push('}');
+  return `${lines.join('\n')}\n`;
+}
+
 function buildDefaultRouteArtifacts(mapName, mapMessage, generatedAt = null) {
   const lanes = buildRouteLaneRecords(mapMessage);
   if (lanes.length === 0) {
@@ -2599,6 +2628,7 @@ function buildDefaultRouteArtifacts(mapName, mapMessage, generatedAt = null) {
     request,
     loopPlan,
     poi,
+    endWayPointText: buildDefaultEndWayPointText(mapName, lanePath),
   };
 }
 
@@ -3460,7 +3490,16 @@ async function convertEditorMapToApolloPackage(options) {
     'routing_map.bin',
     'coordinate_metadata.json',
     'quality_gate.json',
-    ...(routeArtifacts ? ['default_routing_request.json', 'routing_loop_plan.json', 'poi.json'] : []),
+    ...(routeArtifacts
+      ? [
+          'default_routing_request.json',
+          'routing_loop_plan.json',
+          'poi.json',
+          // Apollo-native default routing/POI that Dreamview loads on map open.
+          'default_end_way_point.txt',
+          'default_cycle_routing.txt',
+        ]
+      : []),
   ];
 
   await fs.copyFile(jsonPath, path.join(releaseDir, 'editor_map.json'));
@@ -3488,6 +3527,11 @@ async function convertEditorMapToApolloPackage(options) {
       'utf8',
     );
     await fs.writeFile(path.join(releaseDir, 'poi.json'), JSON.stringify(routeArtifacts.poi, null, 2), 'utf8');
+    // Apollo-native default routing/POI (apollo.routing.POI text proto).
+    // Dreamview reads default_end_way_point.txt for the default POI and
+    // default_cycle_routing.txt for the loop; both carry the same waypoints.
+    await fs.writeFile(path.join(releaseDir, 'default_end_way_point.txt'), routeArtifacts.endWayPointText, 'utf8');
+    await fs.writeFile(path.join(releaseDir, 'default_cycle_routing.txt'), routeArtifacts.endWayPointText, 'utf8');
   }
   await fs.writeFile(
     path.join(releaseDir, 'manifest.json'),
