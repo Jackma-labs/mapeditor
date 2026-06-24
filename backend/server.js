@@ -4410,6 +4410,18 @@ app.post("/runtime/verify-georeference", requirePermission("canDeploy"), async (
   }
 });
 
+// Audit edge map completeness: per map dir base/routing/sim presence (flags
+// half-finished/non-routable maps) + orphaned loose routing siblings. The
+// backend equivalent of check_maps.sh, one call.
+app.get("/runtime/edge-map-audit", requirePermission("canDeploy"), async (_req, res) => {
+  try {
+    const result = await runtime.auditEdgeMaps(config);
+    res.json({ code: 0, message: "Success", data: result });
+  } catch (error) {
+    sendError(res, 500, 15073, error.message);
+  }
+});
+
 app.get("/mapcreator/:mapName/tiles.json", async (req, res) => {
   const { mapName } = req.params;
   const tilePath = safeBaseMapJoin(mapName, "map_images", "tiles.json");

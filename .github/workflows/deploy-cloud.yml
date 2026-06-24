@@ -54,6 +54,7 @@ jobs:
           npm run test:converter-default-routing
           npm run test:converter-coordinate-safety
           npm run test:georeference-verification
+          npm run test:edge-map-audit
           # Fixture regression: runs locally where data/ exists; skips on CI.
           npm run regression:maps
 

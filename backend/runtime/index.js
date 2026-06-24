@@ -10939,6 +10939,102 @@ function dockerExecCommand(container, command) {
   return `docker exec ${quoteShell(container)} bash -lc ${quoteShell(command)}`;
 }
 
+// Audit the edge map root: per map dir report base/routing/sim presence (so a
+// half-finished/non-routable map is visible) and find orphaned loose
+// *_default_cycle_routing.txt / *_default_end_way_point.txt siblings whose map
+// dir is gone. Emits tab-delimited lines for parseEdgeMapAudit.
+function buildEdgeMapAuditCommand(remoteRoot) {
+  const root = String(remoteRoot).replace(/\/+$/u, '');
+  return [
+    'set +e',
+    `ROOT=${quoteShell(root)}`,
+    'for d in "$ROOT"/*/; do',
+    '  [ -d "$d" ] || continue',
+    '  n=$(basename "$d"); case "$n" in .mapeditor*) continue;; esac',
+    '  b=0; r=0; s=0',
+    '  [ -f "$d/base_map.bin" ] && b=1',
+    '  [ -f "$d/routing_map.bin" ] && r=1',
+    '  [ -f "$d/sim_map.bin" ] && s=1',
+    "  printf 'DIR\\t%s\\t%s\\t%s\\t%s\\n' \"$n\" \"$b\" \"$r\" \"$s\"",
+    'done',
+    'for f in "$ROOT"/*_default_cycle_routing.txt "$ROOT"/*_default_end_way_point.txt; do',
+    '  [ -f "$f" ] || continue',
+    '  base=$(basename "$f"); name=${base%_default_cycle_routing.txt}; name=${name%_default_end_way_point.txt}',
+    "  [ -d \"$ROOT/$name\" ] || printf 'ORPHAN\\t%s\\n' \"$base\"",
+    'done',
+    'FLAG=/apollo/modules/common/data/global_flagfile.txt',
+    "[ -f \"$FLAG\" ] && printf 'ACTIVE\\t%s\\n' \"$(grep '^--map_dir=' \"$FLAG\" | tail -1 | sed 's/^--map_dir=//')\"",
+    'true',
+  ].join('\n');
+}
+
+function parseEdgeMapAudit(stdout) {
+  const maps = [];
+  const orphanedSiblings = [];
+  let activeMapDir = '';
+  for (const line of String(stdout || '').split(/\r?\n/u)) {
+    const parts = line.split('\t');
+    if (parts[0] === 'DIR') {
+      const base = parts[2] === '1';
+      const routing = parts[3] === '1';
+      const sim = parts[4] === '1';
+      maps.push({ name: parts[1], base, routing, sim, complete: base && routing && sim });
+    } else if (parts[0] === 'ORPHAN') {
+      orphanedSiblings.push(parts[1]);
+    } else if (parts[0] === 'ACTIVE') {
+      activeMapDir = parts[1] || '';
+    }
+  }
+  const partial = maps.filter((m) => !m.complete).map((m) => m.name);
+  const activeMapName = activeMapDir ? activeMapDir.replace(/\/+$/u, '').split('/').pop() : '';
+  const activeEntry = maps.find((m) => m.name === activeMapName) || null;
+  return {
+    maps,
+    partial,
+    orphanedSiblings,
+    activeMapDir,
+    activeMapName,
+    activeMapComplete: activeEntry ? activeEntry.complete : null,
+    summary: {
+      total: maps.length,
+      complete: maps.filter((m) => m.complete).length,
+      partial: partial.length,
+      orphans: orphanedSiblings.length,
+    },
+  };
+}
+
+async function auditEdgeMaps(config) {
+  const remoteRoot = String(config.edgeDeploy.targetMapRoot || '/apollo/modules/map/data').replace(/\/+$/u, '');
+  const container = String(config.edgeDeploy.dockerContainer || '').trim();
+  const command = buildEdgeMapAuditCommand(remoteRoot);
+  const result = await runEdgeSshCommand(config, container ? dockerExecCommand(container, command) : command, {
+    timeoutMs: 30000,
+  });
+  return { mapRoot: remoteRoot, checkedAt: new Date().toISOString(), ...parseEdgeMapAudit(result.stdout || '') };
+}
+
+// Archive orphaned routing/POI siblings (loose *_default_cycle_routing.txt /
+// *_default_end_way_point.txt whose map dir no longer exists) to .mapeditor_orphans
+// so a deleted map dir can never leave a half-finished-looking routing file behind.
+function buildOrphanSiblingCleanupCommand(remoteRoot) {
+  const root = String(remoteRoot).replace(/\/+$/u, '');
+  return [
+    'set +e',
+    `ROOT=${quoteShell(root)}`,
+    'ORPH="$ROOT/.mapeditor_orphans"',
+    'for f in "$ROOT"/*_default_cycle_routing.txt "$ROOT"/*_default_end_way_point.txt; do',
+    '  [ -f "$f" ] || continue',
+    '  base=$(basename "$f"); name=${base%_default_cycle_routing.txt}; name=${name%_default_end_way_point.txt}',
+    '  if [ ! -d "$ROOT/$name" ]; then',
+    '    mkdir -p "$ORPH"',
+    '    mv "$f" "$ORPH/" 2>/dev/null && echo "archived orphan sibling: $base"',
+    '  fi',
+    'done',
+    'true',
+  ].join('\n');
+}
+
 function buildAtomicMapActivationCommand({ remoteMapDir, remoteStagingMapDir, backupRoot, backupDir, rollbackRoot, cleanupDir }) {
   const lines = [
     'set -e',
@@ -11545,6 +11641,17 @@ async function deployReleasedMap(config, params = {}) {
     ).catch(async (error) => {
       await progress(`Sibling cycle-routing placement skipped: ${error.message}`);
     });
+    // Hygiene: archive any orphaned routing/POI siblings (loose *_default_*.txt
+    // whose map dir was deleted out-of-band) so a removed map dir can never leave
+    // a half-finished-looking routing file behind in the map list.
+    await progress('Archiving orphaned routing/POI siblings (if any)');
+    const orphanCleanupCmd = buildOrphanSiblingCleanupCommand(remoteRoot);
+    await runEdgeSshCommand(
+      config,
+      dockerContainer ? dockerExecCommand(dockerContainer, orphanCleanupCmd) : orphanCleanupCmd,
+    ).catch(async (error) => {
+      await progress(`Orphan sibling cleanup skipped: ${error.message}`);
+    });
     await progress(`Verifying deployed Apollo map package on edge: ${remoteMapDir}`);
     const remotePackageValidation = await validateRemoteMapPackageOnEdge(
       config,
@@ -11810,11 +11917,15 @@ module.exports = {
   deployLatestReleasedMap,
   rollbackDeployment,
   verifyMapGeoreferenceAgainstRtk,
+  auditEdgeMaps,
   // Test-only: lets the deploy-hygiene unit test assert the generated edge
   // Dreamview switch command forces a clean restart + dedupes the flagfile.
   __test__: {
     buildEdgeDreamviewSwitchCommand,
     evaluateVehiclePoseDeployCheck,
     parseRtkBestPoses,
+    parseEdgeMapAudit,
+    buildEdgeMapAuditCommand,
+    buildOrphanSiblingCleanupCommand,
   },
 };
