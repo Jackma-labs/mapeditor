@@ -24,6 +24,7 @@
     "test:converter-coordinate-safety": "node scripts/test-converter-coordinate-safety.js",
     "test:georeference-verification": "node scripts/test-georeference-verification.js",
     "test:edge-map-audit": "node scripts/test-edge-map-audit.js",
+    "test:elevation": "node scripts/test-elevation.js",
     "runtime:start:win": "powershell -ExecutionPolicy Bypass -File runtime/scripts/start-apollo-runtime.ps1",
     "runtime:stop:win": "powershell -ExecutionPolicy Bypass -File runtime/scripts/stop-apollo-runtime.ps1"
   }

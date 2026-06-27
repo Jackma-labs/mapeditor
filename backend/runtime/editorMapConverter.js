@@ -4,6 +4,7 @@ const protobuf = require('protobufjs');
 const { distance, polylineLength, cubicBezier } = require('./geometry');
 const { normalizeEditorMap } = require('./normalizeEditorMap');
 const { splitClosedLanes } = require('./splitClosedLanes');
+const { loadOrBuildElevationGrid, sampleElevation } = require('./elevationGrid');
 
 const LANE_TYPE = {
   NONE: 1,
@@ -3534,6 +3535,54 @@ async function writeBinary(root, typeName, message, outputPath) {
   await fs.writeFile(outputPath, encoded);
 }
 
+// Stamp real local z onto editor points by sampling the base map's elevation grid
+// (DEM) at each point's (x,y). The 2D editor drops z, so without this every lane
+// publishes flat — ramps included. Only fills z where the editor has none (or 0)
+// and the point cloud has coverage near the point; otherwise the point keeps the
+// default height. The converter's transform later adds the base-map center z,
+// turning local z into absolute elevation.
+function applyElevationFromBaseMap(editorMap, baseMapDir) {
+  if (!baseMapDir) return { applied: false, reason: 'no baseMapDir' };
+  let grid = null;
+  try {
+    grid = loadOrBuildElevationGrid(baseMapDir);
+  } catch (error) {
+    return { applied: false, reason: `elevation grid build failed: ${error.message}` };
+  }
+  if (!grid) return { applied: false, reason: 'base map has no point cloud' };
+  const points = arr(editorMap.point);
+  let elevated = 0;
+  let mnz = Infinity;
+  let mxz = -Infinity;
+  for (const point of points) {
+    const pos = point && (point.position || point);
+    if (!pos) continue;
+    const x = number(pos.x);
+    const y = number(pos.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const existingZ = Number(pos.z);
+    if (Number.isFinite(existingZ) && Math.abs(existingZ) > 1e-6) continue; // keep an explicit editor z
+    const z = sampleElevation(grid, x, y);
+    if (!Number.isFinite(z)) continue;
+    if (point.position) {
+      point.position.z = z;
+    } else {
+      point.z = z;
+    }
+    elevated += 1;
+    if (z < mnz) mnz = z;
+    if (z > mxz) mxz = z;
+  }
+  return {
+    applied: elevated > 0,
+    pointsElevated: elevated,
+    totalPoints: points.length,
+    localZRange: elevated > 0 ? { min: Number(mnz.toFixed(3)), max: Number(mxz.toFixed(3)) } : null,
+    gridCellMeters: grid.cellMeters,
+    gridZRange: grid.zRange,
+  };
+}
+
 async function convertEditorMapToApolloPackage(options) {
   const { mapName, jsonPath, baseMapDir = null } = options;
   const finalReleaseDir = options.releaseDir;
@@ -3553,6 +3602,10 @@ async function convertEditorMapToApolloPackage(options) {
   // re-drawing. Operates in-memory only; the source editor_map on disk is
   // untouched. Open lanes pass through unchanged.
   const { map: editorMap, report: closedLaneSplit } = splitClosedLanes(rawEditorMap);
+  // Stamp real elevation (z) from the base map's point cloud onto editor points
+  // (after splitting, so resampled loop points get z too) so ramps/slopes publish
+  // with height instead of flat. No-op when there is no base map / point cloud.
+  const elevationReport = applyElevationFromBaseMap(editorMap, baseMapDir);
   // Single deterministic timestamp for the whole package (derived from the
   // editor_map, not the conversion wall-clock) so re-converting the same map
   // yields byte-identical output.
@@ -3722,6 +3775,7 @@ async function convertEditorMapToApolloPackage(options) {
           qualityGateErrors: qualityGate.errors,
           qualityGateWarnings: qualityGate.warnings,
           defaultRouteGenerated: Boolean(routeArtifacts),
+          elevation: elevationReport,
         },
       },
       null,
