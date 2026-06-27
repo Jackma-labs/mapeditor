@@ -3550,34 +3550,43 @@ function applyElevationFromBaseMap(editorMap, baseMapDir) {
     return { applied: false, reason: `elevation grid build failed: ${error.message}` };
   }
   if (!grid) return { applied: false, reason: 'base map has no point cloud' };
-  const points = arr(editorMap.point);
-  let elevated = 0;
-  let mnz = Infinity;
-  let mxz = -Infinity;
-  for (const point of points) {
-    const pos = point && (point.position || point);
-    if (!pos) continue;
-    const x = number(pos.x);
-    const y = number(pos.y);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    const existingZ = Number(pos.z);
-    if (Number.isFinite(existingZ) && Math.abs(existingZ) > 1e-6) continue; // keep an explicit editor z
+  const stats = { elevated: 0, mnz: Infinity, mxz: -Infinity };
+  // Fill a coord's z (local) from the DEM, unless it already carries an explicit
+  // editor height. Tracks the elevated range for the manifest.
+  const elevateCoord = (coord) => {
+    if (!coord) return;
+    const x = number(coord.x);
+    const y = number(coord.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const existingZ = Number(coord.z);
+    if (Number.isFinite(existingZ) && Math.abs(existingZ) > 1e-6) return;
     const z = sampleElevation(grid, x, y);
-    if (!Number.isFinite(z)) continue;
-    if (point.position) {
-      point.position.z = z;
-    } else {
-      point.z = z;
+    if (!Number.isFinite(z)) return;
+    coord.z = z;
+    stats.elevated += 1;
+    if (z < stats.mnz) stats.mnz = z;
+    if (z > stats.mxz) stats.mxz = z;
+  };
+  const points = arr(editorMap.point);
+  for (const point of points) elevateCoord(point && (point.position || point));
+  // Bezier control points (curved boundaries) must be elevated too, otherwise the
+  // cubic blends the elevated endpoints with z=0 controls and the curve SAGS to
+  // ~0 mid-segment. For a planar ramp the cubic z-blend of plane-sampled controls
+  // equals the plane height at each generated curve point, so curves stay on grade.
+  let controlsElevated = 0;
+  for (const boundary of arr(editorMap.boundary)) {
+    for (const control of arr(boundary && (boundary.controlsPosition || boundary.controls_position))) {
+      const before = stats.elevated;
+      elevateCoord(control);
+      if (stats.elevated > before) controlsElevated += 1;
     }
-    elevated += 1;
-    if (z < mnz) mnz = z;
-    if (z > mxz) mxz = z;
   }
   return {
-    applied: elevated > 0,
-    pointsElevated: elevated,
+    applied: stats.elevated > 0,
+    pointsElevated: stats.elevated - controlsElevated,
+    controlsElevated,
     totalPoints: points.length,
-    localZRange: elevated > 0 ? { min: Number(mnz.toFixed(3)), max: Number(mxz.toFixed(3)) } : null,
+    localZRange: stats.elevated > 0 ? { min: Number(stats.mnz.toFixed(3)), max: Number(stats.mxz.toFixed(3)) } : null,
     gridCellMeters: grid.cellMeters,
     gridZRange: grid.zRange,
   };

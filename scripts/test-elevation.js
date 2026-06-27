@@ -100,13 +100,53 @@ async function testConverterElevation(baseDir) {
   }
 }
 
+// A curved (cubic-bezier) boundary on the ramp must follow the grade, NOT sag
+// toward 0 mid-segment (regression for the bezier-control elevation bug). Curve
+// from x=10..30 on slope 0.2: endpoints local z 2,6; controls at x=15,25 -> 3,5;
+// mid local z must be ~4 (abs ~6.6), and no curve point may dip near the sag (~1
+// local / ~3.6 abs) that unsampled z=0 controls would produce.
+function curvedRampMap() {
+  const pt = (id, x, y) => ({ id, position: { x, y, z: 0 }, type: 1 });
+  const attr = { speed: 30, speedKph: 30, direction: 1, prossibleDrivingDirection: 1, laneType: 1 };
+  return {
+    header: { version: 'curve', date: '2026-01-01T00:00:00.000Z' },
+    sourceCrs: 'LOCAL_ENU_METERS',
+    coordinateMetadata: { sourceCrs: 'LOCAL_ENU_METERS', anchor: { source: 'test', sourceCrs: 'GAUSS_KRUGER_CM114', sourceOrigin: CENTER } },
+    point: [pt('L0', 10, -1.75), pt('L1', 30, -1.75), pt('R0', 10, 1.75), pt('R1', 30, 1.75)],
+    boundary: [
+      { id: 'bL', point_id: ['L0', 'L1'], type: 7, controlsPosition: [{ x: 15, y: -1.75 }, { x: 25, y: -1.75 }] },
+      { id: 'bR', point_id: ['R0', 'R1'], type: 7, controlsPosition: [{ x: 15, y: 1.75 }, { x: 25, y: 1.75 }] },
+    ],
+    lane: [{ id: '1', left_boundary_id: 'bL', right_boundary_id: 'bR', width: 3.5, type: 1, attr }],
+  };
+}
+
+async function testCurvedNoSag(baseDir) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'curve-'));
+  const rel = path.join(dir, 'out');
+  const jsonPath = path.join(dir, 'in.json');
+  fs.writeFileSync(jsonPath, JSON.stringify(curvedRampMap()));
+  try {
+    await converter.convertEditorMapToApolloPackage({ mapName: 'curve', jsonPath, releaseDir: rel, baseMapDir: baseDir });
+    const base = fs.readFileSync(path.join(rel, 'base_map.txt'), 'utf8');
+    const zs = [...base.matchAll(/z:\s*([-\d.]+)/g)].map((m) => parseFloat(m[1]));
+    const minZ = Math.min(...zs);
+    // absolute lower-endpoint grade ~ 2 + 2.5934 = 4.59; the z=0-control sag dips to ~3.6.
+    assert.ok(minZ > 4.2, `curved boundary sagged: min z ${minZ.toFixed(2)} should stay on grade (>4.2, sag would be ~3.6)`);
+    return { minZ: Number(minZ.toFixed(2)), maxZ: Number(Math.max(...zs).toFixed(2)) };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'basemap-'));
   try {
     writeRampBaseMap(baseDir);
     testGrid(baseDir);
     const r = await testConverterElevation(baseDir);
-    console.log(JSON.stringify({ grid: 'ok', converter: r }));
+    const c = await testCurvedNoSag(baseDir);
+    console.log(JSON.stringify({ grid: 'ok', converter: r, curvedNoSag: c }));
     console.log('[pass] elevation');
   } finally {
     fs.rmSync(baseDir, { recursive: true, force: true });
